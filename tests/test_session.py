@@ -29,6 +29,16 @@ def make_config(**overrides) -> SummonConfig:
     return SummonConfig.model_validate(defaults)
 
 
+def make_options(**overrides) -> SessionOptions:
+    defaults = {
+        "session_id": "test-session",
+        "cwd": "/tmp/test",
+        "name": "test",
+    }
+    defaults.update(overrides)
+    return SessionOptions(**defaults)
+
+
 class TestRateLimiter:
     def test_first_request_allowed(self):
         rl = RateLimiter(cooldown_seconds=2.0)
@@ -64,7 +74,7 @@ class TestPrepareAuth:
     async def test_prepare_auth_returns_short_code(self):
         """prepare_auth should return a string (the short_code)."""
         config = make_config()
-        session = SummonSession(config, SessionOptions(session_id="sess-test"))
+        session = SummonSession(config, make_options(session_id="sess-test"))
 
         # Patch SessionRegistry to use tmp_path
         with patch("summon_claude.session.SessionRegistry") as mock_registry:
@@ -94,7 +104,7 @@ class TestPrepareAuth:
     async def test_prepare_auth_sets_auth_attribute(self):
         """prepare_auth should set self._auth attribute."""
         config = make_config()
-        session = SummonSession(config, SessionOptions(session_id="sess-auth-attr"))
+        session = SummonSession(config, make_options(session_id="sess-auth-attr"))
 
         assert session._auth is None
 
@@ -163,14 +173,14 @@ class TestFormatFileReferences:
 class TestSessionSignalHandler:
     async def test_handle_signal_sets_shutdown_event(self):
         config = make_config()
-        session = SummonSession(config)
+        session = SummonSession(config, make_options())
         assert not session._shutdown_event.is_set()
         session._handle_signal()
         assert session._shutdown_event.is_set()
 
     async def test_handle_signal_puts_sentinel_on_queue(self):
         config = make_config()
-        session = SummonSession(config)
+        session = SummonSession(config, make_options())
         session._handle_signal()
         item = await asyncio.wait_for(session._message_queue.get(), timeout=1.0)
         assert item == ""
@@ -179,7 +189,7 @@ class TestSessionSignalHandler:
 class TestWaitForAuth:
     async def test_returns_immediately_when_event_set(self):
         config = make_config()
-        session = SummonSession(config)
+        session = SummonSession(config, make_options())
         session._authenticated_event.set()
 
         # Should complete quickly since event is already set
@@ -187,7 +197,7 @@ class TestWaitForAuth:
 
     async def test_returns_when_shutdown_event_set(self):
         config = make_config()
-        session = SummonSession(config)
+        session = SummonSession(config, make_options())
         session._shutdown_event.set()
 
         await asyncio.wait_for(session._wait_for_auth(), timeout=2.0)
@@ -197,7 +207,7 @@ class TestSlashCommandHandler:
     """Test the /summon slash command handler internals via _build_slack_app."""
 
     def _make_session_with_registry(self, config, registry):
-        session = SummonSession(config)
+        session = SummonSession(config, make_options())
         session._registry = registry
         return session
 
@@ -219,7 +229,7 @@ class TestSlashCommandHandler:
             await registry.register("sess-1", 1234, "/tmp")
             auth = await generate_session_token(registry, "sess-1", "/tmp")
 
-            session = SummonSession(config, SessionOptions(session_id="sess-1"))
+            session = SummonSession(config, make_options(session_id="sess-1"))
             session._registry = registry
 
             # Simulate what the handler does: verify the code and set the event
@@ -243,7 +253,7 @@ class TestSlashCommandHandler:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-2", 1234, "/tmp")
 
-            session = SummonSession(config, SessionOptions(session_id="sess-2"))
+            session = SummonSession(config, make_options(session_id="sess-2"))
             session._registry = registry
 
             result = await verify_short_code(registry, "BADCOD")
@@ -284,7 +294,7 @@ class TestSessionShutdownSummary:
             mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
             mock_client.conversations_archive = AsyncMock(return_value={"ok": True})
 
-            session = SummonSession(config, SessionOptions(session_id="sess-sd"))
+            session = SummonSession(config, make_options(session_id="sess-sd"))
             session._registry = registry
             session._client = mock_client
             session._total_turns = 3
@@ -314,7 +324,7 @@ class TestSessionShutdownSummary:
             mock_client = AsyncMock()
             mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
 
-            session = SummonSession(config, SessionOptions(session_id="sess-arch"))
+            session = SummonSession(config, make_options(session_id="sess-arch"))
             session._registry = registry
             session._client = mock_client
 
@@ -337,7 +347,7 @@ class TestSessionShutdownSummary:
             mock_client = AsyncMock()
             mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
 
-            session = SummonSession(config, SessionOptions(session_id="sess-comp"))
+            session = SummonSession(config, make_options(session_id="sess-comp"))
             session._registry = registry
             session._client = mock_client
 
@@ -380,7 +390,7 @@ class TestBuildSlackApp:
         from slack_bolt.async_app import AsyncApp
 
         config = make_config()
-        session = SummonSession(config)
+        session = SummonSession(config, make_options())
         app = session._build_slack_app()
         assert isinstance(app, AsyncApp)
 
@@ -402,7 +412,7 @@ class TestAuthCountdown:
                 expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
             )
 
-            session = SummonSession(config, SessionOptions(session_id="sess-timeout"))
+            session = SummonSession(config, make_options(session_id="sess-timeout"))
             session._registry = registry
 
             # Simulate timeout by directly calling cleanup
@@ -426,7 +436,7 @@ class TestAuthCountdown:
                 expires_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
             )
 
-            session = SummonSession(config, SessionOptions(session_id="sess-shutdown"))
+            session = SummonSession(config, make_options(session_id="sess-shutdown"))
             session._registry = registry
 
             # Set shutdown event

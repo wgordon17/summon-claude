@@ -100,16 +100,17 @@ def cmd_start(
         click.echo(f"Configuration error: {e}", err=True)
         sys.exit(1)
 
-    resolved_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
+    resolved_cwd = str(pathlib.Path(cwd).resolve()) if cwd else str(pathlib.Path.cwd())
     session_id = str(uuid.uuid4())
+    resolved_name = name or pathlib.Path(resolved_cwd).name
 
     session = SummonSession(
         config=config,
         options=SessionOptions(
             session_id=session_id,
             cwd=resolved_cwd,
-            name=name,
-            model=model,
+            name=resolved_name,
+            model=model or config.default_model,
             resume=resume,
         ),
     )

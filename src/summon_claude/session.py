@@ -9,10 +9,8 @@ import asyncio
 import logging
 import os
 import signal
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -52,11 +50,14 @@ _SYSTEM_PROMPT = {
 
 @dataclass(frozen=True, slots=True)
 class SessionOptions:
-    """Options for creating a SummonSession."""
+    """Options for creating a SummonSession.
 
-    session_id: str | None = None
-    cwd: str | None = None
-    name: str | None = None
+    All fields are resolved by the CLI layer before reaching the session.
+    """
+
+    session_id: str
+    cwd: str
+    name: str
     model: str | None = None
     resume: str | None = None
 
@@ -77,15 +78,13 @@ class SummonSession:
     def __init__(
         self,
         config: SummonConfig,
-        options: SessionOptions | None = None,
+        options: SessionOptions,
     ) -> None:
-        if options is None:
-            options = SessionOptions()
         self._config = config
-        self._session_id = options.session_id or str(uuid.uuid4())
-        self._cwd = str(Path(options.cwd or Path.cwd()).resolve())
-        self._name = options.name or Path(self._cwd).name
-        self._model = options.model or config.default_model
+        self._session_id = options.session_id
+        self._cwd = options.cwd
+        self._name = options.name
+        self._model = options.model
         self._resume = options.resume
 
         # Will be set during start()
