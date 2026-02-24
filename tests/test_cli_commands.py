@@ -286,9 +286,9 @@ class TestCleanupCommand:
     """Test cleanup command for archiving stale session channels (BUG-007)."""
 
     def test_cleanup_command_exists(self):
-        """Test that cleanup command is available."""
+        """Test that session cleanup command is available."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["cleanup", "--help"])
+        result = runner.invoke(cli, ["session", "cleanup", "--help"])
         assert result.exit_code == 0
 
     async def test_cleanup_archives_session_channel(self, tmp_path):

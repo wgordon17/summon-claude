@@ -65,26 +65,29 @@ Parse the 6-character code (e.g., `ABC123`) and tell the user:
 
 ## Session management commands
 
-Once started, you can manage the session:
+Once started, manage sessions via the `session` group (alias: `s`):
 
 ```bash
 # List active sessions
-summon status
-
-# Detailed view of a specific session
-summon status <SESSION_ID>
-
-# Stop a running session
-summon stop <SESSION_ID>
+summon session list
 
 # List all recent sessions (last 50)
-summon sessions
+summon session list --all
+
+# Detailed view of a specific session
+summon session info <SESSION_ID>
+
+# Stop a running session
+summon session stop <SESSION_ID>
 
 # Clean up stale entries with dead processes
-summon cleanup
+summon session cleanup
 
 # View logs for a background session
-summon logs <SESSION_ID>
+summon session logs <SESSION_ID>
+
+# Short alias: 's' = 'session'
+summon s list
 ```
 
 ## Config management

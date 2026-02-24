@@ -62,15 +62,17 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 |---------|-------------|
 | `summon init` | Interactive setup wizard — creates config file with your tokens |
 | `summon start` | Start a new session (prints auth code, waits for `/summon` in Slack) |
-| `summon status [SESSION_ID]` | Show active sessions, or detailed view of one session |
-| `summon stop SESSION_ID` | Send SIGTERM to a running session |
-| `summon sessions` | List recent sessions (all statuses, last 50) |
-| `summon logs [SESSION_ID]` | View session logs (tail -f style streaming) |
-| `summon cleanup` | Mark sessions with dead processes as errored |
+| `summon session list` | Show active sessions (use `--all` for all recent) |
+| `summon session info SESSION_ID` | Show detailed view of one session |
+| `summon session stop SESSION_ID` | Send SIGTERM to a running session |
+| `summon session logs [SESSION_ID]` | View session logs (list files, or tail a specific session) |
+| `summon session cleanup` | Mark sessions with dead processes as errored |
 | `summon config show` | Show current config file (tokens masked) |
 | `summon config set KEY VALUE` | Set a single config value |
 | `summon config path` | Print the config file path |
 | `summon config edit` | Open config file in `$EDITOR` |
+
+> **Alias:** `summon s` is shorthand for `summon session` (e.g., `summon s list`).
 
 ### `summon start` flags
 
@@ -80,7 +82,7 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | `--name NAME` | Session name used for Slack channel naming |
 | `--model MODEL` | Override the default Claude model |
 | `--resume SESSION_ID` | Resume an existing Claude Code session by ID |
-| `-b`, `--background` | Run session in background as daemon (logs accessible via `summon logs`) |
+| `-b`, `--background` | Run session in background as daemon (logs accessible via `summon session logs`) |
 
 ### Global flags
 
