@@ -18,8 +18,8 @@ Use this skill when the user asks you to:
 
 Before starting, verify:
 
-1. **summon is installed** — run `summon --help` and check for exit code 0. If not installed, tell the user to run: `uv tool install summon-claude`
-2. **Config exists** — run `summon config path` and check the output file exists. If not configured, tell the user to run `summon init` first.
+1. **summon is installed** — run `summon --help` and check for exit code 0. If not installed, run `uv tool install summon-claude` to install it.
+2. **Config exists** — run `summon config path` and check the output file exists. If not configured, run `summon init` to start the setup wizard.
 
 ## Starting a session
 
