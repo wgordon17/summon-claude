@@ -168,7 +168,7 @@ All Slack API calls go through a `ChatProvider` protocol, enabling future suppor
 |--------|---------|
 | `cli.py` | CLI entry point: start/status/stop/sessions/cleanup/init/config |
 | `config.py` | pydantic-settings config with XDG path resolution and plugin discovery |
-| `auth.py` | 6-char short codes with 5-min TTL, brute-force protection (5 attempts) |
+| `auth.py` | 8-char hex short codes with 5-min TTL, brute-force protection (5 attempts) |
 | `registry.py` | SQLite session registry with WAL mode, heartbeat, audit log |
 | `channel_manager.py` | Slack channel create/archive/header with collision handling |
 | `permissions.py` | Debounced permission batching with Slack interactive buttons |
@@ -187,7 +187,7 @@ All Slack API calls go through a `ChatProvider` protocol, enabling future suppor
 
 ### Authentication
 
-1. `summon start` generates a cryptographic token with a 6-character short code
+1. `summon start` generates a short code (8 hex characters)
 2. Short code is printed to the terminal only — it is never sent to Slack automatically
 3. You type `/summon <code>` in Slack; the bot verifies the code against the registry
 4. Code expires after 5 minutes; locked after 5 failed attempts

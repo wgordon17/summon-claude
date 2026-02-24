@@ -47,17 +47,17 @@ After running `summon start`, look for a banner like:
 ```
 ==================================================
   SUMMON CODE: ABC123
-  Type in Slack: /summon ABC123
+  Type in Slack: /summon a1b2c3d4
   Expires in 5 minutes
 ==================================================
 ```
 
-Parse the 6-character code (e.g., `ABC123`) and tell the user:
-> "Your summon code is **ABC123**. Type `/summon ABC123` in Slack to authenticate."
+Parse the 8-character hex code (e.g., `a1b2c3d4`) and tell the user:
+> "Your summon code is **a1b2c3d4**. Type `/summon a1b2c3d4` in Slack to authenticate."
 
 ## Auth flow
 
-1. `summon start` generates a 6-character auth code and waits
+1. `summon start` generates an 8-character hex auth code and waits
 2. The user types `/summon <code>` in their Slack workspace
 3. The bot verifies the code, creates a dedicated session channel, and posts a header
 4. All further interaction happens in that Slack channel

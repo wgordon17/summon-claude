@@ -21,6 +21,7 @@ import click
 import daemon
 from slack_sdk.web.async_client import AsyncWebClient
 
+from summon_claude.auth import SessionAuth, generate_session_token
 from summon_claude.channel_manager import ChannelManager
 from summon_claude.cli_config import config_edit, config_path, config_set, config_show
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
@@ -31,6 +32,12 @@ from summon_claude.session import SessionOptions, SummonSession
 logger = logging.getLogger(__name__)
 
 _BANNER_WIDTH = 50
+
+
+async def _generate_auth(session_id: str) -> SessionAuth:
+    """Generate auth token with a short-lived registry connection."""
+    async with SessionRegistry() as registry:
+        return await generate_session_token(registry, session_id)
 
 
 def _print_auth_banner(short_code: str) -> None:
@@ -124,26 +131,24 @@ def cmd_start(
     session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
-    session = SummonSession(
-        config=config,
-        options=SessionOptions(
-            session_id=session_id,
-            cwd=resolved_cwd,
-            name=resolved_name,
-            model=model or config.default_model,
-            resume=resume,
-        ),
+    options = SessionOptions(
+        session_id=session_id,
+        cwd=resolved_cwd,
+        name=resolved_name,
+        model=model or config.default_model,
+        resume=resume,
     )
 
-    # Phase 1: Register + generate auth token (foreground, pre-fork)
+    # Phase 1: Generate auth token (foreground, pre-fork)
     try:
-        short_code = asyncio.run(session.prepare_auth())
+        auth = asyncio.run(_generate_auth(session_id))
     except Exception as e:
-        logger.exception("Failed to prepare session: %s", e)
+        logger.exception("Failed to generate auth token: %s", e)
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    _print_auth_banner(short_code)
+    session = SummonSession(config=config, options=options, auth=auth)
+    _print_auth_banner(auth.short_code)
 
     # Phase 2: Daemonize if requested (after banner is shown)
     daemon_ctx: daemon.DaemonContext | contextlib.nullcontext[None] = contextlib.nullcontext()
