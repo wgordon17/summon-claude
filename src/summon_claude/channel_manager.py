@@ -145,6 +145,6 @@ def _get_git_branch(cwd: str) -> str | None:
         if result.returncode == 0:
             branch = result.stdout.strip()
             return branch if branch != "HEAD" else None
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Git branch detection failed: %s", e)
     return None

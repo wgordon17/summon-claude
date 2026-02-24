@@ -173,8 +173,8 @@ class SummonSession:
                     task.cancel()
                     try:
                         await task
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    except (asyncio.CancelledError, Exception) as e:
+                        logger.debug("Pending task cleanup: %s", e)
                 # Re-raise unexpected exceptions from auth_task
                 for task in done:
                     if task is auth_task and not task.cancelled():
@@ -226,8 +226,8 @@ class SummonSession:
                     try:
                         assert self._registry is not None
                         await self._registry.delete_pending_token(self._auth.short_code)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Failed to delete pending token on shutdown: %s", e)
                 return
             await asyncio.sleep(_AUTH_POLL_INTERVAL_S)
             elapsed += _AUTH_POLL_INTERVAL_S
@@ -241,8 +241,8 @@ class SummonSession:
         if self._auth and self._registry:
             try:
                 await self._registry.delete_pending_token(self._auth.short_code)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Failed to delete pending token on timeout: %s", e)
         logger.warning("Auth timeout after %.0f seconds", elapsed)
         self._shutdown_event.set()
 
@@ -307,8 +307,8 @@ class SummonSession:
             heartbeat_task.cancel()
             try:
                 await heartbeat_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            except (asyncio.CancelledError, Exception) as e:
+                logger.debug("Heartbeat task cleanup: %s", e)
 
             current_task = asyncio.current_task()
             if current_task is not None and current_task.cancelling() > 0:
@@ -325,19 +325,17 @@ class SummonSession:
 
         slack_mcp = create_summon_mcp_server(router)
 
-        agent_kwargs: dict = {
-            "cwd": self._cwd,
-            "resume": self._resume,
-            "system_prompt": _SYSTEM_PROMPT,
-            "include_partial_messages": True,
-            "setting_sources": ["user", "project"],
-            "plugins": discover_installed_plugins(),
-            "can_use_tool": self._permission_handler.handle,
-            "mcp_servers": {"summon-slack": slack_mcp},
-        }
-        if self._model is not None:
-            agent_kwargs["model"] = self._model
-        options = ClaudeAgentOptions(**agent_kwargs)
+        options = ClaudeAgentOptions(
+            cwd=self._cwd,
+            resume=self._resume,
+            system_prompt=_SYSTEM_PROMPT,
+            include_partial_messages=True,
+            setting_sources=["user", "project"],
+            plugins=discover_installed_plugins(),
+            can_use_tool=self._permission_handler.handle,
+            mcp_servers={"summon-slack": slack_mcp},
+            model=self._model,
+        )
 
         display = ContentDisplay(self._config.max_inline_chars)
         streamer = ResponseStreamer(router=router, display=display)

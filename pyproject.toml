@@ -94,20 +94,18 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# CLI: click.echo for output; slack handler unused args; try/except/pass for cleanup
-"src/summon_claude/cli.py" = ["ARG001", "S110"]
-# CLI config: subprocess for editor; S603 subprocess call
-"src/summon_claude/cli_config.py" = ["S110"]
-# Session: asserts in private methods; try/except/pass for resilience; slack handler signatures
-"src/summon_claude/session.py" = ["S101", "S110", "SIM105", "ARG001", "ARG002", "PLR0913", "RET504"]
+# CLI: click.echo for output; slack handler unused args
+"src/summon_claude/cli.py" = ["ARG001"]
+# Session: asserts in private methods; slack handler signatures
+"src/summon_claude/session.py" = ["S101", "SIM105", "ARG001", "ARG002", "PLR0913", "RET504"]
 # Permissions: action_id is part of public API signature (reserved for future routing)
 "src/summon_claude/permissions.py" = ["ARG002"]
 # Registry: dynamic SET clause is safe (column names from allowlist); SIM105
-"src/summon_claude/registry.py" = ["S608", "SIM105", "S110"]
-# Channel manager: git subprocess is intentional; try/except/pass for best-effort operation
-"src/summon_claude/channel_manager.py" = ["S607", "PLW1510", "S110"]
-# Streamer: try/except/pass for best-effort Slack operations; PLR0911 multiple return paths
-"src/summon_claude/streamer.py" = ["SIM105", "S110", "PLR0911", "F841"]
+"src/summon_claude/registry.py" = ["S608", "SIM105"]
+# Channel manager: git subprocess is intentional
+"src/summon_claude/channel_manager.py" = ["S607", "PLW1510"]
+# Streamer: best-effort Slack operations; PLR0911 multiple return paths
+"src/summon_claude/streamer.py" = ["SIM105", "PLR0911", "F841"]
 # Tests: asserts, magic values, hardcoded tokens, subprocess calls, random, deferred imports, asyncio tasks
 "tests/**/*.py" = [
     "S101",    # assert is standard in tests

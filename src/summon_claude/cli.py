@@ -16,12 +16,9 @@ import signal
 import sys
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from daemon import DaemonContext
 
 import click
+import daemon
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.channel_manager import ChannelManager
@@ -129,7 +126,7 @@ def cmd_start(
     _print_auth_banner(short_code)
 
     # Phase 2: Daemonize if requested (after banner is shown)
-    daemon_ctx: DaemonContext | contextlib.nullcontext[None] = contextlib.nullcontext()
+    daemon_ctx: daemon.DaemonContext | contextlib.nullcontext[None] = contextlib.nullcontext()
     if background:
         if sys.platform == "win32":
             click.echo("Background mode is not supported on Windows.", err=True)
@@ -139,8 +136,6 @@ def cmd_start(
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"{session_id}.log"
         click.echo(f"Session started in background. Log: {log_file}")
-
-        import daemon  # noqa: PLC0415  # lazy: unix-only, only needed for --background
 
         log_fh = log_file.open("a")
         daemon_ctx = daemon.DaemonContext(
@@ -480,16 +475,16 @@ def _pid_owned_by_current_user(pid: int) -> bool:
 
         proc = psutil.Process(pid)
         return proc.uids().real == os.getuid()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("psutil PID ownership check failed: %s", e)
 
     # psutil not available or process gone; fall back to /proc on Linux
     try:
         uid = _pid_uid_from_proc(pid)
         if uid is not None:
             return uid == os.getuid()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("/proc PID ownership check failed: %s", e)
 
     # macOS/BSD fallback: check process exists via os.kill(pid, 0).
     # Since only the current user registers sessions in the registry,
