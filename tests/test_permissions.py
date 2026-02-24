@@ -241,26 +241,31 @@ class TestHandleAction:
         )
 
 
-class TestIsAutoApproved:
+class TestAutoApproveList:
     def test_list_files_approved(self):
-        handler, _, _ = make_handler()
-        assert handler._is_auto_approved("ListFiles") is True
+        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+
+        assert "ListFiles" in _AUTO_APPROVE_TOOLS
 
     def test_get_symbols_overview_approved(self):
-        handler, _, _ = make_handler()
-        assert handler._is_auto_approved("GetSymbolsOverview") is True
+        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+
+        assert "GetSymbolsOverview" in _AUTO_APPROVE_TOOLS
 
     def test_find_symbol_approved(self):
-        handler, _, _ = make_handler()
-        assert handler._is_auto_approved("FindSymbol") is True
+        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+
+        assert "FindSymbol" in _AUTO_APPROVE_TOOLS
 
     def test_bash_not_approved(self):
-        handler, _, _ = make_handler()
-        assert handler._is_auto_approved("Bash") is False
+        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+
+        assert "Bash" not in _AUTO_APPROVE_TOOLS
 
     def test_edit_not_approved(self):
-        handler, _, _ = make_handler()
-        assert handler._is_auto_approved("Edit") is False
+        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+
+        assert "Edit" not in _AUTO_APPROVE_TOOLS
 
 
 class TestFormatRequestSummary:
@@ -374,3 +379,86 @@ class TestPermissionBroadcast:
         call_args = provider.post_message.call_args
         text = call_args[0][1]
         assert text.startswith("<!channel>")
+
+
+class TestPermissionSuggestions:
+    """Test permission suggestions behavior (BUG-013)."""
+
+    async def test_suggestion_allow_returns_allowed_without_slack(self):
+        """When suggestion.behavior='allow', return PermissionResultAllow without Slack."""
+        from unittest.mock import MagicMock
+
+        handler, provider, _ = make_handler()
+
+        # Create a mock context with a suggestion
+        suggestion = MagicMock()
+        suggestion.behavior = "allow"
+        context = MagicMock()
+        context.suggestions = [suggestion]
+
+        result = await handler.handle("Bash", {"command": "ls"}, context)
+
+        # Should return allow immediately
+        assert isinstance(result, PermissionResultAllow)
+        # Should NOT have posted to Slack
+        provider.post_message.assert_not_called()
+
+    async def test_suggestion_deny_returns_denied_without_slack(self):
+        """When suggestion.behavior='deny', return PermissionResultDeny without Slack."""
+        from unittest.mock import MagicMock
+
+        handler, provider, _ = make_handler()
+
+        # Create a mock context with a suggestion
+        suggestion = MagicMock()
+        suggestion.behavior = "deny"
+        context = MagicMock()
+        context.suggestions = [suggestion]
+
+        result = await handler.handle("Bash", {"command": "rm -rf /"}, context)
+
+        # Should return deny immediately
+        assert isinstance(result, PermissionResultDeny)
+        # Should NOT have posted to Slack
+        provider.post_message.assert_not_called()
+
+    async def test_suggestion_ask_falls_through_to_slack(self):
+        """When suggestion.behavior='ask', fall through to Slack approval flow."""
+        from unittest.mock import MagicMock
+
+        handler, provider, _ = make_handler()
+
+        async def approve_after_post(*args, **kwargs):
+            async def do_approve():
+                await asyncio.sleep(0.05)
+                for batch_id in list(handler._batch.events.keys()):
+                    handler._batch.decisions[batch_id] = True
+                    handler._batch.events[batch_id].set()
+
+            asyncio.create_task(do_approve())
+            return MessageRef(channel_id="C123", ts="111.001")
+
+        provider.post_message = AsyncMock(side_effect=approve_after_post)
+
+        # Create a mock context with a suggestion
+        suggestion = MagicMock()
+        suggestion.behavior = "ask"
+        context = MagicMock()
+        context.suggestions = [suggestion]
+
+        result = await handler.handle("Bash", {"command": "test"}, context)
+
+        # Should have gone through Slack approval
+        assert isinstance(result, PermissionResultAllow)
+        provider.post_message.assert_called()
+
+    async def test_no_suggestion_uses_auto_approve_fallback(self):
+        """When context=None, still use _AUTO_APPROVE_TOOLS fallback."""
+        handler, provider, _ = make_handler()
+
+        # For a tool in _AUTO_APPROVE_TOOLS, should auto-approve even with None context
+        result = await handler.handle("Read", {"file_path": "/tmp/f"}, None)
+
+        assert isinstance(result, PermissionResultAllow)
+        # Should NOT have posted to Slack
+        provider.post_message.assert_not_called()

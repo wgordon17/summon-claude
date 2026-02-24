@@ -1,5 +1,8 @@
 """Debounced permission handler — batches tool approval requests and posts to Slack."""
 
+# pyright: reportArgumentType=false, reportReturnType=false
+# claude_agent_sdk doesn't ship type stubs
+
 from __future__ import annotations
 
 import asyncio
@@ -10,9 +13,9 @@ from typing import Any
 
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
 
-from ._formatting import get_tool_primary_arg, sanitize_for_mrkdwn
-from .config import SummonConfig
-from .thread_router import ThreadRouter
+from summon_claude._formatting import get_tool_primary_arg, sanitize_for_mrkdwn
+from summon_claude.config import SummonConfig
+from summon_claude.thread_router import ThreadRouter
 
 logger = logging.getLogger(__name__)
 
@@ -93,16 +96,29 @@ class PermissionHandler:
         context: ToolPermissionContext | None,
     ) -> PermissionResultAllow | PermissionResultDeny:
         """Main entry point for the can_use_tool callback."""
-        if self._is_auto_approved(tool_name):
+        # 1. Check SDK suggestions for deny — always honor denials unconditionally
+        if context is not None:
+            for suggestion in getattr(context, "suggestions", []) or []:
+                if getattr(suggestion, "behavior", None) == "deny":
+                    logger.info("SDK suggestion: denying %s", tool_name)
+                    return PermissionResultDeny(message="Denied by permission rules")
+
+        # 2. Static auto-approve list is the primary gate for allowing tools
+        if tool_name in _AUTO_APPROVE_TOOLS:
             logger.debug("Auto-approving tool: %s", tool_name)
             return PermissionResultAllow()
 
+        # 3. Check SDK suggestions for allow — secondary, after static allowlist
+        if context is not None:
+            for suggestion in getattr(context, "suggestions", []) or []:
+                if getattr(suggestion, "behavior", None) == "allow":
+                    logger.info("SDK suggestion: approving %s", tool_name)
+                    return PermissionResultAllow()
+                # behavior == "ask" or None falls through to Slack buttons
+
+        # 4. Request user approval via Slack
         logger.info("Permission required for tool: %s", tool_name)
         return await self._request_approval(tool_name, input_data, context)
-
-    def _is_auto_approved(self, tool_name: str) -> bool:
-        """Return True if the tool is in the safe auto-approve list."""
-        return tool_name in _AUTO_APPROVE_TOOLS
 
     async def _request_approval(
         self,
@@ -248,10 +264,10 @@ class PermissionHandler:
             return
 
         if value.startswith("approve:"):
-            batch_id = value[len("approve:"):]
+            batch_id = value[len("approve:") :]
             approved = True
         elif value.startswith("deny:"):
-            batch_id = value[len("deny:"):]
+            batch_id = value[len("deny:") :]
             approved = False
         else:
             logger.warning("Unknown permission action value: %r", value)

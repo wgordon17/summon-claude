@@ -8,7 +8,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .providers.base import ChatProvider
+from summon_claude.providers.base import ChatProvider
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class ChannelManager:
     async def post_session_header(self, channel_id: str, session_info: dict) -> str:
         """Post an initial message block with session metadata. Returns message timestamp."""
         cwd = session_info.get("cwd", "unknown")
-        model = session_info.get("model", "claude-opus-4-6")
+        model = session_info.get("model") or "default"
         session_id = session_info.get("session_id", "")
         git_branch = _get_git_branch(cwd)
 

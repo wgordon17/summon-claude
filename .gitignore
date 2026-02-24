@@ -46,9 +46,6 @@ htmlcov/
 .AppleDouble
 .LSOverride
 
-# Session registry (local data, not for version control)
-~/.summon/
-
 # Scratch files
 _inspect_sdk.py
 _inspect_sdk2.py

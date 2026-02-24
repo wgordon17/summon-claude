@@ -46,7 +46,6 @@ class TestChatProviderProtocol:
         assert isinstance(provider, ChatProvider)
 
 
-
 class TestSlackChatProviderPostMessage:
     """SlackChatProvider.post_message tests."""
 
@@ -89,9 +88,7 @@ class TestSlackChatProviderPostMessage:
         )
         provider = SlackChatProvider(client)
 
-        await provider.post_message(
-            "C123", "reply", thread_ts="1234567890.111111"
-        )
+        await provider.post_message("C123", "reply", thread_ts="1234567890.111111")
 
         call_kwargs = client.chat_postMessage.call_args[1]
         assert call_kwargs["thread_ts"] == "1234567890.111111"
@@ -151,9 +148,7 @@ class TestSlackChatProviderUpdateMessage:
         provider = SlackChatProvider(client)
 
         blocks = [{"type": "divider"}]
-        await provider.update_message(
-            "C123", "1234567890.123456", "text", blocks=blocks
-        )
+        await provider.update_message("C123", "1234567890.123456", "text", blocks=blocks)
 
         call_kwargs = client.chat_update.call_args[1]
         assert call_kwargs["blocks"] == blocks
@@ -221,9 +216,7 @@ class TestSlackChatProviderUploadFile:
         client.files_upload_v2 = AsyncMock(return_value={"ok": True})
         provider = SlackChatProvider(client)
 
-        await provider.upload_file(
-            "C123", "content", "test.txt", title="Custom Title"
-        )
+        await provider.upload_file("C123", "content", "test.txt", title="Custom Title")
 
         call_kwargs = client.files_upload_v2.call_args[1]
         assert call_kwargs["title"] == "Custom Title"
@@ -234,9 +227,7 @@ class TestSlackChatProviderUploadFile:
         client.files_upload_v2 = AsyncMock(return_value={"ok": True})
         provider = SlackChatProvider(client)
 
-        await provider.upload_file(
-            "C123", "content", "test.txt", thread_ts="1234567890.111111"
-        )
+        await provider.upload_file("C123", "content", "test.txt", thread_ts="1234567890.111111")
 
         call_kwargs = client.files_upload_v2.call_args[1]
         assert call_kwargs["thread_ts"] == "1234567890.111111"
@@ -277,9 +268,7 @@ class TestSlackChatProviderCreateChannel:
     async def test_create_channel_handles_missing_name(self):
         """create_channel should handle responses without 'name' field."""
         client = make_mock_slack_client()
-        client.conversations_create = AsyncMock(
-            return_value={"channel": {"id": "C_NEW"}}
-        )
+        client.conversations_create = AsyncMock(return_value={"channel": {"id": "C_NEW"}})
         provider = SlackChatProvider(client)
 
         ref = await provider.create_channel("test-channel")
@@ -311,5 +300,3 @@ class TestSlackChatProviderArchiveChannel:
 
         # Should not raise
         await provider.archive_channel("C_OLD")
-
-

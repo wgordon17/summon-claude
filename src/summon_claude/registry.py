@@ -13,6 +13,8 @@ from typing import Any
 
 import aiosqlite
 
+from summon_claude.config import get_data_dir
+
 logger = logging.getLogger(__name__)
 
 _CREATE_SESSIONS = """
@@ -68,8 +70,6 @@ def _now() -> str:
 
 def _default_db_path() -> Path:
     """Determine the default DB path using XDG data dir, with migration from old path."""
-    from .config import get_data_dir
-
     new_path = get_data_dir() / "registry.db"
     old_path = Path.home() / ".summon" / "registry.db"
 
@@ -108,6 +108,9 @@ class SessionRegistry:
         self._db.row_factory = aiosqlite.Row
         # Enable WAL mode for concurrent access from multiple processes
         await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA busy_timeout=5000")
+        await self._db.execute("PRAGMA synchronous=NORMAL")
+        await self._db.execute("PRAGMA journal_size_limit=67108864")
         await self._db.execute(_CREATE_SESSIONS)
         await self._db.execute(_CREATE_PENDING_AUTH_TOKENS)
         await self._db.execute(_CREATE_AUDIT_LOG)
@@ -230,36 +233,25 @@ class SessionRegistry:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def cleanup_stale(self, max_age_hours: int = 24) -> int:
-        """Mark sessions with dead PIDs as errored. Returns count of sessions cleaned up.
+    async def list_stale(self, max_age_hours: int = 24) -> list[dict]:
+        """Return sessions with dead PIDs without modifying them.
 
         Only considers sessions started within the last `max_age_hours` hours.
         """
         db = self._check_connected()
         cutoff = (datetime.now(UTC) - timedelta(hours=max_age_hours)).isoformat()
         async with db.execute(
-            "SELECT session_id, pid FROM sessions"
-            " WHERE status IN ('pending_auth', 'active') AND started_at >= ?",
+            "SELECT * FROM sessions WHERE status IN ('pending_auth', 'active') AND started_at >= ?",
             (cutoff,),
         ) as cursor:
             rows = await cursor.fetchall()
 
-        cleaned = 0
+        stale = []
         for row in rows:
             pid = row["pid"]
-            session_id = row["session_id"]
-            alive = _pid_alive(pid)
-            if not alive:
-                logger.info("Marking stale session %s (pid %d) as errored", session_id, pid)
-                await self.update_status(
-                    session_id,
-                    "errored",
-                    error_message=f"Process {pid} no longer running",
-                    ended_at=_now(),
-                )
-                cleaned += 1
-
-        return cleaned
+            if not _pid_alive(pid):
+                stale.append(dict(row))
+        return stale
 
     # --- Pending auth token methods ---
 
@@ -285,7 +277,7 @@ class SessionRegistry:
             await db.commit()
 
     async def _get_pending_token(self, short_code: str) -> dict | None:
-        """Retrieve a pending auth token by short code."""
+        """Retrieve a pending auth token by short code (used by tests)."""
         db = self._check_connected()
         async with db.execute(
             "SELECT * FROM pending_auth_tokens WHERE short_code = ?", (short_code,)
@@ -370,23 +362,6 @@ class SessionRegistry:
                 ),
             )
             await db.commit()
-
-    async def get_audit_log(self, session_id: str | None = None, limit: int = 100) -> list[dict]:
-        """Retrieve audit log entries, optionally filtered by session."""
-        db = self._check_connected()
-        if session_id:
-            async with db.execute(
-                "SELECT * FROM audit_log WHERE session_id = ? ORDER BY id DESC LIMIT ?",
-                (session_id, limit),
-            ) as cursor:
-                rows = await cursor.fetchall()
-        else:
-            async with db.execute(
-                "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ) as cursor:
-                rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
 
 
 def _pid_alive(pid: int) -> bool:

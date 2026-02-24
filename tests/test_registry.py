@@ -164,38 +164,6 @@ class TestListAll:
         assert len(result) == 3
 
 
-class TestCleanupStale:
-    async def test_cleanup_marks_dead_pid_as_errored(self, registry):
-        # Use a PID that definitely doesn't exist
-        dead_pid = 999999999
-        await registry.register("sess-dead", dead_pid, "/tmp")
-
-        cleaned = await registry.cleanup_stale()
-        assert cleaned == 1
-
-        session = await registry.get_session("sess-dead")
-        assert session["status"] == "errored"
-        assert "no longer running" in session["error_message"]
-
-    async def test_cleanup_leaves_live_pid_alone(self, registry):
-        live_pid = os.getpid()
-        await registry.register("sess-live", live_pid, "/tmp")
-
-        cleaned = await registry.cleanup_stale()
-        assert cleaned == 0
-
-        session = await registry.get_session("sess-live")
-        assert session["status"] == "pending_auth"
-
-    async def test_cleanup_ignores_completed_sessions(self, registry):
-        dead_pid = 999999999
-        await registry.register("sess-done", dead_pid, "/tmp")
-        await registry.update_status("sess-done", "completed")
-
-        cleaned = await registry.cleanup_stale()
-        assert cleaned == 0
-
-
 class TestPendingAuthTokens:
     async def test_store_and_retrieve_token(self, registry):
         await registry.store_pending_token(
@@ -245,3 +213,16 @@ class TestPidAlive:
 
     def test_nonexistent_pid_dead(self):
         assert _pid_alive(999999999) is False
+
+
+class TestSQLitePragmas:
+    """Test that SQLite pragmas are properly configured (BUG-015)."""
+
+    async def test_busy_timeout_pragma_set(self, registry):
+        """Test that busy_timeout pragma is set to 5000ms."""
+        # Check the pragma by executing it through the registry's connection
+        db = registry._check_connected()
+        cursor = await db.execute("PRAGMA busy_timeout")
+        result = await cursor.fetchone()
+        timeout_ms = result[0]
+        assert timeout_ms == 5000, f"Expected busy_timeout=5000, got {timeout_ms}"

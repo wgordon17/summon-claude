@@ -1,17 +1,46 @@
 """CLI entry point for summon-claude."""
 
+# pyright: reportFunctionMemberAccess=false, reportArgumentType=false, reportReturnType=false, reportCallIssue=false
+# click decorators: https://github.com/pallets/click/issues/2255
+# slack_sdk doesn't ship type stubs; pydantic-settings metaclass gaps
+
 from __future__ import annotations
 
-import argparse
 import asyncio
 import contextlib
 import logging
 import os
+import pathlib
+import re
+import resource
 import signal
 import sys
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
+
+import click
+from slack_sdk.web.async_client import AsyncWebClient
+
+from summon_claude.channel_manager import ChannelManager
+from summon_claude.cli_config import config_edit, config_path, config_set, config_show
+from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
+from summon_claude.providers.slack import SlackChatProvider
+from summon_claude.registry import SessionRegistry
+from summon_claude.session import SessionOptions, SummonSession
 
 logger = logging.getLogger(__name__)
+
+_BANNER_WIDTH = 50
+
+
+def _print_auth_banner(short_code: str) -> None:
+    """Print the auth code to the terminal before daemonization."""
+    border = "=" * _BANNER_WIDTH
+    click.echo(f"\n{border}")
+    click.echo(f"  SUMMON CODE: {short_code}")
+    click.echo(f"  Type in Slack: /summon {short_code}")
+    click.echo("  Expires in 5 minutes")
+    click.echo(f"{border}\n")
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -28,228 +57,304 @@ def _setup_logging(verbose: bool) -> None:
         logging.getLogger("asyncio").setLevel(logging.ERROR)
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="summon",
-        description="Bridge Claude Code sessions to Slack channels",
-    )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # start
-    start_parser = subparsers.add_parser("start", help="Start a new summon session")
-    start_parser.add_argument(
-        "--cwd",
-        default=None,
-        help="Working directory for Claude (default: current directory)",
-    )
-    start_parser.add_argument(
-        "--resume",
-        metavar="SESSION_ID",
-        default=None,
-        help="Resume an existing Claude Code session by ID",
-    )
-    start_parser.add_argument(
-        "--name",
-        default=None,
-        help="Session name (used for Slack channel naming)",
-    )
-    start_parser.add_argument(
-        "--model",
-        default=None,
-        help="Model override (default: from config)",
-    )
-
-    # status
-    status_parser = subparsers.add_parser("status", help="Show session status")
-    status_parser.add_argument(
-        "session_id",
-        nargs="?",
-        default=None,
-        help="Session ID for detailed view (omit for all active sessions)",
-    )
-
-    # stop
-    stop_parser = subparsers.add_parser("stop", help="Stop a running session")
-    stop_parser.add_argument("session_id", help="Session ID to stop")
-
-    # sessions
-    subparsers.add_parser("sessions", help="List recent sessions (all statuses)")
-
-    # cleanup
-    subparsers.add_parser("cleanup", help="Mark sessions with dead processes as errored")
-
-    # init
-    subparsers.add_parser("init", help="Interactive setup wizard for summon-claude configuration")
-
-    # config
-    config_parser = subparsers.add_parser("config", help="Manage summon-claude configuration")
-    config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
-
-    config_subparsers.add_parser("show", help="Show current configuration (tokens masked)")
-    config_subparsers.add_parser("path", help="Print the config file path")
-    config_subparsers.add_parser("edit", help="Open config file in $EDITOR")
-
-    config_set_parser = config_subparsers.add_parser("set", help="Set a configuration value")
-    config_set_parser.add_argument("key", help="Configuration key (e.g. SUMMON_SLACK_BOT_TOKEN)")
-    config_set_parser.add_argument("value", help="Value to set")
-
-    return parser
+@click.group()
+@click.option(
+    "-v", "--verbose", is_eager=True, is_flag=True, default=False, help="Enable verbose logging"
+)
+def cli(verbose: bool) -> None:
+    """Bridge Claude Code sessions to Slack channels."""
+    _setup_logging(verbose)
 
 
-def cmd_start(args: argparse.Namespace) -> None:
-    """Launch a new summon session."""
-    from .config import SummonConfig
-    from .session import SessionOptions, SummonSession
-
+@cli.command("start")
+@click.option(
+    "--cwd", default=None, help="Working directory for Claude (default: current directory)"
+)
+@click.option(
+    "--resume",
+    metavar="SESSION_ID",
+    default=None,
+    help="Resume an existing Claude Code session by ID",
+)
+@click.option("--name", default=None, help="Session name (used for Slack channel naming)")
+@click.option("--model", default=None, help="Model override (default: from config)")
+@click.option(
+    "--background",
+    "-b",
+    is_flag=True,
+    default=False,
+    help="Run session as a background daemon process",
+)
+def cmd_start(
+    cwd: str | None,
+    resume: str | None,
+    name: str | None,
+    model: str | None,
+    background: bool,
+) -> None:
+    """Start a new summon session."""
     try:
         config = SummonConfig()
         config.validate()
     except Exception as e:
-        print(f"Configuration error: {e}", file=sys.stderr)
+        click.echo(f"Configuration error: {e}", err=True)
         sys.exit(1)
 
-    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    resolved_cwd = os.path.abspath(cwd) if cwd else os.getcwd()
+    session_id = str(uuid.uuid4())
 
     session = SummonSession(
         config=config,
         options=SessionOptions(
-            cwd=cwd,
-            name=args.name,
-            model=args.model,
-            resume=args.resume,
+            session_id=session_id,
+            cwd=resolved_cwd,
+            name=name,
+            model=model,
+            resume=resume,
         ),
     )
 
+    # Phase 1: Register + generate auth token (foreground, pre-fork)
     try:
-        asyncio.run(session.start())
+        short_code = asyncio.run(session.prepare_auth())
+    except Exception as e:
+        logger.exception("Failed to prepare session: %s", e)
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    _print_auth_banner(short_code)
+
+    # Phase 2: Daemonize if requested (after banner is shown)
+    if background:
+        log_dir = get_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"{session_id}.log"
+        _daemonize(log_file)
+
+    # Phase 3: Run session (bolt + auth wait + message loop)
+    try:
+        success = asyncio.run(session.start())
+        if not success:
+            sys.exit(1)
     except KeyboardInterrupt:
-        print("\nInterrupted.")
+        click.echo("\nInterrupted.")
     except Exception as e:
         logger.exception("Session error: %s", e)
-        print(f"Error: {e}", file=sys.stderr)
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 
-def cmd_status(args: argparse.Namespace) -> None:
-    """Show session status."""
-    asyncio.run(_async_status(args.session_id))
+def _daemonize(log_file: pathlib.Path) -> None:
+    """Fork the process into the background, redirecting stdout/stderr to log_file."""
+    # First fork
+    pid = os.fork()
+    if pid > 0:
+        click.echo(f"Session started in background. Log: {log_file}")
+        sys.exit(0)
+
+    # Decouple from parent environment
+    os.setsid()
+    os.umask(0o022)
+
+    # Second fork to prevent zombie processes
+    pid = os.fork()
+    if pid > 0:
+        sys.exit(0)
+
+    # Close inherited file descriptors (except stdin/stdout/stderr)
+    maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    for fd in range(3, min(maxfd, 1024)):
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+    # Redirect stdin to /dev/null, stdout/stderr to log file
+    os.dup2(os.open(os.devnull, os.O_RDONLY), sys.stdin.fileno())
+    sys.stdout.flush()
+    sys.stderr.flush()
+    log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.dup2(log_fd, sys.stdout.fileno())
+    os.dup2(log_fd, sys.stderr.fileno())
+    os.close(log_fd)
+
+
+@cli.command("status")
+@click.argument("session_id", required=False, default=None)
+def cmd_status(session_id: str | None) -> None:
+    """Show session status. Pass SESSION_ID for detailed view."""
+    asyncio.run(_async_status(session_id))
 
 
 async def _async_status(session_id: str | None) -> None:
-    from .registry import SessionRegistry
-
     async with SessionRegistry() as registry:
         if session_id:
             session = await registry.get_session(session_id)
             if not session:
-                print(f"Session not found: {session_id}")
+                click.echo(f"Session not found: {session_id}")
                 return
             _print_session_detail(session)
         else:
             sessions = await registry.list_active()
             if not sessions:
-                print("No active sessions.")
+                click.echo("No active sessions.")
                 return
             _print_session_table(sessions)
 
 
-def cmd_stop(args: argparse.Namespace) -> None:
+@cli.command("stop")
+@click.argument("session_id")
+def cmd_stop(session_id: str) -> None:
     """Send SIGTERM to a running session process."""
-    asyncio.run(_async_stop(args.session_id))
+    asyncio.run(_async_stop(session_id))
 
 
 async def _async_stop(session_id: str) -> None:
-    from .registry import SessionRegistry
-
     async with SessionRegistry() as registry:
         session = await registry.get_session(session_id)
         if not session:
-            print(f"Session not found: {session_id}")
+            click.echo(f"Session not found: {session_id}")
             return
         if session["status"] not in ("pending_auth", "active"):
-            print(f"Session {session_id} is not active (status: {session['status']})")
+            click.echo(f"Session {session_id} is not active (status: {session['status']})")
             return
 
         pid = session["pid"]
 
         # Verify the PID belongs to the current user before signaling
         if not _pid_owned_by_current_user(pid):
-            print(f"Process {pid} is not owned by the current user — refusing to signal")
+            click.echo(f"Process {pid} is not owned by the current user — refusing to signal")
             return
 
         try:
             os.kill(pid, signal.SIGTERM)
-            print(f"Sent SIGTERM to session {session_id} (pid {pid})")
+            click.echo(f"Sent SIGTERM to session {session_id} (pid {pid})")
             await registry.log_event(
                 "session_stopped",
                 session_id=session_id,
                 details={"pid": pid, "stopped_by": "cli"},
             )
         except ProcessLookupError:
-            print(f"Process {pid} not found — session may have already ended")
+            click.echo(f"Process {pid} not found — session may have already ended")
             await registry.update_status(
                 session_id, "errored", error_message="Process not found at stop time"
             )
         except PermissionError:
-            print(f"Permission denied to send signal to pid {pid}")
+            click.echo(f"Permission denied to send signal to pid {pid}")
 
 
-def cmd_sessions(args: argparse.Namespace) -> None:
-    """List recent sessions."""
+@cli.command("sessions")
+def cmd_sessions() -> None:
+    """List recent sessions (all statuses)."""
     asyncio.run(_async_sessions())
 
 
 async def _async_sessions() -> None:
-    from .registry import SessionRegistry
-
     async with SessionRegistry() as registry:
         sessions = await registry.list_all(limit=50)
         if not sessions:
-            print("No sessions found.")
+            click.echo("No sessions found.")
             return
         _print_session_table(sessions)
 
 
-def cmd_cleanup(args: argparse.Namespace) -> None:
+@cli.command("logs")
+@click.argument("session_id", required=False, default=None)
+@click.option("--tail", "-n", default=50, help="Number of lines to show (default: 50)")
+def cmd_logs(session_id: str | None, tail: int) -> None:
+    """Show session logs. Pass SESSION_ID for a specific session, or list available logs."""
+    log_dir = get_data_dir() / "logs"
+    if not log_dir.exists():
+        click.echo("No log files found.")
+        return
+
+    if session_id is None:
+        # List available log files
+        log_files = sorted(log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not log_files:
+            click.echo("No log files found.")
+            return
+        click.echo("Available session logs:")
+        for lf in log_files:
+            click.echo(f"  {lf.stem}")
+        return
+
+    if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", session_id):
+        click.echo("Error: Invalid session ID format", err=True)
+        raise SystemExit(1)
+
+    log_file = log_dir / f"{session_id}.log"
+    if not log_file.exists():
+        click.echo(f"No log file found for session: {session_id}")
+        return
+
+    lines = log_file.read_text().splitlines()
+    for line in lines[-tail:]:
+        click.echo(line)
+
+
+@cli.command("cleanup")
+def cmd_cleanup() -> None:
     """Mark sessions with dead processes as errored."""
     asyncio.run(_async_cleanup())
 
 
 async def _async_cleanup() -> None:
-    from .registry import SessionRegistry
-
     async with SessionRegistry() as registry:
-        cleaned = await registry.cleanup_stale()
-        print(f"Cleaned up {cleaned} stale session(s).")
+        stale = await registry.list_stale()
+        if not stale:
+            click.echo("No stale sessions found.")
+            return
+
+        # Try to construct a Slack client for archiving channels (best-effort)
+        slack_client = None
+        try:
+            config = SummonConfig()
+            slack_client = AsyncWebClient(token=config.slack_bot_token)
+        except Exception as e:
+            logger.debug("Could not initialize Slack client for cleanup: %s", e)
+
+        for session in stale:
+            session_id = session["session_id"]
+            channel_id = session.get("slack_channel_id")
+            pid = session["pid"]
+
+            # Archive the Slack channel if we have a client and channel ID
+            if slack_client and channel_id:
+                try:
+                    provider = SlackChatProvider(slack_client)
+                    channel_manager = ChannelManager(provider, "summon")
+                    await channel_manager.archive_session_channel(channel_id)
+                    logger.info("Archived channel %s for stale session %s", channel_id, session_id)
+                except Exception as e:
+                    logger.debug("Could not archive channel %s: %s", channel_id, e)
+
+            await registry.update_status(
+                session_id,
+                "errored",
+                error_message=f"Process {pid} no longer running",
+                ended_at=datetime.now(UTC).isoformat(),
+            )
+
+        click.echo(f"Cleaned up {len(stale)} stale session(s).")
 
 
-def cmd_init(args: argparse.Namespace) -> None:
+@cli.command("init")
+def cmd_init() -> None:
     """Interactive setup wizard for summon-claude configuration."""
-    from .config import get_config_dir, get_config_file
+    click.echo("Setting up summon-claude configuration...")
+    click.echo()
 
-    print("Setting up summon-claude configuration...")
-    print()
-
-    def prompt(label: str, required: bool = True) -> str:
-        while True:
-            value = input(f"  {label}: ").strip()
-            if value or not required:
-                return value
-            print("  This field is required.")
-
-    bot_token = prompt("Slack Bot Token (xoxb-...)")
+    bot_token = click.prompt("  Slack Bot Token (xoxb-...)")
     while not bot_token.startswith("xoxb-"):
-        print("  Error: Bot token must start with 'xoxb-'")
-        bot_token = prompt("Slack Bot Token (xoxb-...)")
+        click.echo("  Error: Bot token must start with 'xoxb-'")
+        bot_token = click.prompt("  Slack Bot Token (xoxb-...)")
 
-    app_token = prompt("Slack App Token (xapp-...)")
+    app_token = click.prompt("  Slack App Token (xapp-...)")
     while not app_token.startswith("xapp-"):
-        print("  Error: App token must start with 'xapp-'")
-        app_token = prompt("Slack App Token (xapp-...)")
+        click.echo("  Error: App token must start with 'xapp-'")
+        app_token = click.prompt("  Slack App Token (xapp-...)")
 
-    signing_secret = prompt("Slack Signing Secret")
-    allowed_users = prompt("Allowed User IDs (comma-separated)")
+    signing_secret = click.prompt("  Slack Signing Secret")
+    allowed_users = click.prompt("  Allowed User IDs (comma-separated)")
 
     config_dir = get_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -266,23 +371,39 @@ def cmd_init(args: argparse.Namespace) -> None:
     with contextlib.suppress(OSError):
         config_file.chmod(0o600)
 
-    print()
-    print(f"Configuration saved to {config_file}")
+    click.echo()
+    click.echo(f"Configuration saved to {config_file}")
 
 
-def cmd_config(args: argparse.Namespace) -> None:
+@cli.group("config")
+def cmd_config() -> None:
     """Manage summon-claude configuration."""
-    from .cli_config import config_edit, config_path, config_set, config_show
 
-    config_command = args.config_command
-    if config_command == "show":
-        config_show()
-    elif config_command == "path":
-        config_path()
-    elif config_command == "edit":
-        config_edit()
-    elif config_command == "set":
-        config_set(args.key, args.value)
+
+@cmd_config.command("show")
+def config_show_cmd() -> None:
+    """Show current configuration (tokens masked)."""
+    config_show()
+
+
+@cmd_config.command("path")
+def config_path_cmd() -> None:
+    """Print the config file path."""
+    config_path()
+
+
+@cmd_config.command("edit")
+def config_edit_cmd() -> None:
+    """Open config file in $EDITOR."""
+    config_edit()
+
+
+@cmd_config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set_cmd(key: str, value: str) -> None:
+    """Set a configuration value (e.g. SUMMON_SLACK_BOT_TOKEN)."""
+    config_set(key, value)
 
 
 def _print_session_table(sessions: list[dict]) -> None:
@@ -306,10 +427,10 @@ def _print_session_table(sessions: list[dict]) -> None:
 
     col_widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
     fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
-    print(fmt.format(*headers))
-    print("  ".join("-" * w for w in col_widths))
+    click.echo(fmt.format(*headers))
+    click.echo("  ".join("-" * w for w in col_widths))
     for row in rows:
-        print(fmt.format(*row))
+        click.echo(fmt.format(*row))
 
 
 def _print_session_detail(session: dict) -> None:
@@ -336,7 +457,7 @@ def _print_session_detail(session: dict) -> None:
 
     max_key = max(len(k) for k, _ in fields)
     for key, val in fields:
-        print(f"  {key.ljust(max_key)} : {val}")
+        click.echo(f"  {key.ljust(max_key)} : {val}")
 
 
 def _format_ts(ts: str | None) -> str:
@@ -355,8 +476,6 @@ def _truncate(s: str, n: int) -> str:
 
 def _pid_uid_from_proc(pid: int) -> int | None:
     """Read the real UID of *pid* from /proc (Linux only)."""
-    import pathlib
-
     stat_file = pathlib.Path(f"/proc/{pid}/status")
     if not stat_file.exists():
         return None
@@ -369,7 +488,7 @@ def _pid_uid_from_proc(pid: int) -> int | None:
 def _pid_owned_by_current_user(pid: int) -> bool:
     """Return True if the process with the given PID is owned by the current user."""
     try:
-        import psutil  # type: ignore[import]  # optional dependency
+        import psutil  # type: ignore[import]  # optional dependency  # noqa: PLC0415
 
         proc = psutil.Process(pid)
         return proc.uids().real == os.getuid()
@@ -383,22 +502,19 @@ def _pid_owned_by_current_user(pid: int) -> bool:
             return uid == os.getuid()
     except Exception:
         pass
-    # Cannot determine owner; deny for safety
-    return False
+
+    # macOS/BSD fallback: check process exists via os.kill(pid, 0).
+    # Since only the current user registers sessions in the registry,
+    # existence is sufficient to confirm ownership on non-Linux systems.
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but owned by another user
+        return False
 
 
 def main() -> None:
-    parser = _build_parser()
-    args = parser.parse_args()
-    _setup_logging(args.verbose)
-
-    command_map = {
-        "start": cmd_start,
-        "status": cmd_status,
-        "stop": cmd_stop,
-        "sessions": cmd_sessions,
-        "cleanup": cmd_cleanup,
-        "init": cmd_init,
-        "config": cmd_config,
-    }
-    command_map[args.command](args)
+    cli()

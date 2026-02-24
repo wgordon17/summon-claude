@@ -71,9 +71,7 @@ class TestConcurrentRequestsBatchWithinDebounceWindow:
         """3 simultaneous requests within debounce window → 1 Slack message posted."""
         debounce_ms = 100
         handler, provider, _ = make_handler(debounce_ms=debounce_ms)
-        provider.post_message = AsyncMock(
-            side_effect=_auto_approve_after_post(handler, delay=0.05)
-        )
+        provider.post_message = AsyncMock(side_effect=_auto_approve_after_post(handler, delay=0.05))
 
         results = await asyncio.gather(
             handler.handle("Bash", {"command": "cmd1"}, None),
@@ -87,9 +85,7 @@ class TestConcurrentRequestsBatchWithinDebounceWindow:
     async def test_all_concurrent_requests_resolve_allow(self):
         """All requests in a batch get Allow when approved."""
         handler, provider, _ = make_handler(debounce_ms=50)
-        provider.post_message = AsyncMock(
-            side_effect=_auto_approve_after_post(handler, delay=0.05)
-        )
+        provider.post_message = AsyncMock(side_effect=_auto_approve_after_post(handler, delay=0.05))
 
         results = await asyncio.gather(
             handler.handle("Bash", {"command": "echo 1"}, None),
@@ -132,9 +128,7 @@ class TestManyRequestsBatchApproved:
     async def test_ten_concurrent_requests_all_resolve_allow(self):
         """10 concurrent requests approved → all 10 return Allow."""
         handler, provider, _ = make_handler(debounce_ms=80)
-        provider.post_message = AsyncMock(
-            side_effect=_auto_approve_after_post(handler, delay=0.05)
-        )
+        provider.post_message = AsyncMock(side_effect=_auto_approve_after_post(handler, delay=0.05))
 
         tasks = [handler.handle("Edit", {"path": f"/file{i}.py"}, None) for i in range(10)]
         results = await asyncio.gather(*tasks)
@@ -228,9 +222,7 @@ class TestDebounceWindowCollectsRequests:
         """Requests fired within the debounce window end up in a single batch message."""
         debounce_ms = 200
         handler, provider, _ = make_handler(debounce_ms=debounce_ms)
-        provider.post_message = AsyncMock(
-            side_effect=_auto_approve_after_post(handler, delay=0.05)
-        )
+        provider.post_message = AsyncMock(side_effect=_auto_approve_after_post(handler, delay=0.05))
 
         # Fire 4 requests with small delays all within the debounce window
         async def fire_with_delay(delay_s: float, tool: str):

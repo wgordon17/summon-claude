@@ -9,7 +9,7 @@ import string
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from .registry import _MAX_FAILED_ATTEMPTS, SessionRegistry
+from summon_claude.registry import _MAX_FAILED_ATTEMPTS, SessionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ _SHORT_CODE_LEN = 6
 _TOKEN_TTL_MINUTES = 5
 
 
-@dataclass
+@dataclass(frozen=True)
 class SessionAuth:
     """Authentication token pair for a summon session."""
 

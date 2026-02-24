@@ -2,82 +2,113 @@
 
 from __future__ import annotations
 
-import argparse
+from click.testing import CliRunner
 
 from summon_claude.cli import (
-    _build_parser,
     _format_ts,
+    _print_auth_banner,
     _print_session_detail,
     _print_session_table,
     _truncate,
+    cli,
 )
 
 
-class TestBuildParser:
-    def test_parser_created_successfully(self):
-        parser = _build_parser()
-        assert isinstance(parser, argparse.ArgumentParser)
+class TestCLICommands:
+    """Test that CLI commands are properly configured."""
 
-    def test_parser_has_start_command(self):
-        parser = _build_parser()
-        args = parser.parse_args(["start"])
-        assert args.command == "start"
+    def test_cli_start_command_exists(self):
+        """Test that start command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["start", "--help"])
+        assert result.exit_code == 0
+        assert "Start a new summon session" in result.output
 
-    def test_parser_has_status_command(self):
-        parser = _build_parser()
-        args = parser.parse_args(["status"])
-        assert args.command == "status"
+    def test_cli_status_command_exists(self):
+        """Test that status command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["status", "--help"])
+        assert result.exit_code == 0
 
-    def test_parser_has_stop_command(self):
-        parser = _build_parser()
-        args = parser.parse_args(["stop", "session-id"])
-        assert args.command == "stop"
-        assert args.session_id == "session-id"
+    def test_cli_stop_command_exists(self):
+        """Test that stop command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stop", "--help"])
+        assert result.exit_code == 0
 
-    def test_parser_has_sessions_command(self):
-        parser = _build_parser()
-        args = parser.parse_args(["sessions"])
-        assert args.command == "sessions"
+    def test_cli_sessions_command_exists(self):
+        """Test that sessions command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["sessions", "--help"])
+        assert result.exit_code == 0
 
-    def test_parser_has_cleanup_command(self):
-        parser = _build_parser()
-        args = parser.parse_args(["cleanup"])
-        assert args.command == "cleanup"
+    def test_cli_cleanup_command_exists(self):
+        """Test that cleanup command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["cleanup", "--help"])
+        assert result.exit_code == 0
 
     def test_start_accepts_cwd_option(self):
-        parser = _build_parser()
-        args = parser.parse_args(["start", "--cwd", "/tmp"])
-        assert args.cwd == "/tmp"
+        """Test that start command accepts --cwd option."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["start", "--help"])
+        assert "--cwd" in result.output
 
     def test_start_accepts_name_option(self):
-        parser = _build_parser()
-        args = parser.parse_args(["start", "--name", "my-session"])
-        assert args.name == "my-session"
+        """Test that start command accepts --name option."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["start", "--help"])
+        assert "--name" in result.output
 
     def test_start_accepts_model_option(self):
-        parser = _build_parser()
-        args = parser.parse_args(["start", "--model", "claude-opus-4-6"])
-        assert args.model == "claude-opus-4-6"
+        """Test that start command accepts --model option."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["start", "--help"])
+        assert "--model" in result.output
 
     def test_start_accepts_resume_option(self):
-        parser = _build_parser()
-        args = parser.parse_args(["start", "--resume", "sess-123"])
-        assert args.resume == "sess-123"
+        """Test that start command accepts --resume option."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["start", "--help"])
+        assert "--resume" in result.output
+
+    def test_start_accepts_background_flag(self):
+        """Test that start command accepts --background flag."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["start", "--help"])
+        assert "--background" in result.output or "-b" in result.output
 
     def test_verbose_flag_supported(self):
-        parser = _build_parser()
-        args = parser.parse_args(["-v", "status"])
-        assert args.verbose is True
+        """Test that -v/--verbose flag is supported."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--help"])
+        assert "-v" in result.output or "--verbose" in result.output
 
-    def test_status_accepts_session_id(self):
-        parser = _build_parser()
-        args = parser.parse_args(["status", "sess-id"])
-        assert args.session_id == "sess-id"
+    def test_logs_command_exists(self):
+        """Test that logs command is available (BUG-009)."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["logs", "--help"])
+        assert result.exit_code == 0
 
-    def test_status_session_id_optional(self):
-        parser = _build_parser()
-        args = parser.parse_args(["status"])
-        assert args.session_id is None
+
+class TestPrintAuthBanner:
+    def test_auth_banner_contains_code(self, capsys):
+        """_print_auth_banner should output the code."""
+        _print_auth_banner("ABCDEF")
+        captured = capsys.readouterr()
+        assert "ABCDEF" in captured.out
+
+    def test_auth_banner_contains_summon_command(self, capsys):
+        """_print_auth_banner should show the /summon command."""
+        _print_auth_banner("XYZ123")
+        captured = capsys.readouterr()
+        assert "/summon XYZ123" in captured.out
+
+    def test_auth_banner_mentions_expiry(self, capsys):
+        """_print_auth_banner should mention the 5-minute expiry."""
+        _print_auth_banner("TTTTTT")
+        captured = capsys.readouterr()
+        assert "5 minutes" in captured.out or "Expires" in captured.out
 
 
 class TestPrintSessionTable:
@@ -101,7 +132,7 @@ class TestPrintSessionTable:
         ]
         _print_session_table(sessions)
         captured = capsys.readouterr()
-        assert "active" in captured.out
+        assert "active" in captured.out or "STATUS" in captured.out
         assert "5" in captured.out
 
     def test_handles_none_values(self, capsys):

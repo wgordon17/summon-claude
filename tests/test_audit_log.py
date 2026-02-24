@@ -10,12 +10,32 @@ import pytest
 from summon_claude.registry import SessionRegistry
 
 
+async def _query_audit_log(
+    registry: SessionRegistry, session_id: str | None = None, limit: int = 100
+) -> list[dict]:
+    """Test helper to query audit log entries directly via SQL."""
+    db = registry._check_connected()
+    if session_id:
+        async with db.execute(
+            "SELECT * FROM audit_log WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (session_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    else:
+        async with db.execute(
+            "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
 class TestLogEvent:
     async def test_log_event_creates_entry(self, tmp_path):
         """log_event should create a retrievable entry in the audit_log table."""
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.log_event("session_created", session_id="sess-1")
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             assert len(log) == 1
             assert log[0]["event_type"] == "session_created"
             assert log[0]["session_id"] == "sess-1"
@@ -25,7 +45,7 @@ class TestLogEvent:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             details = {"cwd": "/tmp", "model": "claude-opus-4-6"}
             await registry.log_event("session_created", session_id="sess-1", details=details)
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             assert len(log) == 1
             stored_details = log[0]["details"]
             # Details should be a JSON string in the DB
@@ -37,7 +57,7 @@ class TestLogEvent:
         """log_event without details should store None."""
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.log_event("auth_failed", user_id="U123")
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             assert len(log) == 1
             assert log[0]["details"] is None
 
@@ -45,14 +65,14 @@ class TestLogEvent:
         """log_event should store user_id when provided."""
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.log_event("auth_succeeded", session_id="sess-1", user_id="U_TEST")
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             assert log[0]["user_id"] == "U_TEST"
 
     async def test_log_event_has_timestamp(self, tmp_path):
         """Each audit log entry should have a non-null timestamp."""
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.log_event("session_ended")
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             assert log[0]["timestamp"] is not None
             assert len(log[0]["timestamp"]) > 0
 
@@ -61,7 +81,7 @@ class TestLogEvent:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.log_event("session_created", session_id="sess-a")
             await registry.log_event("session_active", session_id="sess-a")
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             ids = [e["id"] for e in log]
             # Should have 2 distinct IDs
             assert len(set(ids)) == 2
@@ -75,7 +95,7 @@ class TestGetAuditLogAll:
             await registry.log_event("auth_attempted", user_id="U1")
             await registry.log_event("session_ended", session_id="sess-1")
 
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             assert len(log) == 3
 
     async def test_get_audit_log_returned_most_recent_first(self, tmp_path):
@@ -85,7 +105,7 @@ class TestGetAuditLogAll:
             await registry.log_event("second_event")
             await registry.log_event("third_event")
 
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             # Descending order: most recent first
             assert log[0]["event_type"] == "third_event"
             assert log[-1]["event_type"] == "first_event"
@@ -100,7 +120,7 @@ class TestGetAuditLogBySession:
             await registry.log_event("session_active", session_id="sess-A")
             await registry.log_event("auth_failed", user_id="U1")  # no session_id
 
-            log_a = await registry.get_audit_log(session_id="sess-A")
+            log_a = await _query_audit_log(registry, session_id="sess-A")
             assert len(log_a) == 2
             assert all(e["session_id"] == "sess-A" for e in log_a)
 
@@ -108,7 +128,7 @@ class TestGetAuditLogBySession:
         """Filtering by a non-existent session_id should return empty list."""
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.log_event("session_created", session_id="sess-A")
-            log = await registry.get_audit_log(session_id="nonexistent-sess")
+            log = await _query_audit_log(registry, session_id="nonexistent-sess")
             assert log == []
 
 
@@ -119,7 +139,7 @@ class TestGetAuditLogLimit:
             for i in range(10):
                 await registry.log_event(f"event_{i}")
 
-            log = await registry.get_audit_log(limit=3)
+            log = await _query_audit_log(registry, limit=3)
             assert len(log) == 3
 
     async def test_default_limit_is_100(self, tmp_path):
@@ -128,7 +148,7 @@ class TestGetAuditLogLimit:
             for i in range(5):
                 await registry.log_event(f"event_{i}")
 
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             assert len(log) == 5
 
 
@@ -149,7 +169,7 @@ class TestAuditLogEventTypes:
             for event_type in known_event_types:
                 await registry.log_event(event_type, session_id="sess-types")
 
-            log = await registry.get_audit_log()
+            log = await _query_audit_log(registry)
             stored_types = {e["event_type"] for e in log}
             for event_type in known_event_types:
                 assert event_type in stored_types, f"Event type {event_type!r} not found in log"

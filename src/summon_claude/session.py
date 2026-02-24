@@ -1,5 +1,8 @@
 """Session orchestrator — ties Claude SDK + Slack + permissions + streaming together."""
 
+# pyright: reportArgumentType=false, reportReturnType=false
+# slack_sdk and claude_agent_sdk don't ship type stubs
+
 from __future__ import annotations
 
 import asyncio
@@ -16,18 +19,18 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
-from ._formatting import format_file_references
-from .auth import SessionAuth, generate_session_token, verify_short_code
-from .channel_manager import ChannelManager
-from .config import SummonConfig, discover_installed_plugins
-from .content_display import ContentDisplay
-from .mcp_tools import create_summon_mcp_server
-from .permissions import PermissionHandler
-from .providers.slack import SlackChatProvider
-from .rate_limiter import RateLimiter
-from .registry import SessionRegistry
-from .streamer import ResponseStreamer
-from .thread_router import ThreadRouter
+from summon_claude._formatting import format_file_references
+from summon_claude.auth import SessionAuth, generate_session_token, verify_short_code
+from summon_claude.channel_manager import ChannelManager
+from summon_claude.config import SummonConfig, discover_installed_plugins
+from summon_claude.content_display import ContentDisplay
+from summon_claude.mcp_tools import create_summon_mcp_server
+from summon_claude.permissions import PermissionHandler
+from summon_claude.providers.slack import SlackChatProvider
+from summon_claude.rate_limiter import RateLimiter
+from summon_claude.registry import SessionRegistry
+from summon_claude.streamer import ResponseStreamer
+from summon_claude.thread_router import ThreadRouter
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,6 @@ _HEARTBEAT_INTERVAL_S = 30
 _AUTH_POLL_INTERVAL_S = 1.0
 _AUTH_TIMEOUT_S = 300  # 5 minutes to authenticate
 _QUEUE_POLL_INTERVAL_S = 1.0
-_BANNER_WIDTH = 50
 _MAX_USER_MESSAGE_CHARS = 10_000
 
 _SYSTEM_PROMPT = {
@@ -110,11 +112,13 @@ class SummonSession:
         # Rate limiter for /summon slash command
         self._rate_limiter = RateLimiter()
 
-    async def start(self) -> None:
-        """Main entry point. Runs the full session lifecycle."""
-        async with SessionRegistry() as registry:
-            self._registry = registry
+    async def prepare_auth(self) -> str:
+        """Register session in SQLite and generate auth token.
 
+        Opens and closes its own registry connection (safe to fork after this returns).
+        Must be called before start(). Returns the short_code string.
+        """
+        async with SessionRegistry() as registry:
             await registry.register(
                 session_id=self._session_id,
                 pid=os.getpid(),
@@ -127,10 +131,15 @@ class SummonSession:
                 session_id=self._session_id,
                 details={"cwd": self._cwd, "name": self._name, "model": self._model},
             )
-
             auth = await generate_session_token(registry, self._session_id, self._cwd)
             self._auth = auth
-            self._print_auth_banner(auth.short_code)
+            short_code = auth.short_code
+        return short_code
+
+    async def start(self) -> bool:
+        """Main entry point. Runs the full session lifecycle."""
+        async with SessionRegistry() as registry:
+            self._registry = registry
 
             # Set up Slack app
             self._client = AsyncWebClient(token=self._config.slack_bot_token)
@@ -139,12 +148,12 @@ class SummonSession:
 
             # Install signal handlers
             loop = asyncio.get_running_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 loop.add_signal_handler(sig, self._handle_signal)
 
-            print("Waiting for Slack authentication...")
+            logger.info("Waiting for Slack authentication...")
 
-            auth_task = asyncio.create_task(self._wait_for_auth(auth))
+            auth_task = asyncio.create_task(self._wait_for_auth())
             socket_task = asyncio.create_task(self._socket_handler.start_async())
             done, pending = await asyncio.wait(
                 {auth_task, socket_task},
@@ -174,22 +183,42 @@ class SummonSession:
                     session_id=self._session_id,
                     details={"reason": "Authentication timed out"},
                 )
-                return
+                return False
 
             # Auth succeeded — create channel and run session
             await self._run_session()
+            return True
 
-    async def _wait_for_auth(self, auth: SessionAuth) -> None:
+    async def _wait_for_auth(self) -> None:
         """Poll until auth is confirmed, timed out, or shutdown is requested."""
         elapsed = 0.0
+        next_countdown = 30.0
         while elapsed < _AUTH_TIMEOUT_S:
             if self._authenticated_event.is_set():
                 return
             if self._shutdown_event.is_set():
+                logger.info("Shutdown requested. Cancelling authentication.")
+                if self._auth:
+                    try:
+                        assert self._registry is not None
+                        await self._registry.delete_pending_token(self._auth.short_code)
+                    except Exception:
+                        pass
                 return
             await asyncio.sleep(_AUTH_POLL_INTERVAL_S)
             elapsed += _AUTH_POLL_INTERVAL_S
+            if elapsed >= next_countdown:
+                remaining = int(_AUTH_TIMEOUT_S - elapsed)
+                if remaining > 0:
+                    logger.info("Waiting for authentication... %ds remaining", remaining)
+                next_countdown += 30.0
 
+        logger.info("Authentication timed out. No /summon command received within 5 minutes.")
+        if self._auth and self._registry:
+            try:
+                await self._registry.delete_pending_token(self._auth.short_code)
+            except Exception:
+                pass
         logger.warning("Auth timeout after %.0f seconds", elapsed)
         self._shutdown_event.set()
 
@@ -202,6 +231,7 @@ class SummonSession:
         channel_manager = ChannelManager(provider, self._config.channel_prefix)
         channel_id, channel_name = await channel_manager.create_session_channel(self._name)
         self._channel_id = channel_id
+        logger.info("Authenticated! Session channel: #%s", channel_name)
 
         await self._registry.update_status(
             self._session_id,
@@ -237,7 +267,7 @@ class SummonSession:
             except Exception as e:
                 logger.debug("Failed to post ephemeral welcome: %s", e)
 
-        print(f"Connected to channel (id={channel_id})")
+        logger.info("Connected to channel (id=%s)", channel_id)
 
         router = ThreadRouter(provider, channel_id)
         self._permission_handler = PermissionHandler(router, self._config)
@@ -254,9 +284,7 @@ class SummonSession:
 
             await self._shutdown(channel_manager, channel_id)
 
-    async def _run_message_loop(
-        self, router: ThreadRouter, provider: SlackChatProvider
-    ) -> None:
+    async def _run_message_loop(self, router: ThreadRouter, provider: SlackChatProvider) -> None:
         """Listen for Slack messages and forward them to Claude."""
         assert self._registry is not None
         assert self._client is not None
@@ -265,20 +293,22 @@ class SummonSession:
 
         slack_mcp = create_summon_mcp_server(router)
 
-        options = ClaudeAgentOptions(
-            model=self._model,
-            cwd=self._cwd,
-            resume=self._resume,
-            system_prompt=_SYSTEM_PROMPT,
-            include_partial_messages=True,
-            setting_sources=["user", "project"],
-            plugins=discover_installed_plugins(),
-            can_use_tool=self._permission_handler.handle,
-            mcp_servers={"summon-slack": slack_mcp},
-        )
+        agent_kwargs: dict = {
+            "cwd": self._cwd,
+            "resume": self._resume,
+            "system_prompt": _SYSTEM_PROMPT,
+            "include_partial_messages": True,
+            "setting_sources": ["user", "project"],
+            "plugins": discover_installed_plugins(),
+            "can_use_tool": self._permission_handler.handle,
+            "mcp_servers": {"summon-slack": slack_mcp},
+        }
+        if self._model is not None:
+            agent_kwargs["model"] = self._model
+        options = ClaudeAgentOptions(**agent_kwargs)
 
         display = ContentDisplay(self._config.max_inline_chars)
-        streamer = ResponseStreamer(router=router, config=self._config, display=display)
+        streamer = ResponseStreamer(router=router, display=display)
 
         async with ClaudeSDKClient(options) as claude:
             # Store Claude session ID if available
@@ -299,6 +329,9 @@ class SummonSession:
                         self._message_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
                     )
                 except TimeoutError:
+                    continue
+
+                if not user_message:
                     continue
 
                 await self._handle_user_message(claude, router, streamer, provider, user_message)
@@ -362,7 +395,9 @@ class SummonSession:
         assert self._registry is not None
         assert self._client is not None
 
-        print(f"\nSession ended. Turns: {self._total_turns}, Total cost: ${self._total_cost:.4f}")
+        logger.info(
+            "Session ended. Turns: %d, Total cost: $%.4f", self._total_turns, self._total_cost
+        )
 
         # Post session summary to channel
         try:
@@ -415,6 +450,14 @@ class SummonSession:
     async def _on_summon_command(self, ack, command, respond) -> None:
         """Handle the /summon slash command."""
         await ack()
+
+        if self._authenticated_event.is_set():
+            await respond(
+                text="This session is already active.",
+                response_type="ephemeral",
+            )
+            return
+
         user_id = command.get("user_id", "")
 
         if not self._rate_limiter.check(user_id):
@@ -439,7 +482,6 @@ class SummonSession:
         await self._registry.log_event(
             "auth_attempted",
             user_id=user_id,
-            details={"code_prefix": text[:2] if text else ""},
         )
 
         auth_result = await verify_short_code(self._registry, text)
@@ -453,6 +495,7 @@ class SummonSession:
 
         self._authenticated_user_id = user_id
         self._authenticated_event.set()
+        self._auth = None  # clear token from memory after successful auth
 
         await self._registry.log_event(
             "auth_succeeded", session_id=self._session_id, user_id=user_id
@@ -514,13 +557,4 @@ class SummonSession:
         self._shutdown_event.set()
         # Put a sentinel to unblock the message queue
         self._message_queue.put_nowait("")
-
-    def _print_auth_banner(self, short_code: str) -> None:
-        """Print the auth code prominently to the terminal."""
-        border = "=" * _BANNER_WIDTH
-        print(f"\n{border}")
-        print(f"  SUMMON CODE: {short_code}")
-        print(f"  Type in Slack: /summon {short_code}")
-        print("  Expires in 5 minutes")
-        print(f"{border}\n")
 

@@ -30,8 +30,7 @@ def make_streamer() -> tuple[ResponseStreamer, ThreadRouter, AsyncMock]:
     """Create a ResponseStreamer with a mocked provider."""
     provider = make_mock_provider()
     router = ThreadRouter(provider, "C123")
-    config = make_config()
-    streamer = ResponseStreamer(router, config)
+    streamer = ResponseStreamer(router)
     return streamer, router, provider
 
 

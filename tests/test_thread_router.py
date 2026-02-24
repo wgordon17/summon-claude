@@ -456,4 +456,3 @@ class TestThreadRouterDelegationMethods:
         assert call_args[0][0] == "C456"
         assert call_args[0][1] == "999.001"
         assert call_args[0][2] == ":thumbsup:"
-

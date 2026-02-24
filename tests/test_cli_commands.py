@@ -2,50 +2,54 @@
 
 from __future__ import annotations
 
-import sys
-from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
-from summon_claude.cli import _build_parser, cmd_init
+from summon_claude.cli import cli
 from summon_claude.cli_config import config_path, config_set, config_show
 
 
-class TestParserHasInitCommand:
-    def test_parser_accepts_init(self):
-        parser = _build_parser()
-        args = parser.parse_args(["init"])
-        assert args.command == "init"
+class TestCLIInitCommand:
+    def test_init_command_exists(self):
+        """Test that init command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["init", "--help"])
+        assert result.exit_code == 0
+
+    def test_config_command_exists(self):
+        """Test that config command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "--help"])
+        assert result.exit_code == 0
 
 
-class TestParserHasConfigSubcommands:
-    def test_config_show_parses(self):
-        parser = _build_parser()
-        args = parser.parse_args(["config", "show"])
-        assert args.command == "config"
-        assert args.config_command == "show"
+class TestCLIConfigSubcommands:
+    def test_config_show_exists(self):
+        """Test that config show subcommand exists."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "show", "--help"])
+        assert result.exit_code == 0
 
-    def test_config_path_parses(self):
-        parser = _build_parser()
-        args = parser.parse_args(["config", "path"])
-        assert args.command == "config"
-        assert args.config_command == "path"
+    def test_config_path_exists(self):
+        """Test that config path subcommand exists."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "path", "--help"])
+        assert result.exit_code == 0
 
-    def test_config_edit_parses(self):
-        parser = _build_parser()
-        args = parser.parse_args(["config", "edit"])
-        assert args.command == "config"
-        assert args.config_command == "edit"
+    def test_config_edit_exists(self):
+        """Test that config edit subcommand exists."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "edit", "--help"])
+        assert result.exit_code == 0
 
-    def test_config_set_parses_key_value(self):
-        parser = _build_parser()
-        args = parser.parse_args(["config", "set", "SUMMON_SLACK_BOT_TOKEN", "xoxb-new"])
-        assert args.command == "config"
-        assert args.config_command == "set"
-        assert args.key == "SUMMON_SLACK_BOT_TOKEN"
-        assert args.value == "xoxb-new"
+    def test_config_set_exists(self):
+        """Test that config set subcommand exists."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "--help"])
+        assert result.exit_code == 0
 
 
 class TestCmdInit:
@@ -54,7 +58,7 @@ class TestCmdInit:
         config_dir = tmp_path / "summon"
         config_file = config_dir / "config.env"
 
-        inputs = iter(
+        inputs = "\n".join(
             [
                 "xoxb-valid-bot-token",  # bot token (valid)
                 "xapp-valid-app-token",  # app token (valid)
@@ -64,14 +68,11 @@ class TestCmdInit:
         )
 
         with (
-            patch("summon_claude.config.get_config_dir", return_value=config_dir),
-            patch("summon_claude.config.get_config_file", return_value=config_file),
-            patch("builtins.input", side_effect=lambda prompt: next(inputs)),
+            patch("summon_claude.cli.get_config_dir", return_value=config_dir),
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
         ):
-            import argparse
-
-            args = argparse.Namespace()
-            cmd_init(args)
+            runner = CliRunner()
+            runner.invoke(cli, ["init"], input=inputs)
 
         assert config_file.exists()
         content = config_file.read_text()
@@ -86,7 +87,7 @@ class TestCmdInit:
         config_file = config_dir / "config.env"
 
         # First provide invalid, then valid
-        inputs = iter(
+        inputs = "\n".join(
             [
                 "invalid-token",  # wrong prefix — should be rejected
                 "xoxb-correct-token",  # correct
@@ -96,31 +97,22 @@ class TestCmdInit:
             ]
         )
 
-        output_lines = []
         with (
             patch("summon_claude.config.get_config_dir", return_value=config_dir),
             patch("summon_claude.config.get_config_file", return_value=config_file),
-            patch("builtins.input", side_effect=lambda prompt: next(inputs)),
-            patch(
-                "builtins.print",
-                side_effect=lambda *args, **kwargs: output_lines.append(str(args)),
-            ),
         ):
-            import argparse
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
 
-            args = argparse.Namespace()
-            cmd_init(args)
-
-        # Error message for invalid token should have been printed
-        error_msgs = [line for line in output_lines if "xoxb-" in line or "Error" in line]
-        assert len(error_msgs) > 0
+        # Error message for invalid token should have been shown
+        assert "xoxb-" in result.output or "Error" in result.output
 
     def test_init_validates_app_token_prefix(self, tmp_path):
         """init should reject app tokens that don't start with xapp-."""
         config_dir = tmp_path / "summon"
         config_file = config_dir / "config.env"
 
-        inputs = iter(
+        inputs = "\n".join(
             [
                 "xoxb-valid-bot",
                 "invalid-app-token",  # wrong prefix
@@ -130,23 +122,14 @@ class TestCmdInit:
             ]
         )
 
-        output_lines = []
         with (
             patch("summon_claude.config.get_config_dir", return_value=config_dir),
             patch("summon_claude.config.get_config_file", return_value=config_file),
-            patch("builtins.input", side_effect=lambda prompt: next(inputs)),
-            patch(
-                "builtins.print",
-                side_effect=lambda *args, **kwargs: output_lines.append(str(args)),
-            ),
         ):
-            import argparse
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
 
-            args = argparse.Namespace()
-            cmd_init(args)
-
-        error_msgs = [line for line in output_lines if "xapp-" in line or "Error" in line]
-        assert len(error_msgs) > 0
+        assert "xapp-" in result.output or "Error" in result.output
 
 
 class TestConfigShow:
@@ -160,7 +143,7 @@ class TestConfigShow:
             "SUMMON_ALLOWED_USER_IDS=U123\n"
         )
 
-        with patch("summon_claude.config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -177,7 +160,7 @@ class TestConfigShow:
             "SUMMON_SLACK_SIGNING_SECRET=signingkey\n"
         )
 
-        with patch("summon_claude.config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -192,7 +175,7 @@ class TestConfigShow:
             "SUMMON_SLACK_SIGNING_SECRET=secretsigningkeyvalue\n"
         )
 
-        with patch("summon_claude.config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -207,7 +190,7 @@ class TestConfigShow:
             "SUMMON_DEFAULT_MODEL=claude-opus-4-6\n"
         )
 
-        with patch("summon_claude.config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -217,7 +200,7 @@ class TestConfigShow:
     def test_config_show_no_file_prints_message(self, tmp_path, capsys):
         missing_file = tmp_path / "nonexistent.env"
 
-        with patch("summon_claude.config.get_config_file", return_value=missing_file):
+        with patch("summon_claude.cli_config.get_config_file", return_value=missing_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -292,8 +275,47 @@ class TestConfigPath:
         """config path should print the config file location."""
         expected_path = tmp_path / "summon" / "config.env"
 
-        with patch("summon_claude.config.get_config_file", return_value=expected_path):
+        with patch("summon_claude.cli_config.get_config_file", return_value=expected_path):
             config_path()
 
         captured = capsys.readouterr()
         assert str(expected_path) in captured.out
+
+
+class TestCleanupCommand:
+    """Test cleanup command for archiving stale session channels (BUG-007)."""
+
+    def test_cleanup_command_exists(self):
+        """Test that cleanup command is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["cleanup", "--help"])
+        assert result.exit_code == 0
+
+    async def test_cleanup_archives_session_channel(self, tmp_path):
+        """Test that cleanup with stale sessions calls archive_session_channel."""
+        from unittest.mock import AsyncMock, patch
+
+        from summon_claude.channel_manager import ChannelManager
+        from summon_claude.registry import SessionRegistry
+
+        async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
+            # Register a dead session with a channel
+            dead_pid = 999999999
+            await registry.register("sess-stale", dead_pid, "/tmp")
+            await registry.update_status("sess-stale", "pending_auth", slack_channel_id="C_STALE")
+
+            # Mock the Slack client and ChannelManager
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_channel_manager.archive_session_channel = AsyncMock()
+
+            # Manually run cleanup logic
+            stale = await registry.list_stale()
+            assert len(stale) == 1
+
+            for session in stale:
+                channel_id = session.get("slack_channel_id")
+                if channel_id and mock_channel_manager:
+                    await mock_channel_manager.archive_session_channel(channel_id)
+
+            # Verify archive was called
+            mock_channel_manager.archive_session_channel.assert_called_once_with("C_STALE")

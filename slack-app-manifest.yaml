@@ -7,7 +7,7 @@
 # 4. Paste the entire contents of this file
 # 5. Click "Create"
 #
-# Then install the app and copy the tokens to .env
+# Then install the app and run `summon init` to configure tokens
 #
 
 display_information:
@@ -19,6 +19,11 @@ features:
   bot_user:
     display_name: summon-claude
     always_online: false
+  slash_commands:
+    - command: /summon
+      description: Start a new Claude Code session
+      usage_hint: "[auth-code]"
+      should_escape: false
 
 oauth_config:
   scopes:
@@ -61,20 +66,10 @@ settings:
       - message.channels
         # Description: Receive messages in channels (for session interaction)
 
-      # App mentions
-      - app_mention
-        # Description: Respond when the bot is @mentioned
-
   interactivity:
     is_enabled: true
       # Enables interactive buttons, select menus, and dialogs
       # Used for permission approval flows
-
-  slash_commands:
-    - command: /summon
-      description: Start a new Claude Code session
-      should_escape: false
-        # Set to false because we don't have a request URL (Socket Mode)
 
   request_url_verification_enabled: false
     # Disabled because Socket Mode doesn't use request URLs

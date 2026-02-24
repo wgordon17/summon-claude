@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .providers.base import ChatProvider, MessageRef
+from summon_claude.providers.base import ChatProvider, MessageRef
 
 _MAX_SUBAGENT_THREADS = 100
 
@@ -78,9 +78,7 @@ class ThreadRouter:
         self, text: str, *, blocks: list[dict[str, Any]] | None = None
     ) -> MessageRef:
         """Post directly to the main channel (no thread)."""
-        return await self._provider.post_message(
-            self._channel_id, text, blocks=blocks
-        )
+        return await self._provider.post_message(self._channel_id, text, blocks=blocks)
 
     async def post_to_turn_thread(
         self, text: str, *, blocks: list[dict[str, Any]] | None = None

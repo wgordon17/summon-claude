@@ -1,4 +1,14 @@
-"""Simple per-key rate limiter with automatic cleanup."""
+"""Simple per-key cooldown rate limiter.
+
+Algorithm: in-memory dict mapping key -> last_allowed_time. A key is allowed
+if ``now - last_time >= cooldown_seconds``. The map is periodically compacted
+(every 100 calls) to prevent unbounded growth.
+
+Characteristics:
+- Per-process only -- not shared across processes or persisted
+- No locking -- safe for single-threaded asyncio (no awaits in check())
+- O(1) per check, O(n) cleanup every _CLEANUP_EVERY calls
+"""
 
 from __future__ import annotations
 

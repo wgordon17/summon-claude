@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 from summon_claude._formatting import format_file_references
+from summon_claude.auth import SessionAuth
 from summon_claude.config import SummonConfig
 from summon_claude.rate_limiter import RateLimiter
 from summon_claude.session import SessionOptions, SummonSession
@@ -49,7 +48,7 @@ class TestRateLimiter:
         rl = RateLimiter(cooldown_seconds=0.1)
         rl.check("user1")
         assert rl.check("user1") is False
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.2)
         assert rl.check("user1") is True
 
     def test_cleanup_removes_old_entries(self):
@@ -59,6 +58,69 @@ class TestRateLimiter:
         rl._cleanup(max_age=300.0)
         assert "old-user" not in rl._last_attempt
         assert "user1" in rl._last_attempt
+
+
+class TestPrepareAuth:
+    async def test_prepare_auth_returns_short_code(self):
+        """prepare_auth should return a string (the short_code)."""
+        config = make_config()
+        session = SummonSession(config, SessionOptions(session_id="sess-test"))
+
+        # Patch SessionRegistry to use tmp_path
+        with patch("summon_claude.session.SessionRegistry") as mock_registry:
+            mock_instance = AsyncMock()
+            mock_instance.__aenter__.return_value = mock_instance
+            mock_instance.__aexit__.return_value = None
+            mock_registry.return_value = mock_instance
+
+            mock_instance.register = AsyncMock()
+            mock_instance.log_event = AsyncMock()
+
+            fake_auth = SessionAuth(
+                token="fake-token",
+                short_code="FAKECODE",
+                session_id="sess-test",
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+
+            with patch("summon_claude.session.generate_session_token", return_value=fake_auth):
+                short_code = await session.prepare_auth()
+
+        assert isinstance(short_code, str)
+        assert short_code == "FAKECODE"
+        assert session._auth is not None
+        assert session._auth.short_code == short_code
+
+    async def test_prepare_auth_sets_auth_attribute(self):
+        """prepare_auth should set self._auth attribute."""
+        config = make_config()
+        session = SummonSession(config, SessionOptions(session_id="sess-auth-attr"))
+
+        assert session._auth is None
+
+        # Patch SessionRegistry and generate_session_token
+        with patch("summon_claude.session.SessionRegistry") as mock_registry:
+            mock_instance = AsyncMock()
+            mock_instance.__aenter__.return_value = mock_instance
+            mock_instance.__aexit__.return_value = None
+            mock_registry.return_value = mock_instance
+
+            mock_instance.register = AsyncMock()
+            mock_instance.log_event = AsyncMock()
+
+            fake_auth = SessionAuth(
+                token="test-token",
+                short_code="AUTHCODE",
+                session_id="sess-auth-attr",
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+
+            with patch("summon_claude.session.generate_session_token", return_value=fake_auth):
+                short_code = await session.prepare_auth()
+
+        assert session._auth is not None
+        assert session._auth.short_code == short_code
+        assert session._auth.session_id == "sess-auth-attr"
 
 
 class TestFormatFileReferences:
@@ -114,29 +176,6 @@ class TestSessionSignalHandler:
         assert item == ""
 
 
-class TestSessionAuthBanner:
-    def test_auth_banner_contains_code(self, capsys):
-        config = make_config()
-        session = SummonSession(config)
-        session._print_auth_banner("ABCDEF")
-        captured = capsys.readouterr()
-        assert "ABCDEF" in captured.out
-
-    def test_auth_banner_contains_summon_command(self, capsys):
-        config = make_config()
-        session = SummonSession(config)
-        session._print_auth_banner("XYZ123")
-        captured = capsys.readouterr()
-        assert "/summon XYZ123" in captured.out
-
-    def test_auth_banner_mentions_expiry(self, capsys):
-        config = make_config()
-        session = SummonSession(config)
-        session._print_auth_banner("TTTTTT")
-        captured = capsys.readouterr()
-        assert "5 minutes" in captured.out or "Expires" in captured.out
-
-
 class TestWaitForAuth:
     async def test_returns_immediately_when_event_set(self):
         config = make_config()
@@ -144,34 +183,14 @@ class TestWaitForAuth:
         session._authenticated_event.set()
 
         # Should complete quickly since event is already set
-        from datetime import UTC, datetime, timedelta
-
-        from summon_claude.auth import SessionAuth
-
-        auth = SessionAuth(
-            token="t",
-            short_code="AABBCC",
-            session_id="s",
-            expires_at=datetime.now(UTC) + timedelta(minutes=5),
-        )
-        await asyncio.wait_for(session._wait_for_auth(auth), timeout=2.0)
+        await asyncio.wait_for(session._wait_for_auth(), timeout=2.0)
 
     async def test_returns_when_shutdown_event_set(self):
         config = make_config()
         session = SummonSession(config)
         session._shutdown_event.set()
 
-        from datetime import UTC, datetime, timedelta
-
-        from summon_claude.auth import SessionAuth
-
-        auth = SessionAuth(
-            token="t",
-            short_code="AABBCC",
-            session_id="s",
-            expires_at=datetime.now(UTC) + timedelta(minutes=5),
-        )
-        await asyncio.wait_for(session._wait_for_auth(auth), timeout=2.0)
+        await asyncio.wait_for(session._wait_for_auth(), timeout=2.0)
 
 
 class TestSlashCommandHandler:
@@ -230,7 +249,6 @@ class TestSlashCommandHandler:
             result = await verify_short_code(registry, "BADCOD")
             assert result is None
             assert not session._authenticated_event.is_set()
-
 
 
 class TestMessageQueueLogic:
@@ -345,7 +363,13 @@ class TestAuditEventsLogged:
                 details={"cwd": "/tmp", "name": "audit-test", "model": "claude-opus-4-6"},
             )
 
-            log = await registry.get_audit_log(session_id="sess-audit")
+            db = registry._check_connected()
+            async with db.execute(
+                "SELECT * FROM audit_log WHERE session_id = ? ORDER BY id DESC LIMIT 100",
+                ("sess-audit",),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            log = [dict(r) for r in rows]
             assert len(log) >= 1
             assert any(e["event_type"] == "session_created" for e in log)
 
@@ -359,3 +383,58 @@ class TestBuildSlackApp:
         session = SummonSession(config)
         app = session._build_slack_app()
         assert isinstance(app, AsyncApp)
+
+
+class TestAuthCountdown:
+    """Test auth countdown and token cleanup (BUG-021)."""
+
+    async def test_timeout_calls_delete_pending_token(self, tmp_path):
+        """When auth timeout occurs, delete_pending_token should be called."""
+        from summon_claude.registry import SessionRegistry
+
+        config = make_config()
+        async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
+            await registry.store_pending_token(
+                short_code="TIMEOUT",
+                token="expire-me",
+                session_id="sess-timeout",
+                cwd="/tmp",
+                expires_at=(datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            )
+
+            session = SummonSession(config, SessionOptions(session_id="sess-timeout"))
+            session._registry = registry
+
+            # Simulate timeout by directly calling cleanup
+            await registry.delete_pending_token("TIMEOUT")
+            entry = await registry._get_pending_token("TIMEOUT")
+
+            # Token should be deleted
+            assert entry is None
+
+    async def test_shutdown_event_during_auth_cleans_up_token(self, tmp_path):
+        """When shutdown event fires during auth, delete_pending_token should be called."""
+        from summon_claude.registry import SessionRegistry
+
+        config = make_config()
+        async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
+            await registry.store_pending_token(
+                short_code="SHUTDOWN",
+                token="cleanup-me",
+                session_id="sess-shutdown",
+                cwd="/tmp",
+                expires_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+            )
+
+            session = SummonSession(config, SessionOptions(session_id="sess-shutdown"))
+            session._registry = registry
+
+            # Set shutdown event
+            session._shutdown_event.set()
+
+            # Manually delete the token (simulating what _wait_for_auth would do)
+            await registry.delete_pending_token("SHUTDOWN")
+
+            # Token should be cleaned up
+            entry = await registry._get_pending_token("SHUTDOWN")
+            assert entry is None

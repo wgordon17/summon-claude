@@ -1,5 +1,8 @@
 """Stream Claude responses into Slack messages with threaded routing."""
 
+# pyright: reportArgumentType=false, reportReturnType=false
+# claude_agent_sdk doesn't ship type stubs
+
 from __future__ import annotations
 
 import asyncio
@@ -16,10 +19,9 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from ._formatting import get_tool_primary_arg
-from .config import SummonConfig
-from .content_display import ContentDisplay, _split_text
-from .thread_router import ThreadRouter
+from summon_claude._formatting import get_tool_primary_arg
+from summon_claude.content_display import ContentDisplay, _split_text
+from summon_claude.thread_router import ThreadRouter
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +57,9 @@ class ResponseStreamer:
     def __init__(
         self,
         router: ThreadRouter,
-        config: SummonConfig,
         display: ContentDisplay | None = None,
     ) -> None:
         self._router = router
-        self._config = config
         self._display = display
 
         # Per-turn routing state (reset on each stream call)
@@ -115,9 +115,7 @@ class ResponseStreamer:
             elif isinstance(block, ToolResultBlock):
                 await self._handle_tool_result_block(block, parent_id)
 
-    async def _handle_text_block(
-        self, block: TextBlock, parent_id: str | None
-    ) -> None:
+    async def _handle_text_block(self, block: TextBlock, parent_id: str | None) -> None:
         """Route a TextBlock based on context (subagent, pre-tool, post-tool)."""
         if parent_id:
             await self._flush_buffer()
@@ -131,9 +129,7 @@ class ResponseStreamer:
             self._turn.posting_to_thread = False
             await self._append_text(block.text)
 
-    async def _handle_tool_use_block(
-        self, block: ToolUseBlock, parent_id: str | None
-    ) -> None:
+    async def _handle_tool_use_block(self, block: ToolUseBlock, parent_id: str | None) -> None:
         """Route a ToolUseBlock to the correct thread."""
         if self._turn.buffer:
             await self._flush_buffer()
@@ -209,9 +205,7 @@ class ResponseStreamer:
 
         if stored_ts:
             try:
-                await self._router.update_message(
-                    self._router.channel_id, stored_ts, text
-                )
+                await self._router.update_message(self._router.channel_id, stored_ts, text)
             except Exception as e:
                 logger.warning("Failed to update message: %s — posting new", e)
                 ref = await post_fn(text)
@@ -287,9 +281,7 @@ class ResponseStreamer:
             },
         ]
 
-        await self._router.post_to_main(
-            f"Turn complete. Cost: {cost_str}", blocks=blocks
-        )
+        await self._router.post_to_main(f"Turn complete. Cost: {cost_str}", blocks=blocks)
 
         # Add a reaction to the last text message
         if self._turn.last_message_ts:

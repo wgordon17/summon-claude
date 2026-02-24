@@ -7,6 +7,10 @@ import os
 import subprocess
 import sys
 
+import click
+
+from summon_claude.config import get_config_dir, get_config_file
+
 _TOKEN_MASK_THRESHOLD = 8
 
 _SETTABLE_KEYS = frozenset(
@@ -17,9 +21,6 @@ _SETTABLE_KEYS = frozenset(
         "SUMMON_ALLOWED_USER_IDS",
         "SUMMON_DEFAULT_MODEL",
         "SUMMON_CHANNEL_PREFIX",
-        "SUMMON_USE_VERTEX",
-        "SUMMON_VERTEX_PROJECT_ID",
-        "SUMMON_VERTEX_REGION",
         "SUMMON_PERMISSION_DEBOUNCE_MS",
         "SUMMON_MAX_INLINE_CHARS",
     }
@@ -28,20 +29,16 @@ _SETTABLE_KEYS = frozenset(
 
 def _require_config_file():
     """Return the config file Path if it exists, else print a hint and return None."""
-    from .config import get_config_file
-
     config_file = get_config_file()
     if not config_file.exists():
-        print(f"No config file found at {config_file}")
-        print("Run `summon init` to create one.")
+        click.echo(f"No config file found at {config_file}")
+        click.echo("Run `summon init` to create one.")
         return None
     return config_file
 
 
 def config_path() -> None:
-    from .config import get_config_file
-
-    print(get_config_file())
+    click.echo(str(get_config_file()))
 
 
 def config_show() -> None:
@@ -58,7 +55,7 @@ def config_show() -> None:
     for raw_line in config_file.read_text().splitlines():
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
-            print(raw_line)
+            click.echo(raw_line)
             continue
         if "=" in stripped:
             k, _, v = stripped.partition("=")
@@ -66,9 +63,9 @@ def config_show() -> None:
             v = v.strip()
             if k in token_keys and len(v) > _TOKEN_MASK_THRESHOLD:
                 v = v[:_TOKEN_MASK_THRESHOLD] + "..."
-            print(f"{k}={v}")
+            click.echo(f"{k}={v}")
         else:
-            print(raw_line)
+            click.echo(raw_line)
 
 
 def config_edit() -> None:
@@ -80,17 +77,15 @@ def config_edit() -> None:
     try:
         subprocess.run([editor, str(config_file)], check=False)  # noqa: S603
     except FileNotFoundError:
-        print(f"Editor '{editor}' not found. Set $EDITOR to your preferred editor.")
+        click.echo(f"Editor '{editor}' not found. Set $EDITOR to your preferred editor.", err=True)
         sys.exit(1)
 
 
 def config_set(key: str, value: str) -> None:
-    from .config import get_config_dir, get_config_file
-
     key = key.strip().upper()
     if key not in _SETTABLE_KEYS:
-        print(f"Unknown config key: {key!r}", file=sys.stderr)
-        print(f"Valid keys: {', '.join(sorted(_SETTABLE_KEYS))}", file=sys.stderr)
+        click.echo(f"Unknown config key: {key!r}", err=True)
+        click.echo(f"Valid keys: {', '.join(sorted(_SETTABLE_KEYS))}", err=True)
         sys.exit(1)
 
     # Strip newlines to prevent injection into the .env format
@@ -119,4 +114,4 @@ def config_set(key: str, value: str) -> None:
     config_file.write_text("\n".join(new_lines) + "\n")
     with contextlib.suppress(OSError):
         config_file.chmod(0o600)
-    print(f"Set {key} in {config_file}")
+    click.echo(f"Set {key} in {config_file}")

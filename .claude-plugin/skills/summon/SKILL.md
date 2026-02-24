@@ -3,43 +3,148 @@ name: summon
 description: Start a Slack-bridged Claude Code session using summon-claude. Use when the user wants to "start a Slack session", "summon to Slack", "bridge to Slack", "share this session on Slack", or "connect to Slack".
 ---
 
-# Summon — Bridge Claude Code to Slack
+# Skill: summon — Bridge Claude Code to Slack
 
-## Prerequisites
-- summon-claude must be installed: `uv tool install summon-claude`
-- Run `summon init` first to configure Slack credentials
+## When to use this skill
 
-## Starting a Session
+Use this skill when the user asks you to:
+- Start a Slack session
+- Summon Claude to Slack
+- Bridge the current session to Slack
+- Share this session on Slack
+- Connect to Slack
 
-Run in a terminal:
+## Prerequisites check
+
+Before starting, verify:
+
+1. **summon is installed** — run `summon --help` and check for exit code 0. If not installed, tell the user to run: `uv tool install summon-claude`
+2. **Config exists** — run `summon config path` and check the output file exists. If not configured, tell the user to run `summon init` first.
+
+## Starting a session
+
+Use the Bash tool with `run_in_background: true`:
+
 ```bash
 summon start
 ```
 
-This will:
-1. Print a 6-character auth code to the terminal
-2. Wait for authentication via Slack
+Or with options:
+```bash
+summon start --cwd /path/to/project --name my-feature --model claude-opus-4-6
+```
 
-The user then types `/summon <CODE>` in Slack to authenticate.
-Once authenticated, a dedicated Slack channel is created and all interaction happens there.
+Flags:
+- `--cwd PATH` — working directory for Claude (default: current directory)
+- `--name NAME` — session name used for Slack channel naming
+- `--model MODEL` — override the default Claude model
+- `--resume SESSION_ID` — resume an existing Claude Code session by ID
+- `--background` / `-b` — run as a background daemon (logs to `~/.local/share/summon/logs/`)
 
-## Options
+## Expected output
 
-- `summon start --cwd /path/to/project` — Set working directory
-- `summon start --name my-feature` — Name the session (affects channel name)
-- `summon start --model claude-sonnet-4-20250514` — Override model
-- `summon start --resume SESSION_ID` — Resume a previous session
+After running `summon start`, look for a banner like:
+```
+==================================================
+  SUMMON CODE: ABC123
+  Type in Slack: /summon ABC123
+  Expires in 5 minutes
+==================================================
+```
 
-## Managing Sessions
+Parse the 6-character code (e.g., `ABC123`) and tell the user:
+> "Your summon code is **ABC123**. Type `/summon ABC123` in Slack to authenticate."
 
-- `summon status` — Show active sessions
-- `summon status SESSION_ID` — Detailed session info
-- `summon stop SESSION_ID` — Stop a running session
-- `summon sessions` — List all recent sessions
-- `summon cleanup` — Remove stale entries
+## Auth flow
 
-## Configuration
+1. `summon start` generates a 6-character auth code and waits
+2. The user types `/summon <code>` in their Slack workspace
+3. The bot verifies the code, creates a dedicated session channel, and posts a header
+4. All further interaction happens in that Slack channel
+5. The code expires in 5 minutes — if it expires, run `summon start` again
 
-- `summon config show` — View current config
-- `summon config set KEY VALUE` — Update a setting
-- `summon config path` — Show config file location
+## Session management commands
+
+Once started, you can manage the session:
+
+```bash
+# List active sessions
+summon status
+
+# Detailed view of a specific session
+summon status <SESSION_ID>
+
+# Stop a running session
+summon stop <SESSION_ID>
+
+# List all recent sessions (last 50)
+summon sessions
+
+# Clean up stale entries with dead processes
+summon cleanup
+
+# View logs for a background session
+summon logs <SESSION_ID>
+```
+
+## Config management
+
+```bash
+# View current config (tokens masked)
+summon config show
+
+# Show config file path
+summon config path
+
+# Open config in $EDITOR
+summon config edit
+
+# Set a single value
+summon config set SUMMON_DEFAULT_MODEL claude-sonnet-4-5
+```
+
+---
+
+## Human installation instructions
+
+If the user needs to set up summon-claude from scratch:
+
+### 1. Install
+
+```bash
+uv tool install summon-claude
+```
+
+### 2. Create a Slack app
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps)
+2. Click **Create New App** → **From an app manifest**
+3. Select your workspace
+4. Paste the contents of `slack-app-manifest.yaml` from the summon-claude repo
+5. Click **Create**, then **Install to Workspace**
+
+### 3. Collect tokens
+
+| Token | Where to find it |
+|-------|-----------------|
+| Bot Token (`xoxb-...`) | **OAuth & Permissions** → Bot User OAuth Token |
+| App Token (`xapp-...`) | **Settings** → **Basic Information** → App-Level Tokens → Generate with `connections:write` scope |
+| Signing Secret | **Settings** → **Basic Information** → App Credentials |
+
+### 4. Find your Slack User ID
+
+In Slack: click your profile picture → **Profile** → three-dot menu → **Copy member ID** (starts with `U`)
+
+### 5. Run the setup wizard
+
+```bash
+summon init
+```
+
+Enter your tokens when prompted.
+
+### 6. Start a session
+
+```bash
+summon start
+```

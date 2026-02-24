@@ -1,5 +1,8 @@
 """Configuration for summon-claude using pydantic-settings."""
 
+# pyright: reportCallIssue=false, reportIncompatibleMethodOverride=false
+# pydantic-settings metaclass constructor inference gaps
+
 from __future__ import annotations
 
 import json
@@ -106,13 +109,8 @@ class SummonConfig(BaseSettings):
     # Authorization
     allowed_user_ids: list[str] = []
 
-    # Vertex AI (optional)
-    vertex_project_id: str | None = None
-    vertex_region: str = "global"
-    use_vertex: bool = False
-
     # Claude model
-    default_model: str = "claude-opus-4-6"
+    default_model: str | None = None
 
     # Slack channel configuration
     channel_prefix: str = "summon"
@@ -163,9 +161,6 @@ class SummonConfig(BaseSettings):
 
         if not self.allowed_user_ids:
             errors.append("SUMMON_ALLOWED_USER_IDS is required (comma-separated Slack user IDs)")
-
-        if self.use_vertex and not self.vertex_project_id:
-            errors.append("SUMMON_VERTEX_PROJECT_ID is required when SUMMON_USE_VERTEX=true")
 
         if errors:
             raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))

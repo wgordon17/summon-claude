@@ -65,6 +65,7 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | `summon status [SESSION_ID]` | Show active sessions, or detailed view of one session |
 | `summon stop SESSION_ID` | Send SIGTERM to a running session |
 | `summon sessions` | List recent sessions (all statuses, last 50) |
+| `summon logs [SESSION_ID]` | View session logs (tail -f style streaming) |
 | `summon cleanup` | Mark sessions with dead processes as errored |
 | `summon config show` | Show current config file (tokens masked) |
 | `summon config set KEY VALUE` | Set a single config value |
@@ -79,6 +80,7 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | `--name NAME` | Session name used for Slack channel naming |
 | `--model MODEL` | Override the default Claude model |
 | `--resume SESSION_ID` | Resume an existing Claude Code session by ID |
+| `-b`, `--background` | Run session in background as daemon (logs accessible via `summon logs`) |
 
 ### Global flags
 
@@ -113,13 +115,10 @@ Use `summon config path` to see which path is active. Use `summon init` to creat
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SUMMON_DEFAULT_MODEL` | `claude-opus-4-6` | Default Claude model |
+| `SUMMON_DEFAULT_MODEL` | (SDK default) | Default Claude model |
 | `SUMMON_CHANNEL_PREFIX` | `summon` | Prefix for created session channels |
 | `SUMMON_PERMISSION_DEBOUNCE_MS` | `500` | Debounce window for batching permission requests (ms) |
 | `SUMMON_MAX_INLINE_CHARS` | `2500` | Threshold for inline vs file upload display |
-| `SUMMON_USE_VERTEX` | `false` | Use Vertex AI backend instead of Anthropic API |
-| `SUMMON_VERTEX_PROJECT_ID` | — | GCP project ID (required when `SUMMON_USE_VERTEX=true`) |
-| `SUMMON_VERTEX_REGION` | `global` | GCP region for Vertex AI |
 
 A local `.env` in the project directory overrides the config file.
 
@@ -178,6 +177,9 @@ All Slack API calls go through a `ChatProvider` protocol, enabling future suppor
 | `mcp_tools.py` | In-process MCP server: `slack_upload_file`, `slack_create_thread`, `slack_react`, `slack_post_snippet` |
 | `providers/base.py` | ChatProvider protocol and message/channel abstractions |
 | `providers/slack.py` | SlackChatProvider implementation for Slack API calls |
+| `cli_config.py` | Config subcommand handlers: show, path, edit, set |
+| `rate_limiter.py` | Per-key cooldown rate limiter for slash command spam protection |
+| `_formatting.py` | Slack mrkdwn formatting helpers and tool argument extraction |
 
 ## Security
 
@@ -213,30 +215,6 @@ make install   # uv sync with dev dependencies
 make lint      # ruff check + format (auto-fix), then pyright
 make test      # pytest with asyncio
 make all       # install → lint → test
-```
-
-### Project structure
-
-```
-src/summon_claude/
-  cli.py              # CLI entry point
-  config.py           # pydantic-settings config
-  auth.py             # Token generation & verification
-  registry.py         # SQLite session storage + audit log
-  channel_manager.py  # Slack channel operations
-  permissions.py      # Permission handling
-  content_display.py  # Message formatting
-  streamer.py         # Response streaming
-  session.py          # Main orchestrator
-  mcp_tools.py        # In-process MCP server for Slack tools
-
-tests/
-  test_*.py           # Test modules
-  conftest.py         # Pytest fixtures
-
-slack-app-manifest.yaml   # Import this to create your Slack app
-Makefile                  # Development tasks
-pyproject.toml            # Project metadata & tool config
 ```
 
 ## License

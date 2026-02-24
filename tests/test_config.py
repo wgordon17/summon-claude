@@ -28,6 +28,10 @@ def _make_config(**overrides) -> SummonConfig:
 class TestSummonConfigDefaults:
     def test_default_model(self):
         cfg = _make_config()
+        assert cfg.default_model is None
+
+    def test_default_model_can_be_set(self):
+        cfg = _make_config(default_model="claude-opus-4-6")
         assert cfg.default_model == "claude-opus-4-6"
 
     def test_default_channel_prefix(self):
@@ -41,14 +45,6 @@ class TestSummonConfigDefaults:
     def test_default_max_inline_chars(self):
         cfg = _make_config()
         assert cfg.max_inline_chars == 2500
-
-    def test_default_use_vertex_false(self):
-        cfg = _make_config()
-        assert cfg.use_vertex is False
-
-    def test_default_vertex_region(self):
-        cfg = _make_config()
-        assert cfg.vertex_region == "global"
 
 
 class TestSummonConfigValidate:
@@ -83,15 +79,6 @@ class TestSummonConfigValidate:
         cfg = _make_config(allowed_user_ids=[])
         with pytest.raises(ValueError, match="SUMMON_ALLOWED_USER_IDS"):
             cfg.validate()
-
-    def test_vertex_without_project_raises(self):
-        cfg = _make_config(use_vertex=True, vertex_project_id=None)
-        with pytest.raises(ValueError, match="SUMMON_VERTEX_PROJECT_ID"):
-            cfg.validate()
-
-    def test_vertex_with_project_passes(self):
-        cfg = _make_config(use_vertex=True, vertex_project_id="my-gcp-project")
-        cfg.validate()  # should not raise
 
     def test_multiple_errors_reported_together(self):
         cfg = _make_config(slack_bot_token="", slack_signing_secret="")

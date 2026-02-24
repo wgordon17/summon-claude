@@ -1,12 +1,15 @@
 """In-process MCP tools that give Claude direct Slack channel access."""
 
+# pyright: reportArgumentType=false, reportReturnType=false
+# claude_agent_sdk doesn't ship type stubs
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from .thread_router import ThreadRouter
+from summon_claude.thread_router import ThreadRouter
 
 if TYPE_CHECKING:
     from claude_agent_sdk.types import McpSdkServerConfig
@@ -56,12 +59,12 @@ def create_summon_mcp_server(router: ThreadRouter) -> McpSdkServerConfig:
         {"timestamp": str, "emoji": str},
     )
     async def react(args: dict) -> dict:
+        emoji_name = args["emoji"].strip(":")
         await router.add_reaction(
             router.channel_id,
             args["timestamp"],
-            args["emoji"].strip(":"),
+            emoji_name,
         )
-        emoji_name = args["emoji"].strip(":")
         return {"content": [{"type": "text", "text": f"Added :{emoji_name}: reaction"}]}
 
     @tool(

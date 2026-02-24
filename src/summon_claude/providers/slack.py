@@ -1,5 +1,8 @@
 """SlackChatProvider — wraps AsyncWebClient behind the ChatProvider protocol."""
 
+# pyright: reportArgumentType=false, reportReturnType=false
+# slack_sdk doesn't ship type stubs
+
 from __future__ import annotations
 
 import logging
@@ -7,7 +10,7 @@ from typing import Any
 
 from slack_sdk.web.async_client import AsyncWebClient
 
-from .base import ChannelRef, MessageRef
+from summon_claude.providers.base import ChannelRef, MessageRef
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +55,7 @@ class SlackChatProvider:
 
     async def add_reaction(self, channel: str, ts: str, emoji: str) -> None:
         try:
-            await self._client.reactions_add(
-                channel=channel, timestamp=ts, name=emoji.strip(":")
-            )
+            await self._client.reactions_add(channel=channel, timestamp=ts, name=emoji.strip(":"))
         except Exception as e:
             logger.debug("Failed to add reaction :%s: — %s", emoji, e)
 
@@ -77,12 +78,8 @@ class SlackChatProvider:
             kwargs["thread_ts"] = thread_ts
         await self._client.files_upload_v2(**kwargs)
 
-    async def create_channel(
-        self, name: str, *, is_private: bool = False
-    ) -> ChannelRef:
-        resp = await self._client.conversations_create(
-            name=name, is_private=is_private
-        )
+    async def create_channel(self, name: str, *, is_private: bool = False) -> ChannelRef:
+        resp = await self._client.conversations_create(name=name, is_private=is_private)
         channel = resp.get("channel") or {}
         return ChannelRef(channel_id=channel["id"], name=channel.get("name", name))
 
@@ -91,4 +88,3 @@ class SlackChatProvider:
             await self._client.conversations_archive(channel=channel_id)
         except Exception as e:
             logger.debug("Failed to archive channel %s: %s", channel_id, e)
-

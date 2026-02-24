@@ -1,6 +1,6 @@
 """Provider abstractions for chat platforms."""
 
-from .base import ChannelRef, ChatProvider, MessageRef
-from .slack import SlackChatProvider
+from summon_claude.providers.base import ChannelRef, ChatProvider, MessageRef
+from summon_claude.providers.slack import SlackChatProvider
 
 __all__ = ["ChannelRef", "ChatProvider", "MessageRef", "SlackChatProvider"]

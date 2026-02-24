@@ -2,16 +2,34 @@
 name = "summon-claude"
 version = "0.1.0"
 description = "Bridge Claude Code sessions to Slack channels"
+license = "MIT"
+authors = [{name = "Will Gordon"}]
+keywords = ["claude", "slack", "ai", "cli", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9.0",  # required by slack-sdk's AsyncWebClient
     "aiosqlite>=0.20.0",
+    "click>=8.1",
     "claude-agent-sdk>=0.1.39",
     "pydantic-settings>=2.0",
     "slack-bolt>=1.21.0",
     "slack-sdk>=3.33.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/wgordon17/summon-claude"
+Repository = "https://github.com/wgordon17/summon-claude"
+"Bug Tracker" = "https://github.com/wgordon17/summon-claude/issues"
 
 [project.scripts]
 summon = "summon_claude.cli:main"
@@ -75,16 +93,16 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# CLI: print is the output mechanism; deferred imports for startup speed; os.path fine in CLI context
-"src/summon_claude/cli.py" = ["T201", "PLC0415", "ARG001", "PTH100", "PTH109", "S110"]
-# CLI config: print for output; deferred imports; subprocess for editor; S603 subprocess call
-"src/summon_claude/cli_config.py" = ["T201", "PLC0415", "S110"]
-# Session: print for terminal UX; asserts in private methods; try/except/pass for resilience; slack handler signatures
-"src/summon_claude/session.py" = ["T201", "S101", "S110", "SIM105", "ARG001", "ARG002", "PLR0913"]
+# CLI: click.echo for output; os.path fine in CLI context
+"src/summon_claude/cli.py" = ["ARG001", "PTH100", "PTH109", "S110"]
+# CLI config: subprocess for editor; S603 subprocess call
+"src/summon_claude/cli_config.py" = ["S110"]
+# Session: asserts in private methods; try/except/pass for resilience; slack handler signatures
+"src/summon_claude/session.py" = ["S101", "S110", "SIM105", "ARG001", "ARG002", "PLR0913", "RET504"]
 # Permissions: action_id is part of public API signature (reserved for future routing)
 "src/summon_claude/permissions.py" = ["ARG002"]
-# Registry: dynamic SET clause is safe (column names from allowlist); deferred import in method; SIM105
-"src/summon_claude/registry.py" = ["S608", "SIM105", "S110", "PLC0415"]
+# Registry: dynamic SET clause is safe (column names from allowlist); SIM105
+"src/summon_claude/registry.py" = ["S608", "SIM105", "S110"]
 # Channel manager: git subprocess is intentional; try/except/pass for best-effort operation
 "src/summon_claude/channel_manager.py" = ["S607", "PLW1510", "S110"]
 # Streamer: try/except/pass for best-effort Slack operations; PLR0911 multiple return paths
@@ -116,6 +134,9 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["summon_claude", "helpers"]
 
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
 # ============================================================================
 # PYRIGHT
 # ============================================================================
@@ -128,14 +149,8 @@ exclude = [
     "**/__pycache__",
     "**/tests",
 ]
-reportMissingImports = false
-reportMissingTypeStubs = false
-reportUnusedImport = false
-reportPrivateUsage = "none"       # We access _private in tests
-reportArgumentType = false        # External library stubs incomplete (slack_sdk, claude_agent_sdk)
-reportReturnType = false          # External library return types unresolved
-reportCallIssue = false           # pydantic-settings constructor inference gaps
-reportIncompatibleMethodOverride = false  # pydantic BaseModel.validate naming convention
+reportMissingImports = false       # claude_agent_sdk has no py.typed marker
+reportMissingTypeStubs = false     # slack_sdk, slack_bolt don't ship stubs
 
 # ============================================================================
 # PYTEST
