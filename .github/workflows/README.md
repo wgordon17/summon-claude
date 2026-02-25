@@ -56,14 +56,12 @@ After first successful publish, the project moves from "pending" to "active" pub
 
 ### 3. Create Renovate PAT
 
-Create a fine-grained personal access token for Renovate:
+Create a classic personal access token for self-hosted Renovate:
 
-1. Go to: **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**
-2. Create a token scoped to the `summon-claude` repository with permissions:
-   - **Contents:** Read and write (create branches, update files)
-   - **Pull requests:** Read and write (create/update PRs)
-   - **Workflows:** Read and write (update workflow pinned SHAs)
-   - **Metadata:** Read (required)
+1. Go to: **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)**
+2. Create a token with scopes:
+   - **`repo`** — create branches, update files, create/update PRs
+   - **`workflow`** — update pinned action SHAs in `.github/workflows/`
 3. Add as repo secret: **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**
    - Name: `RENOVATE_TOKEN`
    - Value: the PAT
