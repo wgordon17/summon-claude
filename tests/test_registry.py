@@ -168,14 +168,11 @@ class TestPendingAuthTokens:
     async def test_store_and_retrieve_token(self, registry):
         await registry.store_pending_token(
             short_code="ABC123",
-            token="secret-token",
             session_id="sess-tok",
-            cwd="/tmp",
             expires_at="2099-01-01T00:00:00+00:00",
         )
         entry = await registry._get_pending_token("ABC123")
         assert entry is not None
-        assert entry["token"] == "secret-token"
         assert entry["session_id"] == "sess-tok"
 
     async def test_missing_token_returns_none(self, registry):
@@ -185,9 +182,7 @@ class TestPendingAuthTokens:
     async def test_delete_token(self, registry):
         await registry.store_pending_token(
             short_code="DEL123",
-            token="t",
             session_id="s",
-            cwd="/tmp",
             expires_at="2099-01-01T00:00:00+00:00",
         )
         await registry.delete_pending_token("DEL123")
@@ -195,16 +190,14 @@ class TestPendingAuthTokens:
         assert result is None
 
     async def test_replace_existing_token(self, registry):
-        for token_val in ("first", "second"):
+        for _ in ("first", "second"):
             await registry.store_pending_token(
                 short_code="SAME12",
-                token=token_val,
                 session_id="s",
-                cwd="/tmp",
                 expires_at="2099-01-01T00:00:00+00:00",
             )
         entry = await registry._get_pending_token("SAME12")
-        assert entry["token"] == "second"
+        assert entry["session_id"] == "s"
 
 
 class TestPidAlive:

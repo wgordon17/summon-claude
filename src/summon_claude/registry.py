@@ -41,9 +41,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 _CREATE_PENDING_AUTH_TOKENS = """
 CREATE TABLE IF NOT EXISTS pending_auth_tokens (
     short_code TEXT PRIMARY KEY,
-    token TEXT NOT NULL,
     session_id TEXT NOT NULL,
-    cwd TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     failed_attempts INTEGER NOT NULL DEFAULT 0
@@ -258,9 +256,7 @@ class SessionRegistry:
     async def store_pending_token(
         self,
         short_code: str,
-        token: str,
         session_id: str,
-        cwd: str,
         expires_at: str,
     ) -> None:
         """Store a pending auth token for cross-process auth verification."""
@@ -269,10 +265,10 @@ class SessionRegistry:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO pending_auth_tokens
-                    (short_code, token, session_id, cwd, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (short_code, session_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?)
                 """,
-                (short_code, token, session_id, cwd, _now(), expires_at),
+                (short_code, session_id, _now(), expires_at),
             )
             await db.commit()
 

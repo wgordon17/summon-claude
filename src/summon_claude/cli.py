@@ -21,6 +21,7 @@ import click
 import daemon
 from slack_sdk.web.async_client import AsyncWebClient
 
+from summon_claude.auth import SessionAuth, generate_session_token
 from summon_claude.channel_manager import ChannelManager
 from summon_claude.cli_config import config_edit, config_path, config_set, config_show
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
@@ -31,6 +32,12 @@ from summon_claude.session import SessionOptions, SummonSession
 logger = logging.getLogger(__name__)
 
 _BANNER_WIDTH = 50
+
+
+async def _generate_auth(session_id: str) -> SessionAuth:
+    """Generate auth token with a short-lived registry connection."""
+    async with SessionRegistry() as registry:
+        return await generate_session_token(registry, session_id)
 
 
 def _print_auth_banner(short_code: str) -> None:
@@ -57,7 +64,27 @@ def _setup_logging(verbose: bool) -> None:
         logging.getLogger("asyncio").setLevel(logging.ERROR)
 
 
-@click.group()
+class AliasedGroup(click.Group):
+    """Click group with command alias support."""
+
+    _ALIASES: dict[str, str] = {"s": "session"}
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        rv = click.Group.get_command(self, ctx, cmd_name)
+        if rv is not None:
+            return rv
+        canonical = self._ALIASES.get(cmd_name)
+        if canonical:
+            return click.Group.get_command(self, ctx, canonical)
+        return None
+
+    def resolve_command(self, ctx: click.Context, args: list[str]) -> tuple:
+        cmd_name = args[0] if args else ""
+        canonical = self._ALIASES.get(cmd_name, cmd_name)
+        return super().resolve_command(ctx, [canonical, *args[1:]])
+
+
+@click.group(cls=AliasedGroup)
 @click.option(
     "-v", "--verbose", is_eager=True, is_flag=True, default=False, help="Enable verbose logging"
 )
@@ -104,26 +131,24 @@ def cmd_start(
     session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
-    session = SummonSession(
-        config=config,
-        options=SessionOptions(
-            session_id=session_id,
-            cwd=resolved_cwd,
-            name=resolved_name,
-            model=model or config.default_model,
-            resume=resume,
-        ),
+    options = SessionOptions(
+        session_id=session_id,
+        cwd=resolved_cwd,
+        name=resolved_name,
+        model=model or config.default_model,
+        resume=resume,
     )
 
-    # Phase 1: Register + generate auth token (foreground, pre-fork)
+    # Phase 1: Generate auth token (foreground, pre-fork)
     try:
-        short_code = asyncio.run(session.prepare_auth())
+        auth = asyncio.run(_generate_auth(session_id))
     except Exception as e:
-        logger.exception("Failed to prepare session: %s", e)
+        logger.exception("Failed to generate auth token: %s", e)
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    _print_auth_banner(short_code)
+    session = SummonSession(config=config, options=options, auth=auth)
+    _print_auth_banner(auth.short_code)
 
     # Phase 2: Daemonize if requested (after banner is shown)
     daemon_ctx: daemon.DaemonContext | contextlib.nullcontext[None] = contextlib.nullcontext()
@@ -160,32 +185,61 @@ def cmd_start(
             sys.exit(1)
 
 
-@cli.command("status")
-@click.argument("session_id", required=False, default=None)
-def cmd_status(session_id: str | None) -> None:
-    """Show session status. Pass SESSION_ID for detailed view."""
-    asyncio.run(_async_status(session_id))
+# ---------------------------------------------------------------------------
+# session command group (alias: s)
+# ---------------------------------------------------------------------------
 
 
-async def _async_status(session_id: str | None) -> None:
+@cli.group("session")
+def cmd_session() -> None:
+    """Manage summon sessions."""
+
+
+@cmd_session.command("list")
+@click.option(
+    "--all",
+    "-a",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help="Show all recent sessions (not just active)",
+)
+def session_list(show_all: bool) -> None:
+    """List sessions. Shows active sessions by default; use --all for all recent."""
+    asyncio.run(_async_session_list(show_all))
+
+
+async def _async_session_list(show_all: bool) -> None:
     async with SessionRegistry() as registry:
-        if session_id:
-            session = await registry.get_session(session_id)
-            if not session:
-                click.echo(f"Session not found: {session_id}")
-                return
-            _print_session_detail(session)
+        if show_all:
+            sessions = await registry.list_all(limit=50)
         else:
             sessions = await registry.list_active()
-            if not sessions:
-                click.echo("No active sessions.")
-                return
-            _print_session_table(sessions)
+        if not sessions:
+            click.echo("No sessions found." if show_all else "No active sessions.")
+            return
+        _print_session_table(sessions)
 
 
-@cli.command("stop")
+@cmd_session.command("info")
 @click.argument("session_id")
-def cmd_stop(session_id: str) -> None:
+def session_info(session_id: str) -> None:
+    """Show detailed information for a specific session."""
+    asyncio.run(_async_session_info(session_id))
+
+
+async def _async_session_info(session_id: str) -> None:
+    async with SessionRegistry() as registry:
+        session = await registry.get_session(session_id)
+        if not session:
+            click.echo(f"Session not found: {session_id}")
+            return
+        _print_session_detail(session)
+
+
+@cmd_session.command("stop")
+@click.argument("session_id")
+def session_stop(session_id: str) -> None:
     """Send SIGTERM to a running session process."""
     asyncio.run(_async_stop(session_id))
 
@@ -224,25 +278,10 @@ async def _async_stop(session_id: str) -> None:
             click.echo(f"Permission denied to send signal to pid {pid}")
 
 
-@cli.command("sessions")
-def cmd_sessions() -> None:
-    """List recent sessions (all statuses)."""
-    asyncio.run(_async_sessions())
-
-
-async def _async_sessions() -> None:
-    async with SessionRegistry() as registry:
-        sessions = await registry.list_all(limit=50)
-        if not sessions:
-            click.echo("No sessions found.")
-            return
-        _print_session_table(sessions)
-
-
-@cli.command("logs")
+@cmd_session.command("logs")
 @click.argument("session_id", required=False, default=None)
 @click.option("--tail", "-n", default=50, help="Number of lines to show (default: 50)")
-def cmd_logs(session_id: str | None, tail: int) -> None:
+def session_logs(session_id: str | None, tail: int) -> None:
     """Show session logs. Pass SESSION_ID for a specific session, or list available logs."""
     log_dir = get_data_dir() / "logs"
     if not log_dir.exists():
@@ -274,8 +313,8 @@ def cmd_logs(session_id: str | None, tail: int) -> None:
         click.echo(line)
 
 
-@cli.command("cleanup")
-def cmd_cleanup() -> None:
+@cmd_session.command("cleanup")
+def session_cleanup() -> None:
     """Mark sessions with dead processes as errored."""
     asyncio.run(_async_cleanup())
 
@@ -318,6 +357,11 @@ async def _async_cleanup() -> None:
             )
 
         click.echo(f"Cleaned up {len(stale)} stale session(s).")
+
+
+# ---------------------------------------------------------------------------
+# Top-level commands: init, config
+# ---------------------------------------------------------------------------
 
 
 @cli.command("init")
@@ -387,6 +431,11 @@ def config_edit_cmd() -> None:
 def config_set_cmd(key: str, value: str) -> None:
     """Set a configuration value (e.g. SUMMON_SLACK_BOT_TOKEN)."""
     config_set(key, value)
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
 
 
 def _print_session_table(sessions: list[dict]) -> None:

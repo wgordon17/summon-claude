@@ -62,15 +62,17 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 |---------|-------------|
 | `summon init` | Interactive setup wizard — creates config file with your tokens |
 | `summon start` | Start a new session (prints auth code, waits for `/summon` in Slack) |
-| `summon status [SESSION_ID]` | Show active sessions, or detailed view of one session |
-| `summon stop SESSION_ID` | Send SIGTERM to a running session |
-| `summon sessions` | List recent sessions (all statuses, last 50) |
-| `summon logs [SESSION_ID]` | View session logs (tail -f style streaming) |
-| `summon cleanup` | Mark sessions with dead processes as errored |
+| `summon session list` | Show active sessions (use `--all` for all recent) |
+| `summon session info SESSION_ID` | Show detailed view of one session |
+| `summon session stop SESSION_ID` | Send SIGTERM to a running session |
+| `summon session logs [SESSION_ID]` | View session logs (list files, or tail a specific session) |
+| `summon session cleanup` | Mark sessions with dead processes as errored |
 | `summon config show` | Show current config file (tokens masked) |
 | `summon config set KEY VALUE` | Set a single config value |
 | `summon config path` | Print the config file path |
 | `summon config edit` | Open config file in `$EDITOR` |
+
+> **Alias:** `summon s` is shorthand for `summon session` (e.g., `summon s list`).
 
 ### `summon start` flags
 
@@ -80,13 +82,33 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | `--name NAME` | Session name used for Slack channel naming |
 | `--model MODEL` | Override the default Claude model |
 | `--resume SESSION_ID` | Resume an existing Claude Code session by ID |
-| `-b`, `--background` | Run session in background as daemon (logs accessible via `summon logs`) |
+| `-b`, `--background` | Run session in background as daemon (logs accessible via `summon session logs`) |
 
 ### Global flags
 
 | Flag | Description |
 |------|-------------|
 | `-v`, `--verbose` | Enable verbose logging |
+
+## In-Session Commands
+
+Once a session is active in Slack, type `!`-prefixed commands to control the session without reaching Claude:
+
+| Command | Description |
+|---------|-------------|
+| `!help` | Show all available commands |
+| `!status` | Show session status (model, turns, cost, uptime) |
+| `!end` | End the current session |
+| `!model` | Show the active model |
+| `!model <name>` | Switch model (takes effect on next session start) |
+
+**Aliases:** `!quit`, `!exit`, and `!logout` all map to `!end`.
+
+**Passthrough commands:** Claude SDK slash commands (e.g., `/compact`, `/clear`) are also available as `!compact`, `!clear`, etc. — they are forwarded to the SDK as their `/` equivalents.
+
+**Blocked commands:** `!login` is blocked in Slack sessions.
+
+Use `!help` in a session to see the full list, including any passthrough commands discovered from the SDK.
 
 ## Configuration
 
@@ -166,13 +188,14 @@ All Slack API calls go through a `ChatProvider` protocol, enabling future suppor
 |--------|---------|
 | `cli.py` | CLI entry point: start/status/stop/sessions/cleanup/init/config |
 | `config.py` | pydantic-settings config with XDG path resolution and plugin discovery |
-| `auth.py` | 6-char short codes with 5-min TTL, brute-force protection (5 attempts) |
+| `auth.py` | 8-char hex short codes with 5-min TTL, brute-force protection (5 attempts) |
 | `registry.py` | SQLite session registry with WAL mode, heartbeat, audit log |
 | `channel_manager.py` | Slack channel create/archive/header with collision handling |
 | `permissions.py` | Debounced permission batching with Slack interactive buttons |
 | `content_display.py` | Hybrid inline/file upload display with diff formatting |
 | `streamer.py` | Claude response streaming to Slack with threaded routing |
 | `thread_router.py` | Routes content to main channel, turn threads, and subagent threads |
+| `commands.py` | `!`-prefixed command dispatch: local handlers, passthrough, blocking, aliasing |
 | `session.py` | Core orchestrator: ties all modules together |
 | `mcp_tools.py` | In-process MCP server: `slack_upload_file`, `slack_create_thread`, `slack_react`, `slack_post_snippet` |
 | `providers/base.py` | ChatProvider protocol and message/channel abstractions |
@@ -185,7 +208,7 @@ All Slack API calls go through a `ChatProvider` protocol, enabling future suppor
 
 ### Authentication
 
-1. `summon start` generates a cryptographic token with a 6-character short code
+1. `summon start` generates a short code (8 hex characters)
 2. Short code is printed to the terminal only — it is never sent to Slack automatically
 3. You type `/summon <code>` in Slack; the bot verifies the code against the registry
 4. Code expires after 5 minutes; locked after 5 failed attempts
