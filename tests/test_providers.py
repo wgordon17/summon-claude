@@ -314,3 +314,47 @@ class TestSlackChatProviderArchiveChannel:
 
         # Should not raise
         await provider.archive_channel("C_OLD")
+
+
+class TestSlackChatProviderSetTopic:
+    """SlackChatProvider.set_topic tests."""
+
+    async def test_set_topic_calls_conversations_set_topic(self):
+        """set_topic should delegate to client.conversations_setTopic."""
+        client = make_mock_slack_client()
+        client.conversations_setTopic = AsyncMock(return_value={"ok": True})
+        provider = SlackChatProvider(client)
+
+        await provider.set_topic("C_TEST", "my topic")
+
+        client.conversations_setTopic.assert_called_once_with(channel="C_TEST", topic="my topic")
+
+    async def test_set_topic_propagates_errors(self):
+        """set_topic should propagate exceptions to the caller."""
+        client = make_mock_slack_client()
+        client.conversations_setTopic = AsyncMock(side_effect=Exception("not_in_channel"))
+        provider = SlackChatProvider(client)
+
+        with pytest.raises(Exception, match="not_in_channel"):
+            await provider.set_topic("C_TEST", "topic")
+
+    async def test_set_topic_with_emoji_and_special_chars(self):
+        """set_topic should handle emoji and special characters."""
+        client = make_mock_slack_client()
+        client.conversations_setTopic = AsyncMock(return_value={"ok": True})
+        provider = SlackChatProvider(client)
+
+        topic = "🤖 opus-4-6 · 📂 ~/projects · 📊 84k/200k (42%)"
+        await provider.set_topic("C_TEST", topic)
+
+        client.conversations_setTopic.assert_called_once_with(channel="C_TEST", topic=topic)
+
+    async def test_set_topic_with_empty_string(self):
+        """set_topic should allow empty string topic."""
+        client = make_mock_slack_client()
+        client.conversations_setTopic = AsyncMock(return_value={"ok": True})
+        provider = SlackChatProvider(client)
+
+        await provider.set_topic("C_TEST", "")
+
+        client.conversations_setTopic.assert_called_once_with(channel="C_TEST", topic="")

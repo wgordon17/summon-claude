@@ -21,4 +21,5 @@ def make_mock_provider():
     )
     provider.invite_user = AsyncMock()
     provider.archive_channel = AsyncMock()
+    provider.set_topic = AsyncMock()
     return provider

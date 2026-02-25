@@ -9,6 +9,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from summon_claude.context import ContextUsage
 from summon_claude.providers.base import ChatProvider
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,69 @@ class ChannelManager:
             blocks=blocks,
         )
         return ref.ts
+
+    def format_topic(
+        self,
+        *,
+        model: str | None,
+        cwd: str,
+        git_branch: str | None,
+        context: ContextUsage | None,
+    ) -> str:
+        """Build the channel topic string with session metadata."""
+        # Model: strip 'claude-' prefix for brevity
+        if model and model.startswith("claude-"):
+            model_short = model[len("claude-") :]
+        else:
+            model_short = model or "default"
+
+        # CWD: use ~ for home directory
+        try:
+            cwd_display = "~/" + str(Path(cwd).relative_to(Path.home()))
+        except ValueError:
+            cwd_display = cwd
+
+        # Context usage string
+        if context is not None:
+            ctx_k = context.input_tokens // 1000
+            win_k = context.context_window // 1000
+            ctx_str = f"{ctx_k}k/{win_k}k ({context.percentage:.0f}%)"
+        else:
+            ctx_str = "--"
+
+        parts = [f"\U0001f916 {model_short}", f"\U0001f4c2 {cwd_display}"]
+        if git_branch:
+            branch_display = git_branch[:50]
+            parts.append(f"\U0001f33f {branch_display}")
+        parts.append(f"\U0001f4ca {ctx_str}")
+
+        topic = " \u00b7 ".join(parts)
+        return topic[:250]
+
+    async def update_topic(self, channel_id: str, topic: str) -> None:
+        """Set the channel topic via the provider."""
+        try:
+            await self._provider.set_topic(channel_id, topic)
+        except Exception as e:
+            logger.debug("Failed to set topic for channel %s: %s", channel_id, e)
+
+    async def set_session_topic(
+        self,
+        channel_id: str,
+        *,
+        model: str | None,
+        cwd: str,
+        git_branch: str | None,
+        context: ContextUsage | None,
+    ) -> None:
+        """Format and set the session topic in one call."""
+        topic = self.format_topic(
+            model=model,
+            cwd=cwd,
+            git_branch=git_branch,
+            context=context,
+        )
+        await self.update_topic(channel_id, topic)
 
     def _make_channel_name(self, session_name: str) -> str:
         """Build a slugified channel name with prefix and date suffix."""

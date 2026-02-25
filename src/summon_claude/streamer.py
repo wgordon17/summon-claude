@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 
 from summon_claude._formatting import get_tool_primary_arg
 from summon_claude.content_display import ContentDisplay, _split_text
+from summon_claude.context import ContextUsage, compute_context_usage
 from summon_claude.thread_router import ThreadRouter
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,15 @@ class _TurnState:
     last_message_ts: str | None = None
     posting_to_thread: bool = False
     resolved_model: str | None = None
+
+
+@dataclass
+class StreamResult:
+    """Result of a stream_with_flush call, including context usage info."""
+
+    result: ResultMessage
+    context: ContextUsage | None
+    model: str | None
 
 
 class ResponseStreamer:
@@ -66,7 +76,7 @@ class ResponseStreamer:
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
 
-    async def stream_with_flush(self, messages: AsyncIterator) -> ResultMessage | None:
+    async def stream_with_flush(self, messages: AsyncIterator) -> StreamResult | None:
         """Stream with a background flush task for periodic Slack updates."""
         self._turn = _TurnState()
         result: ResultMessage | None = None
@@ -101,8 +111,11 @@ class ResponseStreamer:
         if result:
             await self._flush_conclusion_to_main()
             await self._post_result_summary(result)
+            model = self._turn.resolved_model
+            context = compute_context_usage(result.usage, model)
+            return StreamResult(result=result, context=context, model=model)
 
-        return result
+        return None
 
     @property
     def resolved_model(self) -> str | None:
