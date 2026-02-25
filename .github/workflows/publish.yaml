@@ -25,7 +25,7 @@ jobs:
         run: make py-build
 
       - name: Generate checksums
-        run: cd dist && sha256sum * > ../checksums.sha256
+        run: cd dist && sha256sum ./* > ../checksums.sha256
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -86,3 +86,19 @@ jobs:
         run: cd dist && sha256sum -c ../checksums.sha256
 
       - uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
+
+  notify-homebrew:
+    name: Trigger Homebrew formula update
+    needs: publish-pypi
+    if: github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Trigger tap update
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          gh api repos/wgordon17/homebrew-summon/dispatches \
+            --method POST \
+            -f event_type=pypi-release \
+            -f 'client_payload[version]=${{ github.event.release.tag_name }}'

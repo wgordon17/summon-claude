@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 from datetime import UTC, datetime
@@ -130,17 +131,25 @@ def _slugify(text: str) -> str:
 
 
 def _get_git_branch(cwd: str) -> str | None:
-    """Return the current git branch for the given directory, or None if not in a repo."""
+    """Return the current git branch for the given directory, or None if not in a repo.
+
+    Uses GIT_CEILING_DIRECTORIES to prevent git from discovering
+    repositories in parent directories above cwd.
+    """
     cwd_path = Path(cwd)
     if not cwd_path.is_absolute() or not cwd_path.is_dir():
         return None
+    resolved = str(cwd_path.resolve())
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
+    env["GIT_CEILING_DIRECTORIES"] = resolved
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(cwd_path),
+            cwd=resolved,
             capture_output=True,
             text=True,
             timeout=3,
+            env=env,
         )
         if result.returncode == 0:
             branch = result.stdout.strip()

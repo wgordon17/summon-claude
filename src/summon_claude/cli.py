@@ -15,6 +15,7 @@ import pathlib
 import re
 import signal
 import sys
+import threading
 import uuid
 from datetime import UTC, datetime
 
@@ -205,6 +206,22 @@ def cmd_start(
         click.echo(f"Configuration error: {e}", err=True)
         sys.exit(1)
 
+    # Background update check (non-blocking)
+    update_result: list[str] = []
+
+    def _bg_update_check() -> None:
+        from summon_claude.update_check import (  # noqa: PLC0415
+            check_for_update,
+            format_update_message,
+        )
+
+        info = check_for_update()
+        if info:
+            update_result.append(format_update_message(info))
+
+    update_thread = threading.Thread(target=_bg_update_check, daemon=True)
+    update_thread.start()
+
     resolved_cwd = str(pathlib.Path(cwd).resolve()) if cwd else str(pathlib.Path.cwd())
     session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
@@ -227,6 +244,11 @@ def cmd_start(
 
     session = SummonSession(config=config, options=options, auth=auth)
     _print_auth_banner(auth.short_code)
+
+    # Show update notification if available (after banner)
+    update_thread.join(timeout=4.0)
+    if update_result and not ctx.obj.get("quiet"):
+        click.echo(update_result[0], err=True)
 
     # Phase 2: Daemonize if requested (after banner is shown)
     daemon_ctx: daemon.DaemonContext | contextlib.nullcontext[None] = contextlib.nullcontext()
