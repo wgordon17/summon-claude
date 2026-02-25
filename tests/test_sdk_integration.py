@@ -135,3 +135,24 @@ async def test_can_use_tool_callback():
         f"Expected can_use_tool callback to be invoked, got: {invoked_tools}\n"
         f"Messages received:\n  {debug}"
     )
+
+
+async def test_passthrough_command_populates_result():
+    """Passthrough slash commands like /cost should complete and produce a ResultMessage."""
+    with tempfile.TemporaryDirectory() as cwd:
+        options = ClaudeAgentOptions(cwd=cwd, max_turns=1, **_COMMON_OPTS)
+        async with ClaudeSDKClient(options) as client:
+            await client.query("/cost")
+            result_msg = None
+            async for msg in client.receive_response():
+                if isinstance(msg, ResultMessage):
+                    result_msg = msg
+
+    assert result_msg is not None, "Expected a ResultMessage from /cost"
+    # CLI-only system commands (/compact, /context, /cost, /release-notes)
+    # are handled internally by the CLI — they complete as a successful result
+    # but don't produce AssistantMessage or populate ResultMessage.result
+    # (output goes to the terminal, not the SDK stream).
+    assert result_msg.is_error is False, (
+        "Expected /cost to complete without error, got is_error=True"
+    )

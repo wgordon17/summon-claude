@@ -254,6 +254,7 @@ def cmd_start(
         try:
             success = asyncio.run(session.start())
             if not success:
+                click.echo(f"Authentication timed out. Run '{ctx.command_path}' to try again.")
                 sys.exit(1)
         except KeyboardInterrupt:
             click.echo("\nInterrupted.")

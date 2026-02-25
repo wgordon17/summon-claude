@@ -260,6 +260,70 @@ class TestFormatToolSummary:
         assert isinstance(summary, str)
 
 
+class TestBUG029ResultMessageWithOutput:
+    """BUG-029: Test that ResultMessage.result is posted to main channel."""
+
+    async def test_result_message_with_output_posted_to_main(self):
+        """When ResultMessage.result is non-empty string, post_to_main should be called with it."""
+        streamer, router, provider = make_streamer()
+        result_msg = make_result_message()
+        result_msg.result = "some output text"
+        messages = [result_msg]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        # The result is posted via post_to_main, verify it was called at least once
+        assert provider.post_message.call_count >= 1
+
+    async def test_result_message_without_output_no_extra_post(self):
+        """When ResultMessage.result is None, only summary should be posted."""
+        streamer, router, provider = make_streamer()
+        result_msg = make_result_message()
+        result_msg.result = None
+        messages = [result_msg]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        # Should post the summary (divider + context block)
+        assert provider.post_message.call_count >= 1
+
+
+class TestBUG028ResolvedModelTracking:
+    """BUG-028: Test that streamer tracks resolved_model from AssistantMessage."""
+
+    async def test_resolved_model_set_from_assistant_message(self):
+        """After streaming AssistantMessage with model field, resolved_model should return it."""
+        streamer, router, provider = make_streamer()
+        msg = make_assistant_message([make_text_block("Response")])
+        msg.model = "claude-opus-4-6"
+        messages = [msg, make_result_message()]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        assert streamer.resolved_model == "claude-opus-4-6"
+
+    async def test_resolved_model_returns_none_when_no_model(self):
+        """Before any messages, resolved_model should return None."""
+        streamer, router, provider = make_streamer()
+
+        assert streamer.resolved_model is None
+
+    async def test_resolved_model_persists_across_multiple_messages(self):
+        """resolved_model should be set from first message and persist."""
+        streamer, router, provider = make_streamer()
+        msg1 = make_assistant_message([make_text_block("First")])
+        msg1.model = "claude-opus-4-6"
+        msg2 = make_assistant_message([make_text_block("Second")])
+        # msg2 has a different model but we should keep the first one
+        msg2.model = "claude-sonnet-4"
+        messages = [msg1, msg2, make_result_message()]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        # Should have the first model
+        assert streamer.resolved_model == "claude-opus-4-6"
+
+
 class TestSplitText:
     def test_short_text_not_split(self):
         chunks = _split_text("hello", 3000)

@@ -178,13 +178,24 @@ class TestCommandRegistryDispatch:
         assert "not available" in result.text.lower()
         assert result.suppress_queue is True
 
+    async def test_dispatch_blocked_cli_only_commands(self, make_context):
+        """CLI-only system commands should be blocked with explanatory text."""
+        registry = CommandRegistry()
+        context = make_context()
+
+        for cmd in ("compact", "context", "cost", "release-notes"):
+            result = await registry.dispatch(cmd, [], context)
+            assert result.text is not None, f"!{cmd} should return error text"
+            assert "cli-only" in result.text.lower(), f"!{cmd} should mention CLI-only"
+            assert result.suppress_queue is True, f"!{cmd} should suppress queue"
+
     async def test_dispatch_passthrough_command(self, make_context):
         """Passthrough command should return suppress_queue=False."""
         registry = CommandRegistry()
-        registry.set_passthrough_commands(["compact", "clear"])
+        registry.set_passthrough_commands(["review", "clear"])
         context = make_context()
 
-        result = await registry.dispatch("compact", [], context)
+        result = await registry.dispatch("review", [], context)
 
         assert result.suppress_queue is False
         assert result.text is None
@@ -215,42 +226,41 @@ class TestHelpHandler:
         assert "!help" in result.text
         assert "!status" in result.text
         assert "!end" in result.text
-        assert "!model" in result.text
 
     async def test_help_contains_passthrough_commands(self, make_context):
         """Help output should contain passthrough command names."""
         registry = build_registry()
-        registry.set_passthrough_commands(["compact", "clear"])
+        registry.set_passthrough_commands(["review", "clear"])
         context = make_context(metadata={"registry": registry})
 
         result = await registry.dispatch("help", [], context)
 
         assert result.text is not None
-        assert "!compact" in result.text
+        assert "!review" in result.text
         assert "!clear" in result.text
 
     async def test_help_has_section_headers(self, make_context):
         """Help output should have section headers."""
         registry = build_registry()
-        registry.set_passthrough_commands(["compact"])
+        registry.set_passthrough_commands(["review"])
         context = make_context(metadata={"registry": registry})
 
         result = await registry.dispatch("help", [], context)
 
         assert result.text is not None
-        assert "Session Commands" in result.text
-        assert "Claude Commands" in result.text
+        assert "*Session* (local):" in result.text
+        assert "*Core CLI*:" in result.text
 
     async def test_help_no_claude_section_when_no_passthrough(self, make_context):
-        """Help should not have Claude Commands section when no passthrough."""
+        """Help should not have Plugin section when no non-core passthrough."""
         registry = build_registry()
         context = make_context(metadata={"registry": registry})
 
         result = await registry.dispatch("help", [], context)
 
         assert result.text is not None
-        assert "Session Commands" in result.text
-        assert "Claude Commands" not in result.text
+        assert "*Session* (local):" in result.text
+        assert "*Plugin*:" not in result.text
 
 
 class TestStatusHandler:
@@ -332,57 +342,28 @@ class TestEndHandler:
         assert result.suppress_queue is True
 
 
-class TestModelHandler:
-    """Test the !model command handler."""
+class TestModelPassthrough:
+    """Test that !model is a passthrough command."""
 
-    async def test_model_bare_shows_current(self, make_context):
-        """!model (bare) should show current model."""
+    async def test_model_is_passthrough(self, make_context):
+        """!model should be passthrough (not a local handler)."""
         registry = build_registry()
-        context = make_context(model="sonnet", metadata={"registry": registry})
+        context = make_context(metadata={"registry": registry})
 
         result = await registry.dispatch("model", [], context)
 
-        assert result.text is not None
-        assert "Current model:" in result.text
-        assert "sonnet" in result.text
+        assert result.text is None
+        assert result.suppress_queue is False
 
-    async def test_model_with_valid_arg(self, make_context):
-        """!model opus should return new_model metadata."""
+    async def test_model_with_args_is_passthrough(self, make_context):
+        """!model with args should be passthrough."""
         registry = build_registry()
         context = make_context(metadata={"registry": registry})
 
         result = await registry.dispatch("model", ["opus"], context)
 
-        assert result.metadata.get("new_model") == "opus"
-        assert result.text is not None
-        assert "opus" in result.text
-
-    async def test_model_with_hyphenated_name(self, make_context):
-        """!model claude-opus-4-6 should accept hyphenated model names."""
-        registry = build_registry()
-        context = make_context(metadata={"registry": registry})
-
-        result = await registry.dispatch("model", ["claude-opus-4-6"], context)
-
-        assert result.metadata.get("new_model") == "claude-opus-4-6"
-
-    async def test_model_with_dotted_name(self, make_context):
-        """!model claude-3.5-sonnet should accept dotted model names."""
-        registry = build_registry()
-        context = make_context(metadata={"registry": registry})
-        result = await registry.dispatch("model", ["claude-3.5-sonnet"], context)
-        assert result.metadata.get("new_model") == "claude-3.5-sonnet"
-
-    async def test_model_with_invalid_name(self, make_context):
-        """!model with invalid name should return error."""
-        registry = build_registry()
-        context = make_context(metadata={"registry": registry})
-
-        result = await registry.dispatch("model", ["foo bar!"], context)
-
-        assert result.text is not None
-        assert "Invalid model name" in result.text
-        assert "new_model" not in result.metadata
+        assert result.text is None
+        assert result.suppress_queue is False
 
 
 class TestSetPassthroughCommands:
@@ -392,44 +373,48 @@ class TestSetPassthroughCommands:
         """Should accept list of dicts with 'name' key."""
         registry = CommandRegistry()
         commands = [
-            {"name": "compact", "description": "Compress history"},
+            {"name": "review", "description": "Review changes"},
             {"name": "clear", "description": "Clear conversation"},
         ]
         registry.set_passthrough_commands(commands)
-        assert "compact" in registry._passthrough
+        assert "review" in registry._passthrough
         assert "clear" in registry._passthrough
 
     def test_accepts_list_of_strings(self):
         """Should accept list of strings."""
         registry = CommandRegistry()
-        commands = ["compact", "clear"]
+        commands = ["review", "clear"]
         registry.set_passthrough_commands(commands)
-        assert "compact" in registry._passthrough
+        assert "review" in registry._passthrough
         assert "clear" in registry._passthrough
 
     def test_strips_leading_slash_from_names(self):
         """Should strip leading / from command names."""
         registry = CommandRegistry()
-        commands = ["/compact", "/clear"]
+        commands = ["/review", "/clear"]
         registry.set_passthrough_commands(commands)
-        assert "compact" in registry._passthrough
-        assert "/compact" not in registry._passthrough
+        assert "review" in registry._passthrough
+        assert "/review" not in registry._passthrough
 
     def test_filters_out_blocked_commands(self):
-        """Should filter out blocked commands like login."""
+        """Should filter out blocked commands (login, CLI-only system commands)."""
         registry = CommandRegistry()
-        commands = ["compact", "login", "clear"]
+        commands = ["review", "login", "compact", "context", "cost", "release-notes", "clear"]
         registry.set_passthrough_commands(commands)
-        assert "compact" in registry._passthrough
+        assert "review" in registry._passthrough
         assert "clear" in registry._passthrough
         assert "login" not in registry._passthrough
+        assert "compact" not in registry._passthrough
+        assert "context" not in registry._passthrough
+        assert "cost" not in registry._passthrough
+        assert "release-notes" not in registry._passthrough
 
     def test_filters_out_remap_commands(self):
         """Should filter out remap commands (quit, exit, logout)."""
         registry = CommandRegistry()
-        commands = ["compact", "quit", "exit", "logout", "clear"]
+        commands = ["review", "quit", "exit", "logout", "clear"]
         registry.set_passthrough_commands(commands)
-        assert "compact" in registry._passthrough
+        assert "review" in registry._passthrough
         assert "clear" in registry._passthrough
         assert "quit" not in registry._passthrough
         assert "exit" not in registry._passthrough
@@ -438,11 +423,11 @@ class TestSetPassthroughCommands:
     def test_clears_previous_passthrough_commands(self):
         """Should clear previous passthrough commands."""
         registry = CommandRegistry()
-        registry.set_passthrough_commands(["compact"])
-        assert "compact" in registry._passthrough
+        registry.set_passthrough_commands(["review"])
+        assert "review" in registry._passthrough
         registry.set_passthrough_commands(["clear"])
         assert "clear" in registry._passthrough
-        assert "compact" not in registry._passthrough
+        assert "review" not in registry._passthrough
 
 
 class TestAllCommands:
@@ -460,9 +445,9 @@ class TestAllCommands:
     def test_returns_passthrough_commands(self):
         """Should include all passthrough commands."""
         registry = build_registry()
-        registry.set_passthrough_commands(["compact", "clear"])
+        registry.set_passthrough_commands(["review", "clear"])
         commands = registry.all_commands()
-        assert "compact" in commands
+        assert "review" in commands
         assert "clear" in commands
 
     def test_returns_remap_aliases(self):
@@ -476,7 +461,7 @@ class TestAllCommands:
     def test_combined_dict_format(self):
         """all_commands should return a dict with descriptions."""
         registry = build_registry()
-        registry.set_passthrough_commands(["compact"])
+        registry.set_passthrough_commands(["review"])
         commands = registry.all_commands()
         assert isinstance(commands, dict)
         assert all(isinstance(k, str) and isinstance(v, str) for k, v in commands.items())
@@ -508,6 +493,54 @@ class TestParseAdvanced:
         registry = CommandRegistry()
         result = registry.parse("!HeLp something")
         assert result == ("help", ["something"])
+
+
+class TestClearHandler:
+    """Test the !clear command handler."""
+
+    async def test_clear_returns_suppress_false(self, make_context):
+        """!clear should return suppress_queue=False for passthrough."""
+        registry = build_registry()
+        context = make_context(metadata={"registry": registry})
+
+        result = await registry.dispatch("clear", [], context)
+
+        assert result.suppress_queue is False
+        assert result.text is None
+
+    async def test_clear_returns_clear_metadata(self, make_context):
+        """!clear should return metadata with clear=True."""
+        registry = build_registry()
+        context = make_context(metadata={"registry": registry})
+
+        result = await registry.dispatch("clear", [], context)
+
+        assert result.metadata.get("clear") is True
+
+
+class TestHelpDetail:
+    """Test !help with command argument."""
+
+    async def test_help_with_command_is_passthrough(self, make_context):
+        """!help status should passthrough to CLI for rich detail."""
+        registry = build_registry()
+        context = make_context(metadata={"registry": registry})
+
+        result = await registry.dispatch("help", ["status"], context)
+
+        # Should passthrough, not show local description
+        assert result.text is None
+        assert result.suppress_queue is False
+
+    async def test_help_with_unknown_command_is_passthrough(self, make_context):
+        """!help anything should passthrough — let CLI decide if it's valid."""
+        registry = build_registry()
+        context = make_context(metadata={"registry": registry})
+
+        result = await registry.dispatch("help", ["unknown"], context)
+
+        assert result.text is None
+        assert result.suppress_queue is False
 
 
 class TestDispatchEdgeCases:
@@ -550,8 +583,8 @@ class TestDispatchEdgeCases:
         registry = CommandRegistry()
         registry.set_passthrough_commands(
             [
-                {"name": "compact", "description": "Compress conversation history"},
+                {"name": "review", "description": "Review code changes"},
             ]
         )
         commands = registry.all_commands()
-        assert commands["compact"] == "Compress conversation history"
+        assert commands["review"] == "Review code changes"

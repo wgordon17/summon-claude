@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -13,8 +12,6 @@ if TYPE_CHECKING:
     from summon_claude.providers.base import ChatProvider
 
 logger = logging.getLogger(__name__)
-
-_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9\-\.]*[A-Za-z0-9])?$")
 
 
 @dataclass
@@ -49,7 +46,14 @@ class CommandRegistry:
     """Registry for !-prefixed command dispatch."""
 
     _REMAP_TO_END: frozenset[str] = frozenset({"quit", "exit", "logout"})
-    _BLOCKED_COMMANDS: dict[str, str] = {"login": "Not available in Slack sessions."}
+    _BLOCKED_COMMANDS: dict[str, str] = {
+        "login": "Not available in Slack sessions.",
+        # CLI-only system commands — output goes to terminal, not SDK stream
+        "compact": "CLI-only (output not available via SDK). Context is managed automatically.",
+        "context": "CLI-only (output not available via SDK). Use `!status` for session info.",
+        "cost": "CLI-only (output not available via SDK). Use `!status` for cost info.",
+        "release-notes": "CLI-only (output not available via SDK).",
+    }
 
     def __init__(self) -> None:
         self._local: dict[str, tuple[HandlerFn, str]] = {}
@@ -123,6 +127,11 @@ class CommandRegistry:
             result[alias] = "Alias for !end"
         return result
 
+    def register_passthrough(self, name: str, description: str) -> None:
+        """Register a single passthrough command (for pre-SDK-init fallbacks)."""
+        if name not in self._BLOCKED_COMMANDS and name not in self._REMAP_TO_END:
+            self._passthrough[name] = description
+
     def local_commands(self) -> list[str]:
         """Return sorted list of local command names."""
         return sorted(self._local)
@@ -137,21 +146,45 @@ class CommandRegistry:
 # ------------------------------------------------------------------
 
 
-async def _handle_help(_args: list[str], ctx: CommandContext) -> CommandResult:
+_CORE_CLI_COMMANDS: frozenset[str] = frozenset(
+    {
+        "compact",
+        "context",
+        "cost",
+        "config",
+        "doctor",
+        "model",
+        "review",
+        "bug",
+        "init",
+        "upgrade",
+    }
+)
+
+
+async def _handle_help(args: list[str], ctx: CommandContext) -> CommandResult:
     registry: CommandRegistry = ctx.metadata["registry"]
-    commands = registry.all_commands()
 
-    local_names = registry.local_commands()
-    passthrough_names = registry.passthrough_commands()
+    # Detail view: passthrough to CLI's /help for rich output
+    if args:
+        return CommandResult(text=None, suppress_queue=False)
 
-    lines: list[str] = ["*Session Commands* (handled locally):"]
-    for name in local_names:
-        lines.append(f"  `!{name}` — {commands[name]}")
+    # Overview: grouped local summary
+    local_names = sorted(registry.local_commands())
+    passthrough_names = sorted(registry.passthrough_commands())
 
-    if passthrough_names:
-        lines.append("\n*Claude Commands* (forwarded as /command):")
-        for name in passthrough_names:
-            lines.append(f"  `!{name}` — {commands[name]}")
+    core_names = sorted(n for n in passthrough_names if n in _CORE_CLI_COMMANDS)
+    plugin_names = sorted(n for n in passthrough_names if n not in _CORE_CLI_COMMANDS)
+
+    lines: list[str] = ["*Session* (local): " + ", ".join(f"`!{n}`" for n in local_names)]
+
+    if core_names:
+        lines.append("*Core CLI*: " + ", ".join(f"`!{n}`" for n in core_names))
+
+    if plugin_names:
+        lines.append("*Plugin*: " + ", ".join(f"`!{n}`" for n in plugin_names))
+
+    lines.append("_Use `!command` to run. Passthrough commands use Claude's native handling._")
 
     return CommandResult(text="\n".join(lines))
 
@@ -165,7 +198,7 @@ async def _handle_status(_args: list[str], ctx: CommandContext) -> CommandResult
     else:
         uptime = "unknown"
 
-    model_display = ctx.model or "default"
+    model_display = ctx.model or "unknown"
     lines = [
         "*Session Status*",
         f"  Model: `{model_display}`",
@@ -184,22 +217,8 @@ async def _handle_end(_args: list[str], _ctx: CommandContext) -> CommandResult:
     )
 
 
-async def _handle_model(args: list[str], ctx: CommandContext) -> CommandResult:
-    if not args:
-        current = ctx.model or "default"
-        return CommandResult(text=f"Current model: `{current}`\nTo switch: `!model <model-name>`")
-
-    model_arg = args[0]
-    if not _MODEL_NAME_RE.match(model_arg):
-        return CommandResult(
-            text=f":warning: Invalid model name `{model_arg}`. "
-            "Use alphanumeric characters, hyphens, and dots."
-        )
-
-    return CommandResult(
-        text=f":white_check_mark: Model set to `{model_arg}`. Takes effect on next session start.",
-        metadata={"new_model": model_arg},
-    )
+async def _handle_clear(_args: list[str], _ctx: CommandContext) -> CommandResult:
+    return CommandResult(text=None, suppress_queue=False, metadata={"clear": True})
 
 
 def build_registry() -> CommandRegistry:
@@ -208,5 +227,7 @@ def build_registry() -> CommandRegistry:
     registry.register("help", _handle_help, "Show available commands")
     registry.register("status", _handle_status, "Show session status")
     registry.register("end", _handle_end, "End this session")
-    registry.register("model", _handle_model, "Show or switch the active model")
+    registry.register("clear", _handle_clear, "Clear conversation history")
+    # Ensure model is available as passthrough even before SDK init populates the list
+    registry.register_passthrough("model", "Switch or display the active model")
     return registry
