@@ -68,12 +68,18 @@ def discover_installed_plugins() -> list[dict]:
         return []
 
     plugins: list[dict] = []
-    if not isinstance(registry, list):
-        logger.warning("installed_plugins.json has unexpected format (not a list)")
+
+    # Normalize to flat list of entries for both v1 (list) and v2 (dict) formats
+    if isinstance(registry, list):
+        entries = registry
+    elif isinstance(registry, dict) and isinstance(registry.get("plugins"), dict):
+        entries = [inst for installs in registry["plugins"].values() for inst in installs]
+    else:
+        logger.warning("installed_plugins.json has unexpected format")
         return []
 
     claude_home = Path.home() / ".claude"
-    for entry in registry:
+    for entry in entries:
         install_path = entry.get("installPath") or entry.get("path")
         if not install_path:
             continue
