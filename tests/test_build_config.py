@@ -17,12 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-
-def repo_root() -> Path:
-    """Find the repository root relative to this test file."""
-    test_file = Path(__file__)
-    # tests/test_build_config.py -> repo root
-    return test_file.parent.parent
+REPO_ROOT = Path(__file__).parent.parent
 
 
 class TestPyprojectTomlStructure:
@@ -31,7 +26,7 @@ class TestPyprojectTomlStructure:
     @pytest.fixture
     def pyproject_data(self) -> dict:
         """Load and parse pyproject.toml."""
-        path = repo_root() / "pyproject.toml"
+        path = REPO_ROOT / "pyproject.toml"
         assert path.exists(), f"pyproject.toml not found at {path}"
         with path.open("rb") as f:
             return tomllib.load(f)
@@ -91,19 +86,19 @@ class TestLicenseFile:
 
     def test_license_file_exists(self) -> None:
         """Verify that LICENSE file exists at repo root."""
-        license_path = repo_root() / "LICENSE"
+        license_path = REPO_ROOT / "LICENSE"
         assert license_path.exists(), f"LICENSE file not found at {license_path}"
         assert license_path.is_file(), "LICENSE should be a file"
 
     def test_license_contains_mit(self) -> None:
         """Verify that LICENSE contains 'MIT License'."""
-        license_path = repo_root() / "LICENSE"
+        license_path = REPO_ROOT / "LICENSE"
         content = license_path.read_text()
         assert "MIT License" in content, "LICENSE file does not contain 'MIT License'"
 
     def test_license_contains_author(self) -> None:
         """Verify that LICENSE contains 'Will Gordon'."""
-        license_path = repo_root() / "LICENSE"
+        license_path = REPO_ROOT / "LICENSE"
         content = license_path.read_text()
         assert "Will Gordon" in content, "LICENSE file does not contain 'Will Gordon'"
 
@@ -114,7 +109,7 @@ class TestMakefileTargets:
     @pytest.fixture
     def makefile_content(self) -> str:
         """Read the Makefile."""
-        path = repo_root() / "Makefile"
+        path = REPO_ROOT / "Makefile"
         assert path.exists(), f"Makefile not found at {path}"
         return path.read_text()
 
@@ -184,19 +179,19 @@ class TestWorkflowFiles:
 
     def test_ci_yaml_exists(self) -> None:
         """Verify ci.yaml exists."""
-        path = repo_root() / ".github" / "workflows" / "ci.yaml"
+        path = REPO_ROOT / ".github" / "workflows" / "ci.yaml"
         assert path.exists(), f"ci.yaml not found at {path}"
         assert path.is_file(), "ci.yaml should be a file"
 
     def test_publish_yaml_exists(self) -> None:
         """Verify publish.yaml exists."""
-        path = repo_root() / ".github" / "workflows" / "publish.yaml"
+        path = REPO_ROOT / ".github" / "workflows" / "publish.yaml"
         assert path.exists(), f"publish.yaml not found at {path}"
         assert path.is_file(), "publish.yaml should be a file"
 
     def test_ci_yaml_is_valid_yaml(self) -> None:
         """ci.yaml parses as valid YAML."""
-        ci_path = repo_root() / ".github" / "workflows" / "ci.yaml"
+        ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yaml"
         content = ci_path.read_text()
         data = yaml.safe_load(content)
         assert isinstance(data, dict)
@@ -207,7 +202,7 @@ class TestWorkflowFiles:
 
     def test_publish_yaml_is_valid_yaml(self) -> None:
         """publish.yaml parses as valid YAML."""
-        publish_path = repo_root() / ".github" / "workflows" / "publish.yaml"
+        publish_path = REPO_ROOT / ".github" / "workflows" / "publish.yaml"
         content = publish_path.read_text()
         data = yaml.safe_load(content)
         assert isinstance(data, dict)
@@ -218,25 +213,25 @@ class TestWorkflowFiles:
 
     def test_publish_yaml_has_id_token_write(self) -> None:
         """Verify publish.yaml has id-token: write permission."""
-        path = repo_root() / ".github" / "workflows" / "publish.yaml"
+        path = REPO_ROOT / ".github" / "workflows" / "publish.yaml"
         content = path.read_text()
         assert "id-token: write" in content, "publish.yaml missing 'id-token: write' permission"
 
     def test_publish_yaml_has_testpypi_environment(self) -> None:
         """Verify publish.yaml references testpypi environment."""
-        path = repo_root() / ".github" / "workflows" / "publish.yaml"
+        path = REPO_ROOT / ".github" / "workflows" / "publish.yaml"
         content = path.read_text()
         assert "testpypi" in content, "publish.yaml does not reference 'testpypi'"
 
     def test_publish_yaml_has_pypi_environment(self) -> None:
         """Verify publish.yaml references pypi environment."""
-        path = repo_root() / ".github" / "workflows" / "publish.yaml"
+        path = REPO_ROOT / ".github" / "workflows" / "publish.yaml"
         content = path.read_text()
         assert "environment: pypi" in content, "publish.yaml does not reference 'environment: pypi'"
 
     def test_ci_yaml_has_contents_read_permission(self) -> None:
         """Verify ci.yaml has contents: read permission."""
-        path = repo_root() / ".github" / "workflows" / "ci.yaml"
+        path = REPO_ROOT / ".github" / "workflows" / "ci.yaml"
         content = path.read_text()
         assert "contents: read" in content, "ci.yaml missing 'contents: read' permission"
 
@@ -247,20 +242,20 @@ class TestPrekToml:
     @pytest.fixture
     def prek_data(self) -> dict:
         """Load and parse prek.toml."""
-        path = repo_root() / "prek.toml"
+        path = REPO_ROOT / "prek.toml"
         assert path.exists(), f"prek.toml not found at {path}"
         with path.open("rb") as f:
             return tomllib.load(f)
 
     def test_prek_file_exists(self) -> None:
         """Verify prek.toml exists at repo root."""
-        path = repo_root() / "prek.toml"
+        path = REPO_ROOT / "prek.toml"
         assert path.exists(), f"prek.toml not found at {path}"
         assert path.is_file(), "prek.toml should be a file"
 
     def test_prek_is_valid_toml(self) -> None:
         """Verify prek.toml is valid TOML."""
-        path = repo_root() / "prek.toml"
+        path = REPO_ROOT / "prek.toml"
         with path.open("rb") as f:
             # If this doesn't raise, the TOML is valid
             tomllib.load(f)

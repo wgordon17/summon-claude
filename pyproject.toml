@@ -3,7 +3,7 @@ name = "summon-claude"
 dynamic = ["version"]
 description = "Bridge Claude Code sessions to Slack channels"
 license = "MIT"
-authors = [{name = "Will Gordon"}]
+authors = [{name = "Will Gordon", email = "will@gordoncode.dev"}]
 keywords = ["claude", "slack", "ai", "cli", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
