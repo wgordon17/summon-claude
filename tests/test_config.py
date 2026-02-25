@@ -167,3 +167,24 @@ class TestDiscoverInstalledPlugins:
         with patch("summon_claude.config.Path.home", return_value=tmp_path):
             result = discover_installed_plugins()
         assert result == []
+
+    def test_v2_format_supported(self, tmp_path):
+        plugin_dir = tmp_path / ".claude" / "plugins" / "cache" / "myplugin"
+        plugin_dir.mkdir(parents=True)
+
+        plugins_dir = tmp_path / ".claude" / "plugins"
+        registry = {
+            "version": 2,
+            "plugins": {
+                "myplugin@org": [
+                    {"installPath": str(plugin_dir), "version": "1.0.0"},
+                ],
+            },
+        }
+        (plugins_dir / "installed_plugins.json").write_text(json.dumps(registry))
+
+        with patch("summon_claude.config.Path.home", return_value=tmp_path):
+            result = discover_installed_plugins()
+        assert len(result) == 1
+        assert result[0]["type"] == "local"
+        assert result[0]["path"] == str(plugin_dir)

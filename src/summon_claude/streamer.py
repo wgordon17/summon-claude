@@ -49,8 +49,8 @@ class ResponseStreamer:
     Routing heuristic:
     - TextBlock BEFORE any ToolUseBlock in the turn -> main channel
     - ToolUseBlock -> turn thread (sets _has_seen_tool_use)
-    - TextBlock AFTER ToolUseBlock -> buffer + turn thread
-    - On ResultMessage -> flush buffered post-tool text to main channel (conclusion)
+    - TextBlock AFTER ToolUseBlock -> accumulated for main channel conclusion
+    - On ResultMessage -> post accumulated conclusion to main channel
     - StreamEvent with parent_tool_use_id -> subagent thread
     """
 
@@ -121,10 +121,11 @@ class ResponseStreamer:
             await self._flush_buffer()
             await self._post_to_subagent(parent_id, block.text)
         elif self._turn.has_seen_tool_use:
+            # Flush any pending pre-tool text before switching to conclusion mode
             await self._flush_buffer()
-            self._turn.posting_to_thread = True
-            self._turn.text_after_tools = block.text
-            await self._append_text(block.text)
+            # Accumulate conclusion text for main channel only — do NOT add to buffer
+            # This prevents duplication: text_after_tools goes to main via _flush_conclusion_to_main
+            self._turn.text_after_tools += block.text
         else:
             self._turn.posting_to_thread = False
             await self._append_text(block.text)

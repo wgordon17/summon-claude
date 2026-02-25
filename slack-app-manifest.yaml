@@ -32,6 +32,9 @@ oauth_config:
       - channels:manage
       - channels:history
       - channels:read
+      - groups:write
+      - groups:history
+      - groups:read
       - files:write
       - reactions:write
       - users:read
@@ -43,5 +46,6 @@ settings:
   event_subscriptions:
     bot_events:
       - message.channels
+      - message.groups
   interactivity:
     is_enabled: true
