@@ -10,7 +10,7 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 from helpers import make_mock_provider
 from summon_claude.config import SummonConfig
 from summon_claude.content_display import _split_text
-from summon_claude.streamer import ResponseStreamer, _format_tool_summary
+from summon_claude.streamer import ResponseStreamer, StreamResult, _format_tool_summary
 from summon_claude.thread_router import ThreadRouter
 
 
@@ -85,7 +85,8 @@ class TestResponseStreamerStream:
             result_msg,
         ]
         result = await streamer.stream_with_flush(agen(messages))
-        assert result is result_msg
+        assert result is not None
+        assert result.result is result_msg
 
     async def test_returns_none_when_no_result(self):
         streamer, router, provider = make_streamer()
@@ -166,7 +167,8 @@ class TestResponseStreamerStreamWithFlush:
             result_msg,
         ]
         result = await streamer.stream_with_flush(agen(messages))
-        assert result is result_msg
+        assert result is not None
+        assert result.result is result_msg
 
     async def test_stream_with_flush_posts_messages(self):
         streamer, router, provider = make_streamer()
@@ -456,3 +458,90 @@ class TestBug025ResponseDuplication:
 
         # add_reaction should have been called (checkmark on conclusion or result)
         assert provider.add_reaction.called
+
+
+class TestStreamResult:
+    async def test_stream_result_contains_context(self):
+        """When ResultMessage has usage, StreamResult should have ContextUsage."""
+        from summon_claude.context import ContextUsage
+
+        streamer, router, provider = make_streamer()
+        result_msg = ResultMessage(
+            subtype="success",
+            session_id="s1",
+            is_error=False,
+            total_cost_usd=0.01,
+            num_turns=1,
+            result=None,
+            usage={
+                "input_tokens": 84000,
+                "output_tokens": 1000,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+            duration_ms=1000,
+            duration_api_ms=800,
+        )
+        messages = [
+            make_assistant_message([make_text_block("text")]),
+            result_msg,
+        ]
+        stream_result = await streamer.stream_with_flush(agen(messages))
+        assert stream_result is not None
+        assert stream_result.context is not None
+        assert stream_result.context.input_tokens == 84000
+        assert stream_result.context.percentage == pytest.approx(42.0)
+
+    async def test_stream_result_model_captured(self):
+        """Model from AssistantMessage should appear in StreamResult."""
+        streamer, router, provider = make_streamer()
+        messages = [
+            make_assistant_message([make_text_block("text")]),
+            make_result_message(),
+        ]
+        stream_result = await streamer.stream_with_flush(agen(messages))
+        assert stream_result is not None
+        assert stream_result.model == "claude-opus-4-6"
+
+    async def test_stream_result_none_when_no_result(self):
+        """When no ResultMessage, stream_with_flush returns None."""
+        streamer, router, provider = make_streamer()
+        messages = [make_assistant_message([make_text_block("text")])]
+        result = await streamer.stream_with_flush(agen(messages))
+        assert result is None
+
+    async def test_stream_result_none_usage_means_none_context(self):
+        """When ResultMessage.usage is None, context should be None."""
+        streamer, router, provider = make_streamer()
+        messages = [
+            make_assistant_message([make_text_block("text")]),
+            make_result_message(),  # usage=None by default
+        ]
+        stream_result = await streamer.stream_with_flush(agen(messages))
+        assert stream_result is not None
+        assert stream_result.context is None
+
+    async def test_stream_result_result_attribute_matches_message(self):
+        """StreamResult.result should be the exact ResultMessage object."""
+        streamer, router, provider = make_streamer()
+        result_msg = make_result_message(cost=0.02)
+        messages = [
+            make_assistant_message([make_text_block("hello")]),
+            result_msg,
+        ]
+        stream_result = await streamer.stream_with_flush(agen(messages))
+        assert stream_result is not None
+        assert stream_result.result is result_msg
+
+    async def test_stream_result_model_none_when_not_set(self):
+        """When AssistantMessage has no model, StreamResult.model should be None."""
+        streamer, router, provider = make_streamer()
+        # Create AssistantMessage without setting model
+        msg_no_model = AssistantMessage(content=[make_text_block("text")], model=None)
+        messages = [
+            msg_no_model,
+            make_result_message(),
+        ]
+        stream_result = await streamer.stream_with_flush(agen(messages))
+        assert stream_result is not None
+        assert stream_result.model is None

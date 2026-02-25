@@ -262,6 +262,7 @@ class TestSessionShutdownSummary:
             mock_provider = AsyncMock()
             mock_permission_handler = AsyncMock()
             mock_socket_handler = AsyncMock()
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
 
             session = SummonSession(
                 config,
@@ -278,9 +279,8 @@ class TestSessionShutdownSummary:
                 permission_handler=mock_permission_handler,
                 channel_id="C_TEST_CHAN",
                 socket_handler=mock_socket_handler,
+                channel_manager=mock_channel_manager,
             )
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
             mock_channel_manager.archive_session_channel = AsyncMock()
 
             await session._shutdown(rt, mock_channel_manager)
@@ -314,6 +314,9 @@ class TestSessionShutdownSummary:
                 auth=make_auth(session_id="sess-arch"),
             )
 
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_channel_manager.archive_session_channel = AsyncMock()
+
             rt = _SessionRuntime(
                 registry=registry,
                 client=mock_client,
@@ -321,10 +324,8 @@ class TestSessionShutdownSummary:
                 permission_handler=mock_permission_handler,
                 channel_id="C_ARCH_CHAN",
                 socket_handler=mock_socket_handler,
+                channel_manager=mock_channel_manager,
             )
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
 
             await session._shutdown(rt, mock_channel_manager)
 
@@ -352,6 +353,9 @@ class TestSessionShutdownSummary:
                 auth=make_auth(session_id="sess-comp"),
             )
 
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_channel_manager.archive_session_channel = AsyncMock()
+
             rt = _SessionRuntime(
                 registry=registry,
                 client=mock_client,
@@ -359,10 +363,8 @@ class TestSessionShutdownSummary:
                 permission_handler=mock_permission_handler,
                 channel_id="C_COMP_CHAN",
                 socket_handler=mock_socket_handler,
+                channel_manager=mock_channel_manager,
             )
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
 
             await session._shutdown(rt, mock_channel_manager)
 
@@ -396,6 +398,9 @@ class TestSessionShutdown:
             )
             assert session._shutdown_completed is False
 
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_channel_manager.archive_session_channel = AsyncMock()
+
             rt = _SessionRuntime(
                 registry=registry,
                 client=mock_client,
@@ -403,10 +408,8 @@ class TestSessionShutdown:
                 permission_handler=mock_permission_handler,
                 channel_id="C_FLAG_CHAN",
                 socket_handler=mock_socket_handler,
+                channel_manager=mock_channel_manager,
             )
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
 
             await session._shutdown(rt, mock_channel_manager)
 
@@ -441,6 +444,9 @@ class TestSessionShutdown:
 
             registry.update_status = failing_update
 
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_channel_manager.archive_session_channel = AsyncMock()
+
             rt = _SessionRuntime(
                 registry=registry,
                 client=mock_client,
@@ -448,10 +454,8 @@ class TestSessionShutdown:
                 permission_handler=mock_permission_handler,
                 channel_id="C_FAIL_CHAN",
                 socket_handler=mock_socket_handler,
+                channel_manager=mock_channel_manager,
             )
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
 
             await session._shutdown(rt, mock_channel_manager)
 
@@ -480,6 +484,11 @@ class TestSessionShutdown:
                 auth=make_auth(session_id="sess-arch-fail"),
             )
 
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_channel_manager.archive_session_channel = AsyncMock(
+                side_effect=RuntimeError("Archive failed")
+            )
+
             rt = _SessionRuntime(
                 registry=registry,
                 client=mock_client,
@@ -487,11 +496,7 @@ class TestSessionShutdown:
                 permission_handler=mock_permission_handler,
                 channel_id="C_ARCH_FAIL_CHAN",
                 socket_handler=mock_socket_handler,
-            )
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock(
-                side_effect=RuntimeError("Archive failed")
+                channel_manager=mock_channel_manager,
             )
 
             # Should not raise — should catch and continue
@@ -529,6 +534,9 @@ class TestSessionShutdown:
                 auth=make_auth(session_id="sess-timeout"),
             )
 
+            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_channel_manager.archive_session_channel = AsyncMock()
+
             rt = _SessionRuntime(
                 registry=registry,
                 client=mock_client,
@@ -536,10 +544,8 @@ class TestSessionShutdown:
                 permission_handler=mock_permission_handler,
                 channel_id="C_TIMEOUT_CHAN",
                 socket_handler=mock_socket_handler,
+                channel_manager=mock_channel_manager,
             )
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
 
             # Should timeout and continue (not hang forever)
             await session._shutdown(rt, mock_channel_manager)

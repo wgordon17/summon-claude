@@ -91,3 +91,6 @@ class SlackChatProvider:
             await self._client.conversations_archive(channel=channel_id)
         except Exception as e:
             logger.debug("Failed to archive channel %s: %s", channel_id, e)
+
+    async def set_topic(self, channel: str, topic: str) -> None:
+        await self._client.conversations_setTopic(channel=channel, topic=topic)

@@ -9,6 +9,7 @@ import pytest
 
 from helpers import make_mock_provider
 from summon_claude.channel_manager import ChannelManager, _get_git_branch, _slugify
+from summon_claude.context import ContextUsage
 from summon_claude.providers.base import ChannelRef, MessageRef
 
 
@@ -217,10 +218,207 @@ class TestGetGitBranch:
             if expected and expected != "HEAD":
                 assert branch == expected
 
-    def test_returns_none_for_non_repo(self, tmp_path):
+    def test_returns_none_for_non_repo(self, tmp_path, monkeypatch):
+        import subprocess
+
+        original_run = subprocess.run
+
+        def mock_run(args, **kwargs):
+            # Simulate git failing in a non-repo directory
+            if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                result = subprocess.CompletedProcess(args, returncode=128, stdout="", stderr="")
+                return result
+            return original_run(args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
         branch = _get_git_branch(str(tmp_path))
         assert branch is None
 
     def test_returns_none_for_nonexistent_dir(self):
         branch = _get_git_branch("/nonexistent/path/xyz")
         assert branch is None
+
+
+class TestFormatTopic:
+    def test_all_fields_present(self):
+        """Topic should contain model, cwd, branch, and context emoji+values."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        context = ContextUsage(input_tokens=84000, context_window=200000, percentage=42.0)
+        topic = mgr.format_topic(
+            model="claude-opus-4-6",
+            cwd="/home/user/projects/foo",
+            git_branch="feat/bar",
+            context=context,
+        )
+        # Check for emoji unicode chars
+        assert "\U0001f916" in topic  # 🤖 robot
+        assert "\U0001f4c2" in topic  # 📂 folder
+        assert "\U0001f33f" in topic  # 🌿 branch
+        assert "\U0001f4ca" in topic  # 📊 chart
+        # Check for content
+        assert "opus-4-6" in topic
+        assert "feat/bar" in topic
+        assert "84k/200k" in topic
+        assert "42%" in topic
+
+    def test_model_strips_claude_prefix(self):
+        """Model 'claude-sonnet-4-5' should become 'sonnet-4-5' in output."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        topic = mgr.format_topic(
+            model="claude-sonnet-4-5",
+            cwd="/tmp",
+            git_branch=None,
+            context=None,
+        )
+        assert "sonnet-4-5" in topic
+        assert "claude-sonnet-4-5" not in topic
+
+    def test_no_git_branch_omits_segment(self):
+        """When git_branch is None, no branch emoji segment should appear."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        topic = mgr.format_topic(
+            model="claude-opus-4-6",
+            cwd="/tmp",
+            git_branch=None,
+            context=None,
+        )
+        # Should not have branch emoji
+        assert "\U0001f33f" not in topic
+
+    def test_no_context_shows_dashes(self):
+        """When context is None, context segment should show '--'."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        topic = mgr.format_topic(
+            model="claude-opus-4-6",
+            cwd="/tmp",
+            git_branch=None,
+            context=None,
+        )
+        assert "--" in topic
+
+    def test_context_formats_correctly(self):
+        """Context should be formatted as 'XXk/YYYk (ZZ%)'."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        context = ContextUsage(input_tokens=84000, context_window=200000, percentage=42.0)
+        topic = mgr.format_topic(
+            model="claude-opus-4-6",
+            cwd="/tmp",
+            git_branch=None,
+            context=context,
+        )
+        assert "84k/200k" in topic
+        assert "42%" in topic
+
+    def test_truncates_to_250_chars(self):
+        """Topic should be truncated to 250 characters."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        long_path = "/very/long/path/" + ("x" * 500)
+        topic = mgr.format_topic(
+            model="claude-opus-4-6",
+            cwd=long_path,
+            git_branch=None,
+            context=None,
+        )
+        assert len(topic) <= 250
+
+    def test_home_dir_replaced_with_tilde(self, tmp_path, monkeypatch):
+        """Home directory in cwd should be replaced with ~."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        # Monkeypatch Path.home() to return a known path
+        monkeypatch.setattr(Path, "home", lambda: Path(str(tmp_path)))
+        home_subdir = tmp_path / "projects" / "foo"
+        home_subdir.mkdir(parents=True, exist_ok=True)
+        topic = mgr.format_topic(
+            model="claude-opus-4-6",
+            cwd=str(home_subdir),
+            git_branch=None,
+            context=None,
+        )
+        assert "~/" in topic
+        assert str(tmp_path) not in topic
+
+    def test_non_claude_model_used_as_is(self):
+        """Non-Claude model should appear as-is (without 'claude-' prefix)."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        topic = mgr.format_topic(
+            model="gpt-4o",
+            cwd="/tmp",
+            git_branch=None,
+            context=None,
+        )
+        assert "gpt-4o" in topic
+
+    def test_none_model_shows_default(self):
+        """When model is None, should show 'default'."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        topic = mgr.format_topic(
+            model=None,
+            cwd="/tmp",
+            git_branch=None,
+            context=None,
+        )
+        assert "default" in topic
+
+    def test_context_percentage_formatting(self):
+        """Percentage should be formatted without decimal places (42% not 42.0%)."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        context = ContextUsage(input_tokens=100000, context_window=200000, percentage=50.0)
+        topic = mgr.format_topic(
+            model="claude-opus-4-6",
+            cwd="/tmp",
+            git_branch=None,
+            context=context,
+        )
+        # Should have "50%" not "50.0%"
+        assert "50%" in topic
+
+
+class TestUpdateTopic:
+    async def test_update_topic_calls_provider(self):
+        """update_topic should call provider.set_topic with channel and topic."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        await mgr.update_topic("C_TEST", "test topic")
+        provider.set_topic.assert_called_once_with("C_TEST", "test topic")
+
+    async def test_update_topic_swallows_errors(self):
+        """update_topic should not propagate exceptions from provider.set_topic."""
+        provider = make_mock_provider()
+        provider.set_topic = AsyncMock(side_effect=Exception("not_in_channel"))
+        mgr = ChannelManager(provider)
+
+        # Should not raise
+        await mgr.update_topic("C_TEST", "test topic")
+
+
+class TestSetSessionTopic:
+    async def test_set_session_topic_formats_and_sets(self):
+        """set_session_topic should format topic and call provider.set_topic."""
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider)
+        context = ContextUsage(input_tokens=84000, context_window=200000, percentage=42.0)
+        await mgr.set_session_topic(
+            "C_TEST",
+            model="claude-opus-4-6",
+            cwd="/tmp",
+            git_branch="main",
+            context=context,
+        )
+        provider.set_topic.assert_called_once()
+        call_args = provider.set_topic.call_args[0]
+        assert call_args[0] == "C_TEST"
+        # Verify the formatted topic contains expected components
+        topic = call_args[1]
+        assert "opus-4-6" in topic
+        assert "main" in topic
+        assert "84k/200k" in topic

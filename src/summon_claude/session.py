@@ -22,10 +22,11 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude._formatting import format_file_references
 from summon_claude.auth import SessionAuth, verify_short_code
-from summon_claude.channel_manager import ChannelManager
+from summon_claude.channel_manager import ChannelManager, _get_git_branch
 from summon_claude.commands import CommandContext, CommandRegistry, build_registry
 from summon_claude.config import SummonConfig, discover_installed_plugins
 from summon_claude.content_display import ContentDisplay, _split_text
+from summon_claude.context import ContextUsage
 from summon_claude.mcp_tools import create_summon_mcp_server
 from summon_claude.permissions import PermissionHandler
 from summon_claude.providers.slack import SlackChatProvider
@@ -80,6 +81,7 @@ class _SessionRuntime:
     permission_handler: PermissionHandler
     channel_id: str
     socket_handler: AsyncSocketModeHandler
+    channel_manager: ChannelManager
 
 
 class SummonSession:
@@ -125,6 +127,8 @@ class SummonSession:
         # Session stats
         self._total_cost: float = 0.0
         self._total_turns: int = 0
+        self._last_context: ContextUsage | None = None
+        self._last_model_seen: str | None = None
 
         # Rate limiter for /summon slash command
         self._rate_limiter = RateLimiter()
@@ -369,6 +373,15 @@ class SummonSession:
             },
         )
 
+        git_branch = _get_git_branch(self._cwd)
+        await channel_manager.set_session_topic(
+            channel_id,
+            model=self._model,
+            cwd=self._cwd,
+            git_branch=git_branch,
+            context=None,
+        )
+
         # Notify the authenticating user
         if self._authenticated_user_id:
             try:
@@ -392,6 +405,7 @@ class SummonSession:
             permission_handler=permission_handler,
             channel_id=channel_id,
             socket_handler=socket_handler,
+            channel_manager=channel_manager,
         )
 
         # Register post-auth callbacks as closures capturing rt
@@ -493,6 +507,27 @@ class SummonSession:
                         await rt.registry.update_status(
                             self._session_id, "active", claude_session_id=claude_session_id
                         )
+                        try:
+                            await rt.provider.post_message(
+                                rt.channel_id,
+                                f"Claude session: `{claude_session_id[:16]}...`",
+                                blocks=[
+                                    {
+                                        "type": "context",
+                                        "elements": [
+                                            {
+                                                "type": "mrkdwn",
+                                                "text": (
+                                                    f":brain: Claude session ID:"
+                                                    f" `{claude_session_id[:16]}...`"
+                                                ),
+                                            }
+                                        ],
+                                    }
+                                ],
+                            )
+                        except Exception as e2:
+                            logger.debug("Failed to post Claude session ID: %s", e2)
             except Exception as e:
                 logger.debug("Could not retrieve Claude session ID: %s", e)
 
@@ -548,15 +583,19 @@ class SummonSession:
             self._total_turns += 1
             await router.start_turn(self._total_turns)
             await claude.query(message)
-            result = await streamer.stream_with_flush(claude.receive_response())
-            if streamer.resolved_model:
-                self._model = streamer.resolved_model
-            if result:
-                cost = result.total_cost_usd or 0.0
+            stream_result = await streamer.stream_with_flush(claude.receive_response())
+            if stream_result:
+                if stream_result.model:
+                    self._model = stream_result.model
+                cost = stream_result.result.total_cost_usd or 0.0
                 self._total_cost += cost
                 await rt.registry.record_turn(self._session_id, cost)
                 summary = router.generate_turn_summary()
                 await router.update_turn_summary(summary)
+                if stream_result.context is not None:
+                    self._last_context = stream_result.context
+                if stream_result.model is not None:
+                    self._last_model_seen = stream_result.model
         except Exception as e:
             logger.exception("Error during Claude response: %s", e)
             error_type = type(e).__name__
@@ -577,13 +616,25 @@ class SummonSession:
                 logger.warning("Failed to post error notification: %s", e2)
 
     async def _heartbeat_loop(self, rt: _SessionRuntime) -> None:
-        """Update registry heartbeat every 30 seconds."""
+        """Update registry heartbeat and channel topic every 30 seconds."""
         while not self._shutdown_event.is_set():
             await asyncio.sleep(_HEARTBEAT_INTERVAL_S)
             try:
                 await rt.registry.heartbeat(self._session_id)
             except Exception as e:
                 logger.warning("Heartbeat failed: %s", e)
+            if self._last_context is not None:
+                try:
+                    git_branch = _get_git_branch(self._cwd)
+                    await rt.channel_manager.set_session_topic(
+                        rt.channel_id,
+                        model=self._last_model_seen or self._model,
+                        cwd=self._cwd,
+                        git_branch=git_branch,
+                        context=self._last_context,
+                    )
+                except Exception as e:
+                    logger.debug("Heartbeat topic update failed: %s", e)
 
     async def _shutdown(self, rt: _SessionRuntime, channel_manager: ChannelManager) -> None:
         """Gracefully shut down the session."""
