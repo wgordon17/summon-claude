@@ -41,6 +41,7 @@ class _TurnState:
     buffer: str = ""
     last_message_ts: str | None = None
     posting_to_thread: bool = False
+    resolved_model: str | None = None
 
 
 class ResponseStreamer:
@@ -103,8 +104,15 @@ class ResponseStreamer:
 
         return result
 
+    @property
+    def resolved_model(self) -> str | None:
+        """Return the model name resolved from the first AssistantMessage, if any."""
+        return self._turn.resolved_model
+
     async def _handle_assistant_message(self, message: AssistantMessage) -> None:
         """Process content blocks from an AssistantMessage."""
+        if not self._turn.resolved_model and getattr(message, "model", None):
+            self._turn.resolved_model = message.model
         parent_id = message.parent_tool_use_id
 
         for block in message.content:
@@ -261,6 +269,9 @@ class ResponseStreamer:
 
     async def _post_result_summary(self, result: ResultMessage) -> None:
         """Post session summary after Claude finishes a turn."""
+        if result.result:
+            await self._router.post_to_main(result.result)
+
         cost = result.total_cost_usd
         cost_str = f"${cost:.4f}" if cost is not None else "unknown"
         turns = result.num_turns

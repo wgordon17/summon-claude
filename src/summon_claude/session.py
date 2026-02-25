@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+import click
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
@@ -24,7 +25,7 @@ from summon_claude.auth import SessionAuth, verify_short_code
 from summon_claude.channel_manager import ChannelManager
 from summon_claude.commands import CommandContext, CommandRegistry, build_registry
 from summon_claude.config import SummonConfig, discover_installed_plugins
-from summon_claude.content_display import ContentDisplay
+from summon_claude.content_display import ContentDisplay, _split_text
 from summon_claude.mcp_tools import create_summon_mcp_server
 from summon_claude.permissions import PermissionHandler
 from summon_claude.providers.slack import SlackChatProvider
@@ -144,6 +145,7 @@ class SummonSession:
                 details={"cwd": self._cwd, "name": self._name, "model": self._model},
             )
 
+            socket_handler: AsyncSocketModeHandler | None = None
             try:
                 # Set up Slack app
                 client = AsyncWebClient(token=self._config.slack_bot_token)
@@ -217,6 +219,8 @@ class SummonSession:
 
                 logger.info("Waiting for Slack authentication...")
 
+                logging.getLogger("slack_bolt").setLevel(logging.WARNING)
+                assert socket_handler is not None
                 auth_task = asyncio.create_task(self._wait_for_auth())
                 socket_task = asyncio.create_task(socket_handler.start_async())
                 done, pending = await asyncio.wait(
@@ -250,6 +254,11 @@ class SummonSession:
                             await registry.delete_pending_token(self._auth.short_code)
                         except Exception as e:
                             logger.debug("Failed to delete pending token on timeout: %s", e)
+                    if socket_handler is not None:
+                        try:
+                            await socket_handler.close_async()
+                        except Exception as e:
+                            logger.debug("Socket Mode cleanup error on timeout: %s", e)
                     logger.error("Authentication timed out")
                     await registry.update_status(
                         self._session_id, "errored", error_message="Authentication timed out"
@@ -267,6 +276,11 @@ class SummonSession:
                         await registry.delete_pending_token(self._auth.short_code)
                     except Exception as e:
                         logger.debug("Failed to delete pending token on shutdown: %s", e)
+                if socket_handler is not None:
+                    try:
+                        await socket_handler.close_async()
+                    except Exception as e:
+                        logger.debug("Socket Mode cleanup error on shutdown: %s", e)
                 return False
 
             except asyncio.CancelledError:
@@ -276,6 +290,11 @@ class SummonSession:
                         await registry.delete_pending_token(self._auth.short_code)
                     except Exception as e:
                         logger.debug("Failed to delete pending token on cancel: %s", e)
+                if socket_handler is not None:
+                    try:
+                        await socket_handler.close_async()
+                    except Exception as e:
+                        logger.debug("Socket Mode cleanup error on cancel: %s", e)
                 raise
             finally:
                 if not self._shutdown_completed:
@@ -292,7 +311,7 @@ class SummonSession:
     async def _wait_for_auth(self) -> AuthResult:
         """Poll until auth is confirmed, timed out, or shutdown is requested."""
         elapsed = 0.0
-        next_countdown = 30.0
+        next_countdown = 15.0
         while elapsed < _AUTH_TIMEOUT_S:
             if self._authenticated_event.is_set():
                 return "authenticated"
@@ -302,13 +321,11 @@ class SummonSession:
             await asyncio.sleep(_AUTH_POLL_INTERVAL_S)
             elapsed += _AUTH_POLL_INTERVAL_S
             if elapsed >= next_countdown:
-                remaining = int(_AUTH_TIMEOUT_S - elapsed)
+                remaining = _AUTH_TIMEOUT_S - elapsed
                 if remaining > 0:
-                    logger.info("Waiting for authentication... %ds remaining", remaining)
-                next_countdown += 30.0
+                    click.echo(f"Waiting for authentication... {remaining:.0f}s remaining")
+                next_countdown += 15.0
 
-        logger.info("Authentication timed out. No /summon command received within 5 minutes.")
-        logger.warning("Auth timeout after %.0f seconds", elapsed)
         self._shutdown_event.set()
         return "timed_out"
 
@@ -486,6 +503,18 @@ class SummonSession:
                 if commands:
                     self._command_registry.set_passthrough_commands(commands)
 
+            # Discover resolved model name via /model query
+            try:
+                await claude.query("/model")
+                async for msg in claude.receive_response():
+                    if isinstance(msg, AssistantMessage) and (
+                        not self._model or self._model == "default"
+                    ):
+                        self._model = msg.model
+                    # Consume but don't display the response
+            except Exception as e:
+                logger.debug("Could not discover model name: %s", e)
+
             while not self._shutdown_event.is_set():
                 try:
                     item = await asyncio.wait_for(
@@ -520,6 +549,8 @@ class SummonSession:
             await router.start_turn(self._total_turns)
             await claude.query(message)
             result = await streamer.stream_with_flush(claude.receive_response())
+            if streamer.resolved_model:
+                self._model = streamer.resolved_model
             if result:
                 cost = result.total_cost_usd or 0.0
                 self._total_cost += cost
@@ -616,6 +647,25 @@ class SummonSession:
         except Exception as e:
             logger.debug("Socket Mode cleanup error: %s", e)
 
+    async def _post_clear_delineation(self, rt: _SessionRuntime) -> None:
+        """Post a visual delineation block to mark conversation history cleared."""
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        blocks = [
+            {"type": "divider"},
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "Conversation Cleared", "emoji": True},
+            },
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"Cleared at {timestamp}"}],
+            },
+        ]
+        try:
+            await rt.provider.post_message(rt.channel_id, "Conversation cleared.", blocks=blocks)
+        except Exception as e:
+            logger.warning("Failed to post clear delineation: %s", e)
+
     async def _dispatch_command(
         self,
         rt: _SessionRuntime,
@@ -652,10 +702,6 @@ class SummonSession:
                 logger.warning("Failed to post command error: %s", e2)
             return
 
-        # Handle model change from !model
-        if "new_model" in result.metadata:
-            self._model = result.metadata["new_model"]
-
         # Handle shutdown signal from !end/!quit/!exit/!logout
         if result.metadata.get("shutdown"):
             if result.text:
@@ -666,6 +712,10 @@ class SummonSession:
             self._shutdown_event.set()
             self._message_queue.put_nowait(("", None))
             return
+
+        # Handle !clear — post visual delineation then fall through to passthrough
+        if result.metadata.get("clear"):
+            await self._post_clear_delineation(rt)
 
         # Pass-through: translate !cmd args -> /cmd args and enqueue
         if not result.suppress_queue:
@@ -683,12 +733,15 @@ class SummonSession:
             await self._message_queue.put((slash_message, None))
             return
 
-        # Post the response text in thread
+        # Post the response text in thread (with splitting for long responses)
         if result.text:
-            try:
-                await rt.provider.post_message(rt.channel_id, result.text, thread_ts=thread_ts)
-            except Exception as e:
-                logger.warning("Failed to post command response: %s", e)
+            chunks = _split_text(result.text, _MAX_USER_MESSAGE_CHARS)
+            for chunk in chunks:
+                try:
+                    await rt.provider.post_message(rt.channel_id, chunk, thread_ts=thread_ts)
+                except Exception as e:
+                    logger.warning("Failed to post command response: %s", e)
+                    break
 
     def _handle_signal(self) -> None:
         """Signal handler for SIGINT/SIGTERM — triggers graceful shutdown."""
