@@ -44,6 +44,11 @@ def get_data_dir() -> Path:
     return _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
 
 
+def get_update_check_path() -> Path:
+    """Return path to the update-check cache file."""
+    return get_data_dir() / "update-check.json"
+
+
 def get_config_file(override: str | None = None) -> Path:
     if override is not None:
         return Path(override)

@@ -18,6 +18,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9.0",  # required by slack-sdk's AsyncWebClient
+    "packaging>=24.0",
     "aiosqlite>=0.20.0",
     "click>=8.1",
     "claude-agent-sdk>=0.1.39",
@@ -101,8 +102,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# CLI: click.echo for output; slack handler unused args
-"src/summon_claude/cli.py" = ["ARG001", "PLR0913"]
+# CLI: click.echo for output; slack handler unused args; cmd_start has many required statements
+"src/summon_claude/cli.py" = ["ARG001", "PLR0913", "PLR0915"]
 # cli_config: config_check has many validation branches by design
 "src/summon_claude/cli_config.py" = ["PLR0912", "PLR0915"]
 # Session: asserts in private methods; slack handler signatures
@@ -115,6 +116,8 @@ ignore = [
 "src/summon_claude/channel_manager.py" = ["S607", "PLW1510"]
 # Streamer: best-effort Slack operations; PLR0911 multiple return paths
 "src/summon_claude/streamer.py" = ["SIM105", "PLR0911", "F841"]
+# Update checker: urlopen with hardcoded PyPI URL is safe; print-like output via click.echo
+"src/summon_claude/update_check.py" = ["S310"]
 # Tests: asserts, magic values, hardcoded tokens, subprocess calls, random, deferred imports, asyncio tasks
 "tests/**/*.py" = [
     "S101",    # assert is standard in tests
