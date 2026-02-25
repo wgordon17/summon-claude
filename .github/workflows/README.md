@@ -8,6 +8,12 @@ Triggers: pull requests to `main`, manual dispatch
 
 Runs lint (`make py-lint`) and tests (`make py-test`) on every PR. Cancels in-progress runs for the same PR.
 
+### `renovate.yaml` — Dependency Updates
+
+Triggers: weekly (Saturday 6 AM EST), manual dispatch
+
+Runs self-hosted Renovate to create dependency update PRs. Updates Python dependencies, GitHub Actions SHAs, and pre-commit hook versions. Config in `.github/renovate.json`.
+
 ### `publish.yaml` — Build & Publish
 
 Triggers:
@@ -48,7 +54,21 @@ For first-time packages, use "pending publishers" — no existing project needed
 
 After first successful publish, the project moves from "pending" to "active" publisher automatically.
 
-### 3. Repository Default Permissions
+### 3. Create Renovate PAT
+
+Create a fine-grained personal access token for Renovate:
+
+1. Go to: **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**
+2. Create a token scoped to the `summon-claude` repository with permissions:
+   - **Contents:** Read and write (create branches, update files)
+   - **Pull requests:** Read and write (create/update PRs)
+   - **Workflows:** Read and write (update workflow pinned SHAs)
+   - **Metadata:** Read (required)
+3. Add as repo secret: **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `RENOVATE_TOKEN`
+   - Value: the PAT
+
+### 4. Repository Default Permissions
 
 Go to: **GitHub repo → Settings → Actions → General → Workflow permissions**
 

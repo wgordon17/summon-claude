@@ -1,0 +1,57 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    "abandonments:recommended"
+  ],
+  "dependencyDashboard": true,
+  "minimumReleaseAge": "14 days",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "minimumReleaseAge": "0 days"
+  },
+  "osvVulnerabilityAlerts": true,
+  "pre-commit": {
+    "enabled": true
+  },
+  "prHourlyLimit": 0,
+  "rangeStrategy": "pin",
+  "separateMajorMinor": false,
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "packageRules": [
+    {
+      "description": "Group all non-major dependency updates together (including pins)",
+      "matchUpdateTypes": ["pin", "digest", "patch", "minor"],
+      "groupName": "all non-major dependencies"
+    },
+    {
+      "description": "Group all major updates into a single PR",
+      "matchUpdateTypes": ["major"],
+      "groupName": "all major dependencies"
+    }
+  ],
+  "logLevelRemap": [
+    {
+      "matchMessage": "/External host error/",
+      "newLogLevel": "error"
+    },
+    {
+      "matchMessage": "/rate limit exceeded/i",
+      "newLogLevel": "error"
+    },
+    {
+      "matchMessage": "/Bad credentials/",
+      "newLogLevel": "error"
+    },
+    {
+      "matchMessage": "/integration is unauthorized/",
+      "newLogLevel": "error"
+    },
+    {
+      "matchMessage": "/authentication failure/i",
+      "newLogLevel": "error"
+    }
+  ]
+}
