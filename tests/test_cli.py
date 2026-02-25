@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import AsyncMock, patch
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from click.testing import CliRunner
 
@@ -542,3 +543,105 @@ class TestSessionCleanup:
             result = runner.invoke(cli, ["session", "cleanup"])
         assert result.exit_code == 0
         assert "Cleaned up 1 stale session(s)." in result.output
+
+
+# ---------------------------------------------------------------------------
+# Update check integration in cmd_start
+# ---------------------------------------------------------------------------
+
+
+def _mock_config():
+    """Return a mock SummonConfig that passes validation."""
+    config = MagicMock()
+    config.slack_bot_token = "xoxb-fake"
+    config.slack_app_token = "xapp-fake"
+    config.slack_signing_secret = "fake-secret"
+    config.default_model = None
+    return config
+
+
+def _mock_auth():
+    """Return a mock SessionAuth."""
+    from datetime import UTC, datetime
+
+    from summon_claude.auth import SessionAuth
+
+    return SessionAuth(
+        short_code="ABCD1234",
+        session_id="test-session-id",
+        expires_at=datetime.now(UTC),
+    )
+
+
+def _start_patches(update_info=None):
+    """Context manager that patches cmd_start dependencies and the update checker."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch("summon_claude.cli.SummonConfig.from_file", return_value=_mock_config())
+    )
+    stack.enter_context(patch("summon_claude.cli._generate_auth", return_value=_mock_auth()))
+    stack.enter_context(patch("summon_claude.cli.asyncio.run", side_effect=[_mock_auth(), False]))
+    stack.enter_context(
+        patch(
+            "summon_claude.update_check.check_for_update",
+            return_value=update_info,
+        )
+    )
+    return stack
+
+
+class TestUpdateCheckIntegration:
+    """Test update check integration in cmd_start."""
+
+    def test_start_shows_update_notification_on_stderr(self):
+        from summon_claude.update_check import UpdateInfo
+
+        info = UpdateInfo(current="0.1.0", latest="0.2.0")
+        with _start_patches(update_info=info):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["start"])
+        assert "0.1.0" in result.output
+        assert "0.2.0" in result.output
+        assert "uv tool upgrade" in result.output
+
+    def test_start_no_notification_when_up_to_date(self):
+        with _start_patches(update_info=None):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["start"])
+        assert "Update available" not in result.output
+
+    def test_start_quiet_suppresses_update_notification(self):
+        from summon_claude.update_check import UpdateInfo
+
+        info = UpdateInfo(current="0.1.0", latest="0.2.0")
+        with _start_patches(update_info=info):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["-q", "start"])
+        assert "Update available" not in result.output
+
+    def test_start_env_var_suppresses_update_check(self, monkeypatch):
+        monkeypatch.setenv("SUMMON_NO_UPDATE_CHECK", "1")
+        with _start_patches(update_info=None):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["start"])
+        assert "Update available" not in result.output
+
+    def test_start_slow_update_check_does_not_block(self):
+        """Update check that exceeds the join timeout should not block startup."""
+
+        def slow_check():
+            time.sleep(10)
+
+        with _start_patches(update_info=None) as stack:
+            stack.enter_context(
+                patch("summon_claude.update_check.check_for_update", side_effect=slow_check)
+            )
+            runner = CliRunner()
+            start = time.monotonic()
+            result = runner.invoke(cli, ["start"])
+            elapsed = time.monotonic() - start
+        # Should not wait the full 10 seconds — join timeout is 4s
+        assert elapsed < 8
+        assert "Update available" not in result.output

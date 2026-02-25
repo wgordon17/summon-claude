@@ -2,18 +2,55 @@
 
 Bridge Claude Code sessions to Slack channels. Run `summon start` in a terminal, authenticate from Slack, and interact with Claude entirely through a dedicated Slack channel.
 
+## Installation
+
+The package is `summon-claude` on PyPI; once installed, the CLI command is `summon`.
+
+### Option A: uv tool (Recommended)
+
+```bash
+uv tool install summon-claude
+```
+
+### Option B: pipx
+
+```bash
+pipx install summon-claude
+```
+
+### Option C: Homebrew (macOS/Linux)
+
+```bash
+brew install wgordon17/summon/summon-claude
+```
+
+### Keeping up to date
+
+summon checks for new versions on `summon start` and notifies you when an update is available.
+
+To upgrade to the latest version:
+
+| Installation method | Upgrade command |
+|---------------------|-----------------|
+| uv tool | `uv tool upgrade summon-claude` |
+| pipx | `pipx upgrade summon-claude` |
+| Homebrew | `brew upgrade summon-claude` |
+
+To disable update checks, set the environment variable:
+
+```bash
+export SUMMON_NO_UPDATE_CHECK=1
+```
+
 ## Quick Start
 
 ```bash
-# 1. Install
-uv tool install summon-claude
+# 1. Set up your Slack app (see Slack App Setup below)
 
-# 2. Set up your Slack app (see Slack App Setup below)
-
-# 3. Run the interactive setup wizard
+# 2. Run the interactive setup wizard
 summon init
 
-# 4. Start a session
+# 3. Start a session
 summon start
 ```
 
@@ -146,6 +183,7 @@ Use `summon config path` to see which path is active. Use `summon init` to creat
 | `SUMMON_CHANNEL_PREFIX` | `summon` | Prefix for created session channels |
 | `SUMMON_PERMISSION_DEBOUNCE_MS` | `500` | Debounce window for batching permission requests (ms) |
 | `SUMMON_MAX_INLINE_CHARS` | `2500` | Threshold for inline vs file upload display |
+| `SUMMON_NO_UPDATE_CHECK` | (unset) | Set to `1` to disable update notifications on `summon start` |
 
 A local `.env` in the project directory overrides the config file.
 
@@ -206,8 +244,8 @@ All Slack API calls go through a `ChatProvider` protocol, enabling future suppor
 | `mcp_tools.py` | In-process MCP server: `slack_upload_file`, `slack_create_thread`, `slack_react`, `slack_post_snippet` |
 | `providers/base.py` | ChatProvider protocol and message/channel abstractions |
 | `providers/slack.py` | SlackChatProvider implementation for Slack API calls |
-| `cli_config.py` | Config subcommand handlers: show, path, edit, set |
 | `rate_limiter.py` | Per-key cooldown rate limiter for slash command spam protection |
+| `update_check.py` | PyPI update checker with 24h cache, shown on `summon start` |
 | `_formatting.py` | Slack mrkdwn formatting helpers and tool argument extraction |
 
 ## Security
