@@ -1,6 +1,6 @@
 [project]
 name = "summon-claude"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Bridge Claude Code sessions to Slack channels"
 license = "MIT"
 authors = [{name = "Will Gordon"}]
@@ -36,11 +36,14 @@ Repository = "https://github.com/wgordon17/summon-claude"
 summon = "summon_claude.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/summon_claude"]
+
+[tool.hatch.version]
+source = "vcs"
 
 [dependency-groups]
 dev = [
