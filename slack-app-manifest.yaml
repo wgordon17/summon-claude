@@ -28,48 +28,20 @@ features:
 oauth_config:
   scopes:
     bot:
-      # Message sending
       - chat:write
-        # Description: Allows posting messages to channels
-
-      # Channel management
       - channels:manage
-        # Description: Create, archive, and manage channel headers for sessions
+      - channels:history
       - channels:read
-        # Description: Read channel information and list
-
-      # File operations
       - files:write
-        # Description: Upload files (code, diffs) to channels
-
-      # Interactive features
       - reactions:write
-        # Description: Add emoji reactions to messages
-
-      # User information
       - users:read
-        # Description: Read user profiles (for authorization checks)
-
-      # Commands
       - commands
-        # Description: Slash command support for /summon
 
 settings:
   org_deploy_enabled: false
   socket_mode_enabled: true
-    # Socket Mode allows real-time event streaming without webhooks
-    # The bot maintains a persistent connection for low-latency communication
-
   event_subscriptions:
     bot_events:
-      # Channel messages
       - message.channels
-        # Description: Receive messages in channels (for session interaction)
-
   interactivity:
     is_enabled: true
-      # Enables interactive buttons, select menus, and dialogs
-      # Used for permission approval flows
-
-  request_url_verification_enabled: false
-    # Disabled because Socket Mode doesn't use request URLs
