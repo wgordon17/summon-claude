@@ -1,9 +1,7 @@
 default_stages = ["pre-commit"]
 default_install_hook_types = [
   "pre-commit",
-  "prepare-commit-msg",
   "pre-push",
-  "post-merge",
 ]
 fail_fast = true
 
