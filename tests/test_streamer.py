@@ -281,3 +281,114 @@ class TestSplitText:
         text = "x" * 3000
         chunks = _split_text(text, 3000)
         assert len(chunks) == 1
+
+
+class TestBug025ResponseDuplication:
+    """Tests for BUG-025: post-tool conclusion text only in main channel, not thread."""
+
+    async def test_post_tool_text_not_flushed_to_thread(self):
+        """After tool use, conclusion text should NOT be posted to thread."""
+        streamer, router, provider = make_streamer()
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        conclusion_text = "Conclusion text after tool"
+        messages = [
+            make_assistant_message([tool_block, make_text_block(conclusion_text)]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        # Extract all calls to post_message to check thread_ts patterns
+        calls = provider.post_message.call_args_list
+
+        # Find thread posts (those with thread_ts argument)
+        thread_posts = [call for call in calls if call.kwargs.get("thread_ts")]
+
+        # Verify no thread post contains the conclusion text
+        for call in thread_posts:
+            call_text = call.args[1] if len(call.args) > 1 else ""
+            assert conclusion_text not in call_text
+
+    async def test_post_tool_text_flushed_to_main(self):
+        """After tool use, conclusion text SHOULD appear in main channel."""
+        streamer, router, provider = make_streamer()
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        conclusion_text = "Conclusion text after tool"
+        messages = [
+            make_assistant_message([tool_block, make_text_block(conclusion_text)]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        # Extract all calls to post_message
+        calls = provider.post_message.call_args_list
+
+        # Find main channel posts (those WITHOUT thread_ts)
+        main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
+
+        # Verify the conclusion text appears in a main post
+        main_texts = [call.args[1] for call in main_posts if len(call.args) > 1]
+        assert any(conclusion_text in t for t in main_texts), (
+            f"Conclusion text not found in main posts: {main_texts}"
+        )
+
+    async def test_multiple_text_blocks_after_tool_concatenated(self):
+        """Multiple TextBlocks after tool use should be concatenated in conclusion."""
+        streamer, router, provider = make_streamer()
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        messages = [
+            make_assistant_message(
+                [
+                    tool_block,
+                    make_text_block("Part 1"),
+                    make_text_block("Part 2"),
+                ]
+            ),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        # Check that conclusion contains both parts concatenated
+        calls = provider.post_message.call_args_list
+        main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
+
+        full_text = "".join(call.args[1] if len(call.args) > 1 else "" for call in main_posts)
+        assert "Part 1" in full_text
+        assert "Part 2" in full_text
+
+    async def test_pre_tool_text_still_goes_to_main(self):
+        """Text BEFORE tool use should still go to main channel (regression test)."""
+        streamer, router, provider = make_streamer()
+        pre_tool_text = "Analyzing..."
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        messages = [
+            make_assistant_message([make_text_block(pre_tool_text), tool_block]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        # Extract main channel posts
+        calls = provider.post_message.call_args_list
+        main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
+
+        # Verify pre-tool text appears in main
+        main_texts = [call.args[1] for call in main_posts if len(call.args) > 1]
+        assert any(pre_tool_text in t for t in main_texts), (
+            f"Pre-tool text not found in main posts: {main_texts}"
+        )
+
+    async def test_last_message_ts_tracks_conclusion(self):
+        """After conclusion is posted to main, last_message_ts should be updated."""
+        streamer, router, provider = make_streamer()
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        conclusion_text = "Conclusion after tool"
+        messages = [
+            make_assistant_message([tool_block, make_text_block(conclusion_text)]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        # last_message_ts should be set so the checkmark reaction lands correctly
+        assert streamer._turn.last_message_ts is not None
+
+        # add_reaction should have been called (checkmark on conclusion or result)
+        assert provider.add_reaction.called
