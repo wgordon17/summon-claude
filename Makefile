@@ -8,7 +8,7 @@ CURRENT_BRANCH := $(shell git branch --show-current)
 
 .PHONY: help
 .PHONY: install lint test build clean all release
-.PHONY: py-install py-lint py-typecheck py-test py-test-quick py-build py-clean py-all
+.PHONY: py-install py-lint py-typecheck py-test py-test-slack py-test-quick py-build py-clean py-all
 .PHONY: repo-hooks-install repo-hooks-clean
 
 # Default target - auto-generated from inline ## comments
@@ -54,9 +54,13 @@ py-test: ## Run full Python test suite
 	@echo "Running pytest..."
 	uv run pytest tests/ -v
 
+py-test-slack: ## Run Slack integration tests (requires credentials)
+	@echo "Running Slack integration tests..."
+	uv run pytest tests/integration/ -v -m slack
+
 py-test-quick: ## Run quick Python tests (exclude slow, fail-fast)
 	@echo "Running quick pytest..."
-	uv run pytest --maxfail=1 -q -m "not slow"
+	uv run pytest --maxfail=1 -q -m "not slow and not slack"
 
 py-build: ## Build sdist and wheel
 	uv build

@@ -370,7 +370,9 @@ class SummonSession:
     ) -> None:
         """Create channel, connect Claude, run message loop."""
         provider = SlackChatProvider(client)
-        channel_manager = ChannelManager(provider, self._config.channel_prefix)
+        auth_resp = await client.auth_test()
+        bot_user_id = auth_resp["user_id"]
+        channel_manager = ChannelManager(provider, self._config.channel_prefix, bot_user_id)
         channel_id, channel_name = await channel_manager.create_session_channel(self._name)
         logger.info("Authenticated! Session channel: #%s", channel_name)
 

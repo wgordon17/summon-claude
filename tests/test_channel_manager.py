@@ -100,6 +100,18 @@ class TestChannelManagerInviteUser:
         await mgr.invite_user_to_channel("C_TEST", "U_USER")
         provider.invite_user.assert_called_once_with("C_TEST", "U_USER")
 
+    async def test_invite_skips_bot_user(self):
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider, bot_user_id="U_BOT")
+        await mgr.invite_user_to_channel("C_TEST", "U_BOT")
+        provider.invite_user.assert_not_called()
+
+    async def test_invite_allows_non_bot_user(self):
+        provider = make_mock_provider()
+        mgr = ChannelManager(provider, bot_user_id="U_BOT")
+        await mgr.invite_user_to_channel("C_TEST", "U_HUMAN")
+        provider.invite_user.assert_called_once_with("C_TEST", "U_HUMAN")
+
     async def test_invite_error_is_swallowed(self):
         provider = make_mock_provider()
         provider.invite_user = AsyncMock(side_effect=Exception("already_in_channel"))

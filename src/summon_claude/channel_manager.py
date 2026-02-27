@@ -20,9 +20,12 @@ _MAX_CHANNEL_NAME_LEN = 80
 class ChannelManager:
     """Manages Slack channel creation and lifecycle for summon sessions."""
 
-    def __init__(self, provider: ChatProvider, channel_prefix: str = "summon") -> None:
+    def __init__(
+        self, provider: ChatProvider, channel_prefix: str = "summon", bot_user_id: str = ""
+    ) -> None:
         self._provider = provider
         self._prefix = channel_prefix
+        self._bot_user_id = bot_user_id
 
     async def create_session_channel(self, session_name: str) -> tuple[str, str]:
         """Create a dedicated channel for the session.
@@ -36,7 +39,14 @@ class ChannelManager:
         return channel_id, channel_name
 
     async def invite_user_to_channel(self, channel_id: str, user_id: str) -> None:
-        """Invite a user to a session channel."""
+        """Invite a user to a session channel.
+
+        Skips the invite if user_id matches the bot (bot already created
+        the channel and is a member).
+        """
+        if self._bot_user_id and user_id == self._bot_user_id:
+            logger.debug("Skipping invite — user %s is the bot", user_id)
+            return
         try:
             await self._provider.invite_user(channel_id, user_id)
             logger.info("Invited user %s to channel %s", user_id, channel_id)

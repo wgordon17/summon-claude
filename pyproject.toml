@@ -185,5 +185,6 @@ addopts = [
 cache_dir = ".cache/pytest"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "slack: marks tests requiring real Slack workspace credentials (deselect with '-m \"not slack\"')",
 ]
 norecursedirs = [".cache", ".git"]
