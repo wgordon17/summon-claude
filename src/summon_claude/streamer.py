@@ -69,9 +69,11 @@ class ResponseStreamer:
         self,
         router: ThreadRouter,
         display: ContentDisplay | None = None,
+        user_id: str | None = None,
     ) -> None:
         self._router = router
         self._display = display
+        self._user_id = user_id
 
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
@@ -178,8 +180,10 @@ class ResponseStreamer:
             self._turn.text_after_tools = ""
             # Post conclusion text to main channel
             chunks = _split_text(text, _MAX_MESSAGE_CHARS)
-            for chunk in chunks:
-                ref = await self._router.post_to_main(chunk)
+            for i, chunk in enumerate(chunks):
+                # Ping the user on the first conclusion chunk only
+                post_text = f"<@{self._user_id}> {chunk}" if i == 0 and self._user_id else chunk
+                ref = await self._router.post_to_main(post_text)
                 self._turn.last_message_ts = ref.ts
 
     async def _append_text(self, text: str) -> None:

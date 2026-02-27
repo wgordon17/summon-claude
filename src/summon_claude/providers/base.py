@@ -64,3 +64,12 @@ class ChatProvider(Protocol):
     async def archive_channel(self, channel_id: str) -> None: ...
 
     async def set_topic(self, channel: str, topic: str) -> None: ...
+
+    async def post_ephemeral(
+        self,
+        channel: str,
+        user: str,
+        text: str,
+        *,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> None: ...

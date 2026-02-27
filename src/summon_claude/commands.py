@@ -221,6 +221,13 @@ async def _handle_clear(_args: list[str], _ctx: CommandContext) -> CommandResult
     return CommandResult(text=None, suppress_queue=False, metadata={"clear": True})
 
 
+async def _handle_stop(_args: list[str], _ctx: CommandContext) -> CommandResult:
+    return CommandResult(
+        text=":octagonal_sign: Cancelling current turn...",
+        metadata={"stop": True},
+    )
+
+
 def build_registry() -> CommandRegistry:
     """Factory that creates a CommandRegistry with all built-in handlers registered."""
     registry = CommandRegistry()
@@ -228,6 +235,7 @@ def build_registry() -> CommandRegistry:
     registry.register("status", _handle_status, "Show session status")
     registry.register("end", _handle_end, "End this session")
     registry.register("clear", _handle_clear, "Clear conversation history")
+    registry.register("stop", _handle_stop, "Cancel the current Claude turn")
     # Ensure model is available as passthrough even before SDK init populates the list
     registry.register_passthrough("model", "Switch or display the active model")
     return registry

@@ -30,7 +30,7 @@ def _make_handler():
     provider = make_mock_provider()
     router = ThreadRouter(provider, "C123")
     config = _make_config()
-    return PermissionHandler(router, config), provider, router
+    return PermissionHandler(router, config, authenticated_user_id="U1"), provider, router
 
 
 def _get_actions_block(blocks: list[dict], idx: int = 0) -> dict:
@@ -40,6 +40,13 @@ def _get_actions_block(blocks: list[dict], idx: int = 0) -> dict:
 
 def _extract_request_id(provider) -> str:
     """Extract the request_id from the last posted AskUserQuestion message."""
+    # Check ephemeral messages first (new path), then post_message (fallback)
+    for call in provider.post_ephemeral.call_args_list:
+        blocks = call.kwargs.get("blocks")
+        if blocks:
+            for b in blocks:
+                if b["type"] == "actions":
+                    return b["elements"][0]["value"].split("|")[0]
     for call in provider.post_message.call_args_list:
         blocks = call.kwargs.get("blocks")
         if blocks:
@@ -423,7 +430,7 @@ class TestEdgeCases:
 
         # Verify it posted question blocks, not permission buttons
         posted = False
-        for call in provider.post_message.call_args_list:
+        for call in provider.post_ephemeral.call_args_list:
             blocks = call.kwargs.get("blocks")
             if blocks and any(
                 b.get("type") == "section"

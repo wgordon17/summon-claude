@@ -90,9 +90,11 @@ class PermissionHandler:
         self,
         router: ThreadRouter,
         config: SummonConfig,
+        authenticated_user_id: str = "",
     ) -> None:
         self._router = router
         self._config = config
+        self._authenticated_user_id = authenticated_user_id
         self._debounce_ms = config.permission_debounce_ms
 
         # Pending requests waiting for batched approval
@@ -256,7 +258,8 @@ class PermissionHandler:
         ]
 
         try:
-            await self._router.post_permission(
+            await self._router.post_permission_ephemeral(
+                self._authenticated_user_id,
                 f"Permission required: {header_text[:100]}",
                 blocks,
             )
@@ -279,6 +282,14 @@ class PermissionHandler:
 
         Must be called AFTER ack() (the 3-second deadline is the caller's responsibility).
         """
+        if self._authenticated_user_id and user_id != self._authenticated_user_id:
+            logger.warning(
+                "Permission action from unauthorized user %s (expected %s)",
+                user_id,
+                self._authenticated_user_id,
+            )
+            return
+
         if value.startswith("approve:"):
             batch_id = value[len("approve:") :]
             approved = True
@@ -297,23 +308,13 @@ class PermissionHandler:
 
         self._batch.decisions[batch_id] = approved
 
-        # Update the original message to show the decision
+        # Post a persistent confirmation to the turn thread (ephemeral messages can't be updated)
         status_text = ":white_check_mark: Approved" if approved else ":x: Denied"
-        blocks = [
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"{status_text} by <@{user_id}>"}],
-            }
-        ]
+        confirmation = f"{status_text} by <@{user_id}>"
         try:
-            await self._router.update_message(
-                channel_id,
-                message_ts,
-                f"Permission {status_text} by user",
-                blocks=blocks,
-            )
+            await self._router.post_to_turn_thread(confirmation)
         except Exception as e:
-            logger.warning("Failed to update permission message: %s", e)
+            logger.warning("Failed to post permission confirmation: %s", e)
 
         # Signal the waiting batch
         if batch_id in self._batch.events:
@@ -350,7 +351,8 @@ class PermissionHandler:
 
         blocks = _build_ask_user_blocks(request_id, questions)
         try:
-            await self._router.post_permission(
+            await self._router.post_permission_ephemeral(
+                self._authenticated_user_id,
                 "Claude has a question for you",
                 blocks,
             )
@@ -387,6 +389,14 @@ class PermissionHandler:
 
         Value format: ``{request_id}|{question_idx}|{option_idx_or_other_or_done}``
         """
+        if self._authenticated_user_id and user_id != self._authenticated_user_id:
+            logger.warning(
+                "Ask user action from unauthorized user %s (expected %s)",
+                user_id,
+                self._authenticated_user_id,
+            )
+            return
+
         parsed = _parse_ask_user_value(value)
         if parsed is None:
             return

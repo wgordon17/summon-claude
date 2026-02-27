@@ -456,3 +456,22 @@ class TestThreadRouterDelegationMethods:
         assert call_args[0][0] == "C456"
         assert call_args[0][1] == "999.001"
         assert call_args[0][2] == ":thumbsup:"
+
+
+class TestThreadRouterPostPermissionEphemeral:
+    """ThreadRouter.post_permission_ephemeral tests."""
+
+    async def test_post_permission_ephemeral_calls_provider(self):
+        """post_permission_ephemeral should call provider.post_ephemeral."""
+        provider = make_mock_provider()
+        router = ThreadRouter(provider, "C123")
+
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "Approve?"}}]
+        await router.post_permission_ephemeral("U456", "Permission needed", blocks)
+
+        provider.post_ephemeral.assert_called_once()
+        call_args = provider.post_ephemeral.call_args
+        assert call_args[0][0] == "C123"
+        assert call_args[0][1] == "U456"
+        assert call_args[0][2] == "Permission needed"
+        assert call_args[1]["blocks"] == blocks

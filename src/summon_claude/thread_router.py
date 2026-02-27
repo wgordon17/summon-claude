@@ -125,6 +125,15 @@ class ThreadRouter:
             reply_broadcast=bool(ts),
         )
 
+    async def post_permission_ephemeral(
+        self,
+        user_id: str,
+        text: str,
+        blocks: list[dict[str, Any]],
+    ) -> None:
+        """Post an ephemeral permission/question prompt visible only to user_id."""
+        await self._provider.post_ephemeral(self._channel_id, user_id, text, blocks=blocks)
+
     async def update_message(
         self,
         channel: str,

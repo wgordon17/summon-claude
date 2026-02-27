@@ -198,6 +198,14 @@ def cmd_start(
     background: bool,
 ) -> None:
     """Start a new summon session."""
+    import shutil  # noqa: PLC0415
+
+    if not shutil.which("claude"):
+        click.echo("Error: Claude CLI not found in PATH.", err=True)
+        click.echo("", err=True)
+        click.echo("Install Claude Code: https://claude.ai/code", err=True)
+        raise SystemExit(1)
+
     config_path = ctx.obj.get("config_path") if ctx.obj else None
     try:
         config = SummonConfig.from_file(config_path)

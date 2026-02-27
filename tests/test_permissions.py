@@ -11,7 +11,6 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from helpers import make_mock_provider
 from summon_claude.config import SummonConfig
 from summon_claude.permissions import PendingRequest, PermissionHandler, _format_request_summary
-from summon_claude.providers.base import MessageRef
 from summon_claude.thread_router import ThreadRouter
 
 
@@ -27,12 +26,43 @@ def make_config(debounce_ms=10):
     )
 
 
-def make_handler(debounce_ms=10):
+def make_handler(debounce_ms=10, authenticated_user_id="U_TEST"):
     """Create a PermissionHandler with a mocked ThreadRouter."""
     provider = make_mock_provider()
     router = ThreadRouter(provider, "C123")
     config = make_config(debounce_ms=debounce_ms)
-    return PermissionHandler(router, config), provider, router
+    handler = PermissionHandler(router, config, authenticated_user_id=authenticated_user_id)
+    return handler, provider, router
+
+
+def _ephemeral_auto_approve(handler):
+    """Return a side effect for post_ephemeral that auto-approves all pending batches."""
+
+    async def side_effect(*_args, **_kwargs):
+        async def do():
+            await asyncio.sleep(0.05)
+            for batch_id in list(handler._batch.events.keys()):
+                handler._batch.decisions[batch_id] = True
+                handler._batch.events[batch_id].set()
+
+        asyncio.create_task(do())
+
+    return side_effect
+
+
+def _ephemeral_auto_deny(handler):
+    """Return a side effect for post_ephemeral that auto-denies all pending batches."""
+
+    async def side_effect(*_args, **_kwargs):
+        async def do():
+            await asyncio.sleep(0.05)
+            for batch_id in list(handler._batch.events.keys()):
+                handler._batch.decisions[batch_id] = False
+                handler._batch.events[batch_id].set()
+
+        asyncio.create_task(do())
+
+    return side_effect
 
 
 class TestAutoApprove:
@@ -73,35 +103,13 @@ class TestAutoApprove:
 
     async def test_bash_is_not_auto_approved(self):
         handler, provider, _ = make_handler()
-
-        async def approve_after_post(*args, **kwargs):
-            async def do_approve():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = True
-                    handler._batch.events[batch_id].set()
-
-            asyncio.create_task(do_approve())
-            return MessageRef(channel_id="C123", ts="111.001")
-
-        provider.post_message = AsyncMock(side_effect=approve_after_post)
+        provider.post_ephemeral = AsyncMock(side_effect=_ephemeral_auto_approve(handler))
         result = await handler.handle("Bash", {"command": "echo hi"}, None)
         assert isinstance(result, PermissionResultAllow)
 
     async def test_write_is_not_auto_approved(self):
         handler, provider, _ = make_handler()
-
-        async def approve_after_post(*args, **kwargs):
-            async def do_approve():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = True
-                    handler._batch.events[batch_id].set()
-
-            asyncio.create_task(do_approve())
-            return MessageRef(channel_id="C123", ts="111.001")
-
-        provider.post_message = AsyncMock(side_effect=approve_after_post)
+        provider.post_ephemeral = AsyncMock(side_effect=_ephemeral_auto_approve(handler))
         result = await handler.handle("Write", {"file_path": "/tmp/f.txt"}, None)
         assert isinstance(result, PermissionResultAllow)
 
@@ -109,54 +117,21 @@ class TestAutoApprove:
 class TestApprovalFlow:
     async def test_approval_returns_allow(self):
         handler, provider, _ = make_handler(debounce_ms=10)
-
-        async def approve_after_post(*args, **kwargs):
-            async def do_approve():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = True
-                    handler._batch.events[batch_id].set()
-
-            asyncio.create_task(do_approve())
-            return MessageRef(channel_id="C123", ts="111.001")
-
-        provider.post_message = AsyncMock(side_effect=approve_after_post)
+        provider.post_ephemeral = AsyncMock(side_effect=_ephemeral_auto_approve(handler))
         result = await handler.handle("Bash", {"command": "rm -rf /"}, None)
         assert isinstance(result, PermissionResultAllow)
 
     async def test_denial_returns_deny(self):
         handler, provider, _ = make_handler(debounce_ms=10)
-
-        async def deny_after_post(*args, **kwargs):
-            async def do_deny():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = False
-                    handler._batch.events[batch_id].set()
-
-            asyncio.create_task(do_deny())
-            return MessageRef(channel_id="C123", ts="111.001")
-
-        provider.post_message = AsyncMock(side_effect=deny_after_post)
+        provider.post_ephemeral = AsyncMock(side_effect=_ephemeral_auto_deny(handler))
         result = await handler.handle("Bash", {"command": "dangerous"}, None)
         assert isinstance(result, PermissionResultDeny)
 
-    async def test_approval_message_posted_to_channel(self):
+    async def test_approval_message_posted_ephemeral(self):
         handler, provider, _ = make_handler(debounce_ms=10)
-
-        async def auto_approve(*args, **kwargs):
-            async def do():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = True
-                    handler._batch.events[batch_id].set()
-
-            asyncio.create_task(do())
-            return MessageRef(channel_id="C123", ts="111.001")
-
-        provider.post_message = AsyncMock(side_effect=auto_approve)
+        provider.post_ephemeral = AsyncMock(side_effect=_ephemeral_auto_approve(handler))
         await handler.handle("Edit", {"path": "/tmp/f.py"}, None)
-        assert provider.post_message.call_count >= 1
+        assert provider.post_ephemeral.call_count >= 1
 
 
 class TestHandleAction:
@@ -169,7 +144,7 @@ class TestHandleAction:
         await handler.handle_action(
             action_id="permission_approve",
             value=f"approve:{batch_id}",
-            user_id="U_ALLOWED",
+            user_id="U_TEST",
             channel_id="C123",
             message_ts="111.001",
         )
@@ -186,7 +161,7 @@ class TestHandleAction:
         await handler.handle_action(
             action_id="permission_deny",
             value=f"deny:{batch_id}",
-            user_id="U_ALLOWED",
+            user_id="U_TEST",
             channel_id="C123",
             message_ts="111.001",
         )
@@ -194,7 +169,8 @@ class TestHandleAction:
         assert handler._batch.decisions.get(batch_id) is False
         assert event.is_set()
 
-    async def test_action_updates_message(self):
+    async def test_action_posts_to_turn_thread_not_update(self):
+        """Ephemeral messages can't be updated — confirmation goes to turn thread."""
         handler, provider, _ = make_handler()
         batch_id = "test-batch-upd"
         event = asyncio.Event()
@@ -203,24 +179,42 @@ class TestHandleAction:
         await handler.handle_action(
             action_id="permission_approve",
             value=f"approve:{batch_id}",
-            user_id="U_ALLOWED",
+            user_id="U_TEST",
             channel_id="C123",
             message_ts="999.001",
         )
 
-        provider.update_message.assert_called_once()
-        call_kwargs = provider.update_message.call_args[0]
-        assert call_kwargs[1] == "999.001"
+        # Should NOT update the ephemeral message
+        provider.update_message.assert_not_called()
 
     async def test_unknown_action_value_ignored(self):
         handler, provider, _ = make_handler()
         await handler.handle_action(
             action_id="something_else",
             value="unknown_value",
-            user_id="U_ALLOWED",
+            user_id="U_TEST",
             channel_id="C123",
             message_ts="111.001",
         )
+
+    async def test_unauthorized_user_rejected(self):
+        """Actions from non-authenticated users should be ignored."""
+        handler, provider, _ = make_handler(authenticated_user_id="U_OWNER")
+        batch_id = "test-batch-auth"
+        event = asyncio.Event()
+        handler._batch.events[batch_id] = event
+
+        await handler.handle_action(
+            action_id="permission_approve",
+            value=f"approve:{batch_id}",
+            user_id="U_INTRUDER",
+            channel_id="C123",
+            message_ts="111.001",
+        )
+
+        # Decision should NOT have been set
+        assert batch_id not in handler._batch.decisions
+        assert not event.is_set()
 
 
 class TestAutoApproveList:
@@ -313,54 +307,46 @@ class TestFormatRequestSummary:
         assert "CustomTool" in summary
 
 
-class TestPermissionBroadcast:
-    async def test_permission_in_thread_uses_reply_broadcast(self):
-        """Permission messages in a thread should use reply_broadcast=True."""
+class TestPermissionEphemeral:
+    """Tests for ephemeral permission posting."""
+
+    async def test_permissions_use_ephemeral(self):
+        """Permission requests should go through post_ephemeral."""
+        handler, provider, router = make_handler(authenticated_user_id="U_TEST")
+        provider.post_ephemeral = AsyncMock(side_effect=_ephemeral_auto_approve(handler))
+        await handler.handle("Edit", {"path": "/tmp/f.py"}, None)
+        provider.post_ephemeral.assert_called()
+
+    async def test_handle_action_posts_to_turn_thread(self):
+        """handle_action should post confirmation to turn thread, not update."""
         handler, provider, router = make_handler()
+        batch_id = "test-batch-123"
+        event = asyncio.Event()
+        handler._batch.events[batch_id] = event
 
-        # Start a turn to create a thread context
-        await router.start_turn(1)
+        await handler.handle_action(
+            action_id="permission_approve",
+            value=f"approve:{batch_id}",
+            user_id="U_TEST",
+            channel_id="C123",
+            message_ts="111.001",
+        )
 
-        async def auto_approve(*args, **kwargs):
-            async def do():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = True
-                    handler._batch.events[batch_id].set()
+        assert handler._batch.decisions.get(batch_id) is True
+        provider.update_message.assert_not_called()
 
-            asyncio.create_task(do())
-            return MessageRef(channel_id="C123", ts="111.001")
+    async def test_authenticated_user_id_set(self):
+        """PermissionHandler should store authenticated_user_id."""
+        handler, _, _ = make_handler(authenticated_user_id="U_CUSTOM")
+        assert handler._authenticated_user_id == "U_CUSTOM"
 
-        provider.post_message = AsyncMock(side_effect=auto_approve)
-        await handler.handle("Bash", {"command": "test"}, None)
-
-        # Check that post_permission was called with reply_broadcast=True
-        call_args = provider.post_message.call_args
-        assert call_args[1]["reply_broadcast"] is True
-
-    async def test_permission_includes_channel_mention(self):
-        """Permission messages should include <!channel> when in a thread."""
-        handler, provider, router = make_handler()
-
-        await router.start_turn(1)
-
-        async def auto_approve(*args, **kwargs):
-            async def do():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = True
-                    handler._batch.events[batch_id].set()
-
-            asyncio.create_task(do())
-            return MessageRef(channel_id="C123", ts="111.001")
-
-        provider.post_message = AsyncMock(side_effect=auto_approve)
-        await handler.handle("Bash", {"command": "test"}, None)
-
-        # Check that the message includes <!channel>
-        call_args = provider.post_message.call_args
-        text = call_args[0][1]
-        assert text.startswith("<!channel>")
+    async def test_authenticated_user_id_default(self):
+        """PermissionHandler should default authenticated_user_id to empty string."""
+        provider = make_mock_provider()
+        router = ThreadRouter(provider, "C123")
+        config = make_config()
+        handler = PermissionHandler(router, config)
+        assert handler._authenticated_user_id == ""
 
 
 class TestPermissionSuggestions:
@@ -372,7 +358,6 @@ class TestPermissionSuggestions:
 
         handler, provider, _ = make_handler()
 
-        # Create a mock context with a suggestion
         suggestion = MagicMock()
         suggestion.behavior = "allow"
         context = MagicMock()
@@ -380,10 +365,8 @@ class TestPermissionSuggestions:
 
         result = await handler.handle("Bash", {"command": "ls"}, context)
 
-        # Should return allow immediately
         assert isinstance(result, PermissionResultAllow)
-        # Should NOT have posted to Slack
-        provider.post_message.assert_not_called()
+        provider.post_ephemeral.assert_not_called()
 
     async def test_suggestion_deny_returns_denied_without_slack(self):
         """When suggestion.behavior='deny', return PermissionResultDeny without Slack."""
@@ -391,7 +374,6 @@ class TestPermissionSuggestions:
 
         handler, provider, _ = make_handler()
 
-        # Create a mock context with a suggestion
         suggestion = MagicMock()
         suggestion.behavior = "deny"
         context = MagicMock()
@@ -399,30 +381,16 @@ class TestPermissionSuggestions:
 
         result = await handler.handle("Bash", {"command": "rm -rf /"}, context)
 
-        # Should return deny immediately
         assert isinstance(result, PermissionResultDeny)
-        # Should NOT have posted to Slack
-        provider.post_message.assert_not_called()
+        provider.post_ephemeral.assert_not_called()
 
     async def test_suggestion_ask_falls_through_to_slack(self):
         """When suggestion.behavior='ask', fall through to Slack approval flow."""
         from unittest.mock import MagicMock
 
         handler, provider, _ = make_handler()
+        provider.post_ephemeral = AsyncMock(side_effect=_ephemeral_auto_approve(handler))
 
-        async def approve_after_post(*args, **kwargs):
-            async def do_approve():
-                await asyncio.sleep(0.05)
-                for batch_id in list(handler._batch.events.keys()):
-                    handler._batch.decisions[batch_id] = True
-                    handler._batch.events[batch_id].set()
-
-            asyncio.create_task(do_approve())
-            return MessageRef(channel_id="C123", ts="111.001")
-
-        provider.post_message = AsyncMock(side_effect=approve_after_post)
-
-        # Create a mock context with a suggestion
         suggestion = MagicMock()
         suggestion.behavior = "ask"
         context = MagicMock()
@@ -430,17 +398,14 @@ class TestPermissionSuggestions:
 
         result = await handler.handle("Bash", {"command": "test"}, context)
 
-        # Should have gone through Slack approval
         assert isinstance(result, PermissionResultAllow)
-        provider.post_message.assert_called()
+        provider.post_ephemeral.assert_called()
 
     async def test_no_suggestion_uses_auto_approve_fallback(self):
         """When context=None, still use _AUTO_APPROVE_TOOLS fallback."""
         handler, provider, _ = make_handler()
 
-        # For a tool in _AUTO_APPROVE_TOOLS, should auto-approve even with None context
         result = await handler.handle("Read", {"file_path": "/tmp/f"}, None)
 
         assert isinstance(result, PermissionResultAllow)
-        # Should NOT have posted to Slack
-        provider.post_message.assert_not_called()
+        provider.post_ephemeral.assert_not_called()

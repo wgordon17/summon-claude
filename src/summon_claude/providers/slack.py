@@ -94,3 +94,19 @@ class SlackChatProvider:
 
     async def set_topic(self, channel: str, topic: str) -> None:
         await self._client.conversations_setTopic(channel=channel, topic=topic)
+
+    async def post_ephemeral(
+        self,
+        channel: str,
+        user: str,
+        text: str,
+        *,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        kwargs: dict[str, Any] = {"channel": channel, "user": user, "text": text}
+        if blocks:
+            kwargs["blocks"] = blocks
+        try:
+            await self._client.chat_postEphemeral(**kwargs)
+        except Exception as e:
+            logger.warning("Failed to post ephemeral to %s: %s", user, e)

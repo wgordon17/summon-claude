@@ -358,3 +358,42 @@ class TestSlackChatProviderSetTopic:
         await provider.set_topic("C_TEST", "")
 
         client.conversations_setTopic.assert_called_once_with(channel="C_TEST", topic="")
+
+
+class TestSlackChatProviderPostEphemeral:
+    """SlackChatProvider.post_ephemeral tests."""
+
+    async def test_post_ephemeral_basic(self):
+        """post_ephemeral should delegate to client.chat_postEphemeral."""
+        client = make_mock_slack_client()
+        client.chat_postEphemeral = AsyncMock(return_value={"ok": True})
+        provider = SlackChatProvider(client)
+
+        await provider.post_ephemeral("C123", "U456", "Hello user!")
+
+        client.chat_postEphemeral.assert_called_once()
+        call_kwargs = client.chat_postEphemeral.call_args[1]
+        assert call_kwargs["channel"] == "C123"
+        assert call_kwargs["user"] == "U456"
+        assert call_kwargs["text"] == "Hello user!"
+
+    async def test_post_ephemeral_with_blocks(self):
+        """post_ephemeral should pass blocks to client."""
+        client = make_mock_slack_client()
+        client.chat_postEphemeral = AsyncMock(return_value={"ok": True})
+        provider = SlackChatProvider(client)
+
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "Choose:"}}]
+        await provider.post_ephemeral("C123", "U456", "text", blocks=blocks)
+
+        call_kwargs = client.chat_postEphemeral.call_args[1]
+        assert call_kwargs["blocks"] == blocks
+
+    async def test_post_ephemeral_catches_exceptions(self):
+        """post_ephemeral should catch exceptions gracefully."""
+        client = make_mock_slack_client()
+        client.chat_postEphemeral = AsyncMock(side_effect=Exception("User not in channel"))
+        provider = SlackChatProvider(client)
+
+        # Should not raise
+        await provider.post_ephemeral("C123", "U456", "text")

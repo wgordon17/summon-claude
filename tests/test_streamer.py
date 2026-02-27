@@ -545,3 +545,59 @@ class TestStreamResult:
         stream_result = await streamer.stream_with_flush(agen(messages))
         assert stream_result is not None
         assert stream_result.model is None
+
+
+class TestResponseStreamerUserPing:
+    """Tests for user ID ping in conclusion text."""
+
+    async def test_conclusion_ping_with_user_id(self):
+        """Conclusion text should be prefixed with <@user_id> ping when user_id is set."""
+        provider = make_mock_provider()
+        router = ThreadRouter(provider, "C123")
+        streamer = ResponseStreamer(router, user_id="U_TESTUSER")
+
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        messages = [
+            make_assistant_message([tool_block, make_text_block("Here is the analysis.")]),
+            make_result_message(),
+        ]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        # Find the call that posts conclusion text (should be after tool use)
+        calls = [call for call in provider.post_message.call_args_list if len(call[0]) >= 2]
+        # Last non-result call should have the ping
+        found_ping = False
+        for call in calls:
+            if len(call[0]) >= 2:
+                text = call[0][1]
+                if "analysis" in text and "<@U_TESTUSER>" in text:
+                    found_ping = True
+                    break
+        assert found_ping, "Conclusion text should contain user ping <@U_TESTUSER>"
+
+    async def test_conclusion_no_ping_without_user_id(self):
+        """Conclusion text should not be modified when user_id is None."""
+        provider = make_mock_provider()
+        router = ThreadRouter(provider, "C123")
+        streamer = ResponseStreamer(router, user_id=None)
+
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        messages = [
+            make_assistant_message([tool_block, make_text_block("Here is the analysis.")]),
+            make_result_message(),
+        ]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        # Check that conclusion text doesn't have a ping prefix
+        calls = [call for call in provider.post_message.call_args_list if len(call[0]) >= 2]
+        for call in calls:
+            if len(call[0]) >= 2:
+                text = call[0][1]
+                if "analysis" in text:
+                    # Should not start with a user ping
+                    assert not text.startswith("<@"), (
+                        "Conclusion without user_id should not have ping prefix"
+                    )
+                    assert text.startswith("Here"), "Conclusion should start with original text"

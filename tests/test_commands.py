@@ -588,3 +588,34 @@ class TestDispatchEdgeCases:
         )
         commands = registry.all_commands()
         assert commands["review"] == "Review code changes"
+
+
+class TestStopCommand:
+    """Test the !stop command handler."""
+
+    async def test_stop_returns_stop_metadata(self, make_context):
+        """!stop should return metadata with stop=True."""
+        registry = build_registry()
+        context = make_context(metadata={"registry": registry})
+
+        result = await registry.dispatch("stop", [], context)
+
+        assert result.metadata.get("stop") is True
+        assert result.text is not None
+        assert "Cancelling" in result.text
+
+    async def test_stop_is_registered(self):
+        """build_registry() should include stop command."""
+        registry = build_registry()
+        commands = registry.all_commands()
+        assert "stop" in commands
+        assert "Cancel" in commands["stop"]
+
+    async def test_stop_suppresses_queue(self, make_context):
+        """!stop result should suppress queue forwarding."""
+        registry = build_registry()
+        context = make_context(metadata={"registry": registry})
+
+        result = await registry.dispatch("stop", [], context)
+
+        assert result.suppress_queue is True

@@ -578,6 +578,7 @@ def _start_patches(update_info=None):
     from contextlib import ExitStack
 
     stack = ExitStack()
+    stack.enter_context(patch("shutil.which", return_value="/usr/bin/claude"))
     stack.enter_context(
         patch("summon_claude.cli.SummonConfig.from_file", return_value=_mock_config())
     )
@@ -645,3 +646,25 @@ class TestUpdateCheckIntegration:
         # Should not wait the full 10 seconds — join timeout is 4s
         assert elapsed < 8
         assert "Update available" not in result.output
+
+
+class TestCliDetection:
+    """Tests for Claude CLI detection in CLI startup."""
+
+    def test_start_fails_without_claude_cli(self, monkeypatch):
+        """start command should fail with error when claude CLI not found."""
+
+        # Mock shutil.which to return None (CLI not found)
+        def mock_which(_program):
+            pass
+
+        monkeypatch.setattr("shutil.which", mock_which)
+
+        runner = CliRunner()
+        # The start command should check for claude CLI and fail
+        result = runner.invoke(cli, ["start"])
+
+        # Should exit with error (not 0)
+        assert result.exit_code != 0
+        # Error message should mention claude or installation
+        assert "claude" in result.output.lower() or "install" in result.output.lower()

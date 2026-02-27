@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 import click
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
@@ -133,6 +133,10 @@ class SummonSession:
         self._total_turns: int = 0
         self._last_context: ContextUsage | None = None
         self._last_model_seen: str | None = None
+
+        # Turn abort infrastructure
+        self._current_turn_task: asyncio.Task | None = None
+        self._abort_event = asyncio.Event()
 
         # Rate limiter for /summon slash command
         self._rate_limiter = RateLimiter()
@@ -407,7 +411,9 @@ class SummonSession:
         logger.info("Connected to channel (id=%s)", channel_id)
 
         router = ThreadRouter(provider, channel_id)
-        permission_handler = PermissionHandler(router, self._config)
+        permission_handler = PermissionHandler(
+            router, self._config, self._authenticated_user_id or ""
+        )
 
         rt = _SessionRuntime(
             registry=registry,
@@ -473,7 +479,7 @@ class SummonSession:
             # Use latest rt (may have been updated by reconnect callback)
             await self._shutdown(rt)
 
-    def _register_event_handlers(self, app: AsyncApp, rt: _SessionRuntime) -> None:
+    def _register_event_handlers(self, app: AsyncApp, rt: _SessionRuntime) -> None:  # noqa: PLR0915
         """Register all Slack event handlers on the given app."""
 
         async def _on_message_event(event, say) -> None:
@@ -543,7 +549,26 @@ class SummonSession:
                 message_ts=message.get("ts", ""),
             )
 
+        async def _on_reaction_added(event) -> None:
+            reaction = event.get("reaction", "")
+            reaction_user = event.get("user", "")
+            item = event.get("item", {})
+            item_channel = item.get("channel", "")
+            if (
+                reaction == "octagonal_sign"
+                and reaction_user == self._authenticated_user_id
+                and item_channel == rt.channel_id
+            ):
+                self._abort_current_turn()
+                try:
+                    await rt.provider.post_message(
+                        rt.channel_id, ":octagonal_sign: Turn cancelled via reaction."
+                    )
+                except Exception as e:
+                    logger.debug("Failed to post cancellation message: %s", e)
+
         app.event("message")(_on_message_event)
+        app.event("reaction_added")(_on_reaction_added)
         app.action("permission_approve")(_on_permission_action)
         app.action("permission_deny")(_on_permission_action)
         app.action(re.compile(r"ask_user_\d+_.+"))(_on_ask_user_action)
@@ -587,7 +612,7 @@ class SummonSession:
         logger.info("Socket reconnected successfully")
         return new_rt
 
-    async def _run_message_loop(
+    async def _run_message_loop(  # noqa: PLR0912
         self, rt: _SessionRuntime, router: ThreadRouter, provider: SlackChatProvider
     ) -> None:
         """Listen for Slack messages and forward them to Claude."""
@@ -606,76 +631,88 @@ class SummonSession:
         )
 
         display = ContentDisplay(self._config.max_inline_chars)
-        streamer = ResponseStreamer(router=router, display=display)
+        streamer = ResponseStreamer(
+            router=router, display=display, user_id=self._authenticated_user_id
+        )
 
         async with ClaudeSDKClient(options) as claude:
-            # Initialize from server info: session ID, command registry
-            self._command_registry = build_registry()
             try:
-                server_info = await claude.get_server_info()
-                if server_info:
-                    claude_session_id = server_info.get("session_id", "")
-                    if claude_session_id:
-                        self._claude_session_id = claude_session_id
-                        await rt.registry.update_status(
-                            self._session_id, "active", claude_session_id=claude_session_id
-                        )
-                        try:
-                            await rt.provider.post_message(
-                                rt.channel_id,
-                                f"Claude session: `{claude_session_id[:16]}...`",
-                                blocks=[
-                                    {
-                                        "type": "context",
-                                        "elements": [
-                                            {
-                                                "type": "mrkdwn",
-                                                "text": (
-                                                    f":brain: Claude session ID:"
-                                                    f" `{claude_session_id[:16]}...`"
-                                                ),
-                                            }
-                                        ],
-                                    }
-                                ],
-                            )
-                        except Exception as e2:
-                            logger.debug("Failed to post Claude session ID: %s", e2)
-                    commands = server_info.get("commands", [])
-                    if commands:
-                        self._command_registry.set_passthrough_commands(commands)
-            except Exception as e:
-                logger.debug("Could not retrieve server info: %s", e)
-
-            # Discover resolved model name via /model query
-            try:
-                await claude.query("/model")
-                async for msg in claude.receive_response():
-                    if isinstance(msg, AssistantMessage) and (
-                        not self._model or self._model == "default"
-                    ):
-                        self._model = msg.model
-                    # Consume but don't display the response
-            except Exception as e:
-                logger.debug("Could not discover model name: %s", e)
-
-            while not self._shutdown_event.is_set():
+                # Initialize from server info: session ID, command registry
+                self._command_registry = build_registry()
                 try:
-                    item = await asyncio.wait_for(
-                        self._message_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
+                    server_info = await claude.get_server_info()
+                    if server_info:
+                        claude_session_id = server_info.get("session_id", "")
+                        if claude_session_id:
+                            self._claude_session_id = claude_session_id
+                            await rt.registry.update_status(
+                                self._session_id, "active", claude_session_id=claude_session_id
+                            )
+                            try:
+                                await rt.provider.post_message(
+                                    rt.channel_id,
+                                    f"Claude session: `{claude_session_id[:16]}...`",
+                                    blocks=[
+                                        {
+                                            "type": "context",
+                                            "elements": [
+                                                {
+                                                    "type": "mrkdwn",
+                                                    "text": (
+                                                        f":brain: Claude session ID:"
+                                                        f" `{claude_session_id[:16]}...`"
+                                                    ),
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                )
+                            except Exception as e2:
+                                logger.debug("Failed to post Claude session ID: %s", e2)
+                        commands = server_info.get("commands", [])
+                        if commands:
+                            self._command_registry.set_passthrough_commands(commands)
+                except Exception as e:
+                    logger.debug("Could not retrieve server info: %s", e)
+
+                # Discover resolved model name via /model query
+                try:
+                    await claude.query("/model")
+                    async for msg in claude.receive_response():
+                        if isinstance(msg, AssistantMessage) and (
+                            not self._model or self._model == "default"
+                        ):
+                            self._model = msg.model
+                        # Consume but don't display the response
+                except Exception as e:
+                    logger.debug("Could not discover model name: %s", e)
+
+                while not self._shutdown_event.is_set():
+                    try:
+                        item = await asyncio.wait_for(
+                            self._message_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
+                        )
+                    except TimeoutError:
+                        continue
+
+                    user_message, thread_ts = item
+                    if not user_message:
+                        continue
+
+                    await self._handle_user_message(
+                        rt, claude, router, streamer, provider, user_message, thread_ts
                     )
-                except TimeoutError:
-                    continue
+            finally:
+                # Post session summary while the client is still open
+                if self._total_turns > 0:
+                    try:
+                        await asyncio.wait_for(self._post_session_summary(rt, claude), timeout=30.0)
+                    except TimeoutError:
+                        logger.debug("Session summary timed out")
+                    except Exception as e:
+                        logger.debug("Session summary failed: %s", e)
 
-                user_message, thread_ts = item
-                if not user_message:
-                    continue
-
-                await self._handle_user_message(
-                    rt, claude, router, streamer, provider, user_message, thread_ts
-                )
-
-    async def _handle_user_message(
+    async def _handle_user_message(  # noqa: PLR0915
         self,
         rt: _SessionRuntime,
         claude: ClaudeSDKClient,
@@ -688,7 +725,10 @@ class SummonSession:
         """Forward a single user message to Claude and stream the response."""
         logger.info("Forwarding message to Claude (%d chars)", len(message))
 
-        try:
+        # Reset abort event for this turn
+        self._abort_event.clear()
+
+        async def _do_turn() -> None:
             self._total_turns += 1
             await router.start_turn(self._total_turns)
             await claude.query(message)
@@ -716,6 +756,35 @@ class SummonSession:
                     )
                 except Exception:
                     logger.debug("Post-turn topic update failed")
+
+        self._current_turn_task = asyncio.create_task(_do_turn())
+        abort_wait = asyncio.create_task(self._abort_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {self._current_turn_task, abort_wait},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception) as _e:
+                    logger.debug("Pending task cancelled: %s", _e)
+
+            if self._current_turn_task in done and not self._current_turn_task.cancelled():
+                exc = self._current_turn_task.exception()
+                if exc is not None:
+                    raise exc
+            elif self._abort_event.is_set():
+                logger.info("Turn aborted by user")
+        except asyncio.CancelledError:
+            if self._current_turn_task and not self._current_turn_task.done():
+                self._current_turn_task.cancel()
+                try:
+                    await self._current_turn_task
+                except (asyncio.CancelledError, Exception) as _e:
+                    logger.debug("Turn task cancelled: %s", _e)
+            raise
         except Exception as e:
             logger.exception("Error during Claude response: %s", e)
             error_type = type(e).__name__
@@ -734,6 +803,8 @@ class SummonSession:
                 )
             except Exception as e2:
                 logger.warning("Failed to post error notification: %s", e2)
+        finally:
+            self._current_turn_task = None
 
     async def _heartbeat_loop(self, rt: _SessionRuntime) -> None:
         """Update registry heartbeat every 30 seconds."""
@@ -780,6 +851,32 @@ class SummonSession:
         """Reset the OS watchdog timer. Called from heartbeat on each successful beat."""
         if hasattr(signal, "SIGALRM"):
             signal.alarm(_OS_WATCHDOG_TIMEOUT_S)
+
+    async def _post_session_summary(self, rt: _SessionRuntime, claude: ClaudeSDKClient) -> None:
+        """Generate and post a session summary via Claude."""
+        try:
+            await claude.query(
+                "In 2-3 sentences, summarize what was accomplished in this session. "
+                "Be concise and factual."
+            )
+            summary_parts: list[str] = []
+            async for msg in claude.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            summary_parts.append(block.text)
+            summary = "".join(summary_parts).strip()
+            if summary:
+                # Strip dangerous Slack mention patterns from Claude output
+                summary = re.sub(r"<!(?:channel|here|everyone)>", "", summary)
+                summary = re.sub(r"<@[A-Z0-9]+>", "", summary)
+                summary = summary[:3000]
+                await rt.provider.post_message(
+                    rt.channel_id,
+                    f":memo: *Session Summary*\n{summary}",
+                )
+        except Exception as e:
+            logger.debug("Failed to generate session summary: %s", e)
 
     async def _shutdown(self, rt: _SessionRuntime) -> None:
         """Gracefully shut down the session."""
@@ -879,7 +976,7 @@ class SummonSession:
         except Exception as e:
             logger.warning("Failed to post clear delineation: %s", e)
 
-    async def _dispatch_command(
+    async def _dispatch_command(  # noqa: PLR0912
         self,
         rt: _SessionRuntime,
         name: str,
@@ -926,6 +1023,16 @@ class SummonSession:
             self._message_queue.put_nowait(("", None))
             return
 
+        # Handle !stop — abort the current Claude turn
+        if result.metadata.get("stop"):
+            if result.text:
+                try:
+                    await rt.provider.post_message(rt.channel_id, result.text, thread_ts=thread_ts)
+                except Exception as e:
+                    logger.warning("Failed to post stop message: %s", e)
+            self._abort_current_turn()
+            return
+
         # Handle !clear — post visual delineation then fall through to passthrough
         if result.metadata.get("clear"):
             await self._post_clear_delineation(rt)
@@ -955,6 +1062,12 @@ class SummonSession:
                 except Exception as e:
                     logger.warning("Failed to post command response: %s", e)
                     break
+
+    def _abort_current_turn(self) -> None:
+        """Signal the current Claude turn to abort."""
+        self._abort_event.set()
+        if self._current_turn_task and not self._current_turn_task.done():
+            self._current_turn_task.cancel()
 
     def _handle_signal(self) -> None:
         """Signal handler for SIGINT/SIGTERM — triggers graceful shutdown."""
