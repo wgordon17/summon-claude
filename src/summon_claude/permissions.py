@@ -437,7 +437,15 @@ class PermissionHandler:
         """Handle 'Other' button — set pending flag for free-text capture."""
         self._ask_user.pending_other = (request_id, q_idx)
         q_text = sanitize_for_mrkdwn(question.get("question", ""))
-        await _post_quietly(self._router, f":pencil: Type your answer for: _{q_text}_")
+        # Post as ephemeral to main channel so the user sees the prompt prominently
+        try:
+            await self._router.post_permission_ephemeral(
+                self._authenticated_user_id,
+                f":pencil: Type your answer for: _{q_text}_",
+                [],
+            )
+        except Exception as e:
+            logger.debug("Failed to post 'Other' prompt: %s", e)
 
     async def _handle_ask_done(self, request_id: str, q_idx: int, question: dict) -> None:
         """Handle 'Done' button for multi-select — finalize toggled selections."""
