@@ -53,18 +53,38 @@ def _print_auth_banner(short_code: str) -> None:
     click.echo(f"{border}\n")
 
 
+_LOG_FMT = logging.Formatter(
+    "%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+
 def _setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.WARNING
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-        level=level,
-    )
-    # Silence noisy libraries unless verbose
+    """Configure console logging. File handler is added later via _add_file_logging."""
+    console_level = logging.DEBUG if verbose else logging.WARNING
+    # Root logger at INFO so a file handler (added later) captures diagnostics.
+    # The console handler restricts what the user actually sees.
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+    console = logging.StreamHandler()
+    console.setLevel(console_level)
+    console.setFormatter(_LOG_FMT)
+    root.addHandler(console)
+
+    # Silence noisy libraries on console (file handler still captures INFO+)
     if not verbose:
-        logging.getLogger("slack_bolt").setLevel(logging.ERROR)
-        logging.getLogger("slack_sdk").setLevel(logging.ERROR)
-        logging.getLogger("asyncio").setLevel(logging.ERROR)
+        logging.getLogger("slack_sdk").setLevel(logging.WARNING)
+        logging.getLogger("asyncio").setLevel(logging.WARNING)
+
+
+def _add_file_logging(log_file: pathlib.Path, *, verbose: bool = False) -> None:
+    """Attach a file handler to the root logger for session diagnostics."""
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.DEBUG if verbose else logging.INFO)
+    fh.setFormatter(_LOG_FMT)
+    logging.getLogger().addHandler(fh)
 
 
 def _echo(msg: str, ctx: click.Context, err: bool = False) -> None:
@@ -122,7 +142,7 @@ def cli(
     if verbose and quiet:
         raise click.UsageError("--verbose and --quiet are mutually exclusive")
 
-    _setup_logging(verbose)
+    _setup_logging(verbose)  # console-only; file handler added in cmd_start()
 
     if no_color or os.environ.get("NO_COLOR", ""):
         ctx.color = False
@@ -233,6 +253,12 @@ def cmd_start(
     resolved_cwd = str(pathlib.Path(cwd).resolve()) if cwd else str(pathlib.Path.cwd())
     session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
+
+    # Attach a file handler now that we know the session ID
+    log_dir = get_data_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{session_id}.log"
+    _add_file_logging(log_file, verbose=ctx.obj.get("verbose", False))
 
     options = SessionOptions(
         session_id=session_id,
@@ -387,6 +413,37 @@ async def _async_stop(session_id: str) -> None:
 
         pid = session["pid"]
 
+        # Check if the process is still alive before trying to signal it
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            click.echo(f"Process {pid} no longer exists — marking session as errored")
+            await registry.update_status(
+                session_id,
+                "errored",
+                error_message="Process not found at stop time",
+                ended_at=datetime.now(UTC).isoformat(),
+            )
+            await registry.log_event(
+                "session_stopped",
+                session_id=session_id,
+                details={"pid": pid, "stopped_by": "cli", "reason": "dead_pid"},
+            )
+            return
+        except PermissionError:
+            # Process exists but owned by another user (PID was recycled)
+            click.echo(
+                f"Process {pid} exists but is owned by another user "
+                f"(PID was likely recycled) — marking session as errored"
+            )
+            await registry.update_status(
+                session_id,
+                "errored",
+                error_message=f"PID {pid} recycled by another user",
+                ended_at=datetime.now(UTC).isoformat(),
+            )
+            return
+
         # Verify the PID belongs to the current user before signaling
         if not _pid_owned_by_current_user(pid):
             click.echo(f"Process {pid} is not owned by the current user — refusing to signal")
@@ -401,7 +458,7 @@ async def _async_stop(session_id: str) -> None:
                 details={"pid": pid, "stopped_by": "cli"},
             )
         except ProcessLookupError:
-            click.echo(f"Process {pid} not found — session may have already ended")
+            click.echo(f"Process {pid} not found — marking session as errored")
             await registry.update_status(
                 session_id, "errored", error_message="Process not found at stop time"
             )

@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+import aiohttp
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
 
 from summon_claude._formatting import get_tool_primary_arg, sanitize_for_mrkdwn
@@ -36,6 +37,18 @@ _AUTO_APPROVE_TOOLS = frozenset(
 )
 
 _PERMISSION_TIMEOUT_S = 300  # 5 minutes
+
+
+async def _dismiss_ephemeral(response_url: str, replacement_text: str) -> None:
+    """Dismiss or replace an ephemeral Slack message via its response_url."""
+    try:
+        async with aiohttp.ClientSession() as http:
+            await http.post(
+                response_url,
+                json={"replace_original": True, "text": replacement_text},
+            )
+    except Exception as e:
+        logger.debug("Failed to dismiss ephemeral via response_url: %s", e)
 
 
 @dataclass
@@ -272,11 +285,10 @@ class PermissionHandler:
 
     async def handle_action(
         self,
-        action_id: str,
         value: str,
         user_id: str,
         channel_id: str,
-        message_ts: str,
+        response_url: str = "",
     ) -> None:
         """Handle a Slack interactive button click for permission approval/denial.
 
@@ -308,11 +320,14 @@ class PermissionHandler:
 
         self._batch.decisions[batch_id] = approved
 
-        # Post a persistent confirmation to the turn thread (ephemeral messages can't be updated)
+        # Dismiss the ephemeral message via response_url (the only reliable way)
         status_text = ":white_check_mark: Approved" if approved else ":x: Denied"
-        confirmation = f"{status_text} by <@{user_id}>"
+        if response_url:
+            await _dismiss_ephemeral(response_url, status_text)
+
+        # Post a persistent confirmation to the turn thread
         try:
-            await self._router.post_to_turn_thread(confirmation)
+            await self._router.post_to_turn_thread(f"{status_text} by user")
         except Exception as e:
             logger.warning("Failed to post permission confirmation: %s", e)
 
@@ -382,8 +397,7 @@ class PermissionHandler:
         self,
         value: str,
         user_id: str,
-        channel_id: str,
-        message_ts: str,
+        response_url: str = "",
     ) -> None:
         """Handle a Slack button click for an AskUserQuestion option.
 

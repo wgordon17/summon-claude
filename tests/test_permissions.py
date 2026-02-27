@@ -142,11 +142,9 @@ class TestHandleAction:
         handler._batch.events[batch_id] = event
 
         await handler.handle_action(
-            action_id="permission_approve",
             value=f"approve:{batch_id}",
             user_id="U_TEST",
             channel_id="C123",
-            message_ts="111.001",
         )
 
         assert handler._batch.decisions.get(batch_id) is True
@@ -159,11 +157,9 @@ class TestHandleAction:
         handler._batch.events[batch_id] = event
 
         await handler.handle_action(
-            action_id="permission_deny",
             value=f"deny:{batch_id}",
             user_id="U_TEST",
             channel_id="C123",
-            message_ts="111.001",
         )
 
         assert handler._batch.decisions.get(batch_id) is False
@@ -177,11 +173,9 @@ class TestHandleAction:
         handler._batch.events[batch_id] = event
 
         await handler.handle_action(
-            action_id="permission_approve",
             value=f"approve:{batch_id}",
             user_id="U_TEST",
             channel_id="C123",
-            message_ts="999.001",
         )
 
         # Should NOT update the ephemeral message
@@ -190,11 +184,9 @@ class TestHandleAction:
     async def test_unknown_action_value_ignored(self):
         handler, provider, _ = make_handler()
         await handler.handle_action(
-            action_id="something_else",
             value="unknown_value",
             user_id="U_TEST",
             channel_id="C123",
-            message_ts="111.001",
         )
 
     async def test_unauthorized_user_rejected(self):
@@ -205,11 +197,9 @@ class TestHandleAction:
         handler._batch.events[batch_id] = event
 
         await handler.handle_action(
-            action_id="permission_approve",
             value=f"approve:{batch_id}",
             user_id="U_INTRUDER",
             channel_id="C123",
-            message_ts="111.001",
         )
 
         # Decision should NOT have been set
@@ -325,11 +315,9 @@ class TestPermissionEphemeral:
         handler._batch.events[batch_id] = event
 
         await handler.handle_action(
-            action_id="permission_approve",
             value=f"approve:{batch_id}",
             user_id="U_TEST",
             channel_id="C123",
-            message_ts="111.001",
         )
 
         assert handler._batch.decisions.get(batch_id) is True

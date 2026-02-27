@@ -70,8 +70,6 @@ async def _click(handler, request_id, q_idx, opt_val):
     await handler.handle_ask_user_action(
         value=f"{request_id}|{q_idx}|{opt_val}",
         user_id="U1",
-        channel_id="C123",
-        message_ts="ts1",
     )
 
 
@@ -406,8 +404,6 @@ class TestEdgeCases:
         await handler.handle_ask_user_action(
             value="bad-format",
             user_id="U1",
-            channel_id="C123",
-            message_ts="ts1",
         )
 
     async def test_receive_text_without_pending_is_noop(self):
