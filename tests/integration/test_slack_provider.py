@@ -34,10 +34,11 @@ class TestChannelOperations:
 
     async def test_invite_user(self, slack_provider, test_channel, slack_harness):
         bot_id = await slack_harness.resolve_bot_user_id()
-        # Limited test: we only have one bot user, so it's already in the channel
-        # from creation. We verify the invite call doesn't raise (provider should
-        # handle already_in_channel gracefully).
-        await slack_provider.invite_user(test_channel, bot_id)
+        # Bot created the channel so it's already a member. Slack returns
+        # cant_invite_self — verify the provider passes the call through
+        # (it doesn't swallow invite errors, unlike archive_channel).
+        with pytest.raises(Exception, match="cant_invite_self"):
+            await slack_provider.invite_user(test_channel, bot_id)
 
     async def test_archive_channel(self, slack_provider, slack_harness):
         import time
@@ -86,8 +87,12 @@ class TestMessaging:
     async def test_add_reaction(self, slack_provider, test_channel, slack_harness):
         ref = await slack_provider.post_message(test_channel, "React to this")
         await slack_provider.add_reaction(test_channel, ref.ts, "thumbsup")
-        reactions = await slack_harness.client.reactions_get(channel=test_channel, timestamp=ref.ts)
-        reaction_names = [r["name"] for r in reactions["message"]["reactions"]]
+        # Verify via conversations_history (doesn't require reactions:read scope)
+        history = await slack_harness.client.conversations_history(
+            channel=test_channel, latest=ref.ts, inclusive=True, limit=1
+        )
+        msg = history["messages"][0]
+        reaction_names = [r["name"] for r in msg.get("reactions", [])]
         assert "thumbsup" in reaction_names
 
     async def test_upload_file(self, slack_provider, test_channel, slack_harness):
