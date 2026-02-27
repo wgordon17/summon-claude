@@ -1,37 +1,20 @@
 """Integration tests for ChannelManager against real Slack API.
 
-Basic channel lifecycle (create, topic, archive) is exercised
-transitively by the shared test_channel fixture. Tests here focus
-on ChannelManager-specific orchestration logic.
+Channel lifecycle (create, invite, topic, archive) is exercised
+transitively by the shared test_channel fixture. Name collision
+and slugify logic are covered by unit tests. Tests here focus on
+ChannelManager operations that require real Slack verification.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from summon_claude.channel_manager import ChannelManager
-
 pytestmark = [pytest.mark.slack]
 
 
 class TestChannelLifecycle:
-    """Test ChannelManager orchestration logic."""
-
-    async def test_create_channel_name_collision(self, slack_provider, slack_harness):
-        """Two channels with same session name get different suffixes."""
-        mgr = ChannelManager(slack_provider, channel_prefix="collision")
-        id1, name1 = await mgr.create_session_channel("dup")
-        id2, name2 = await mgr.create_session_channel("dup")
-        assert id1 != id2
-        assert name1 != name2
-        await slack_harness.cleanup_channels([id1, id2])
-
-    async def test_channel_name_slugify(self, channel_manager, slack_harness):
-        """Special characters in name should be slugified."""
-        channel_id, channel_name = await channel_manager.create_session_channel("My Feature! @v2")
-        assert channel_id
-        assert all(c.isalnum() or c == "-" for c in channel_name)
-        await slack_harness.cleanup_channels([channel_id])
+    """Test ChannelManager operations against real Slack."""
 
     async def test_post_session_header(self, channel_manager, test_channel, slack_harness):
         session_info = {
