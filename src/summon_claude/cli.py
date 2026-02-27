@@ -53,33 +53,37 @@ def _print_auth_banner(short_code: str) -> None:
     click.echo(f"{border}\n")
 
 
-def _setup_logging(verbose: bool, log_file: pathlib.Path | None = None) -> None:
-    """Configure all logging: console + optional file handler.
+def _setup_logging(verbose: bool = False, log_file: pathlib.Path | None = None) -> None:
+    """Configure logging. Idempotent — safe to call multiple times.
 
-    Called once from cmd_start() where both verbose flag and session log
-    file path are known.  Non-session subcommands (version, config, etc.)
-    rely on basicConfig set in cli().
+    First call (from cli()): sets up console handler only.
+    Second call (from cmd_start()): adds file handler for session diagnostics.
     """
-    fmt = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
     root = logging.getLogger()
-    root.handlers.clear()  # replace any handlers from basicConfig
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
 
-    console = logging.StreamHandler()
-    console.setLevel(logging.DEBUG if verbose else logging.WARNING)
-    console.setFormatter(fmt)
-    root.addHandler(console)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
 
+    # Add console handler only if one doesn't exist yet
+    has_console = any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    )
+    if not has_console:
+        console = logging.StreamHandler()
+        console.setLevel(logging.DEBUG if verbose else logging.WARNING)
+        console.setFormatter(fmt)
+        root.addHandler(console)
+
+    # Add file handler if requested and not already attached
     if log_file:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file)
-        fh.setLevel(logging.DEBUG if verbose else logging.INFO)
-        fh.setFormatter(fmt)
-        root.addHandler(fh)
+        has_file = any(isinstance(h, logging.FileHandler) for h in root.handlers)
+        if not has_file:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            fh = logging.FileHandler(log_file)
+            fh.setLevel(logging.DEBUG if verbose else logging.INFO)
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
 
     if not verbose:
         logging.getLogger("slack_sdk").setLevel(logging.WARNING)
@@ -141,12 +145,7 @@ def cli(
     if verbose and quiet:
         raise click.UsageError("--verbose and --quiet are mutually exclusive")
 
-    # Minimal logging for non-session subcommands; cmd_start() sets up full logging
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-        level=logging.DEBUG if verbose else logging.WARNING,
-    )
+    _setup_logging(verbose)
 
     if no_color or os.environ.get("NO_COLOR", ""):
         ctx.color = False
@@ -258,12 +257,9 @@ def cmd_start(
     session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
-    # Set up full logging now that we know the session ID
-    log_dir = get_data_dir() / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{session_id}.log"
-    verbose = ctx.obj.get("verbose", False)
-    _setup_logging(verbose, log_file=log_file)
+    # Add file logging now that we know the session ID
+    log_file = get_data_dir() / "logs" / f"{session_id}.log"
+    _setup_logging(ctx.obj.get("verbose", False), log_file=log_file)
 
     options = SessionOptions(
         session_id=session_id,
