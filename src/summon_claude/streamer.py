@@ -37,6 +37,7 @@ class _TurnState:
 
     has_seen_tool_use: bool = False
     text_after_tools: str = ""
+    posted_conclusion: bool = False
     main_ts: str | None = None
     thread_ts: str | None = None
     buffer: str = ""
@@ -178,6 +179,7 @@ class ResponseStreamer:
         if self._turn.text_after_tools.strip():
             text = self._turn.text_after_tools
             self._turn.text_after_tools = ""
+            self._turn.posted_conclusion = True
             # Post conclusion text to main channel
             chunks = _split_text(text, _MAX_MESSAGE_CHARS)
             for i, chunk in enumerate(chunks):
@@ -286,7 +288,9 @@ class ResponseStreamer:
 
     async def _post_result_summary(self, result: ResultMessage) -> None:
         """Post session summary after Claude finishes a turn."""
-        if result.result:
+        # Only post result.result if we didn't already post the same content
+        # via _flush_conclusion_to_main (which posts text_after_tools).
+        if result.result and not self._turn.posted_conclusion:
             await self._router.post_to_main(result.result)
 
         cost = result.total_cost_usd

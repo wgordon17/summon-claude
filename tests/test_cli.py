@@ -438,25 +438,39 @@ class TestSessionStop:
             result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])
         assert result.exit_code == 0
         assert "Sent SIGTERM" in result.output
-        mock_kill.assert_called_once()
+        # os.kill called twice: liveness check (signal 0) + SIGTERM
+        assert mock_kill.call_count == 2
 
-    def test_stop_process_already_gone(self):
+    def test_stop_dead_pid_marks_errored(self):
+        """When the process is already dead, stop should mark the session errored."""
         mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
         with (
             patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
-            patch("summon_claude.cli._pid_owned_by_current_user", return_value=True),
             patch("summon_claude.cli.os.kill", side_effect=ProcessLookupError),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])
-        assert "not found" in result.output
-        assert "may have already ended" in result.output
+        assert "no longer exists" in result.output
+        assert "marking session as errored" in result.output
+
+    def test_stop_recycled_pid_marks_errored(self):
+        """When the PID was recycled by another user, stop should mark errored."""
+        mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
+        with (
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.os.kill", side_effect=PermissionError),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])
+        assert "recycled" in result.output
+        assert "marking session as errored" in result.output
 
     def test_stop_refuses_unowned_pid(self):
         mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
         with (
             patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
             patch("summon_claude.cli._pid_owned_by_current_user", return_value=False),
+            patch("summon_claude.cli.os.kill"),  # liveness check passes
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])

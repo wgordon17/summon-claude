@@ -141,6 +141,9 @@ class SummonSession:
         # Rate limiter for /summon slash command
         self._rate_limiter = RateLimiter()
 
+        # Message dispatch — early handler delegates to this once registered
+        self._message_handler: list = []  # holds [handler_fn] once set
+
         # Socket resilience state
         self._active_socket_handler: AsyncSocketModeHandler | None = None
         self._disconnect_reason: str | None = None  # one-way latch: set once, read in _shutdown
@@ -231,14 +234,23 @@ class SummonSession:
 
                 app.command("/summon")(_on_summon_command)
 
+                # Register a catch-all message handler early so Bolt doesn't
+                # warn about "Unhandled request" for message subtypes like
+                # channel_join that fire before post-auth handlers are registered.
+                # The real message processing logic is added after auth via
+                # _register_event_handlers which populates self._message_handler.
+                async def _on_message_event_early(event, say) -> None:
+                    if self._message_handler:
+                        await self._message_handler[0](event, say)
+
+                app.event("message")(_on_message_event_early)
+
                 # Install signal handlers
                 loop = asyncio.get_running_loop()
                 for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                     loop.add_signal_handler(sig, self._handle_signal)
 
                 logger.info("Waiting for Slack authentication...")
-
-                logging.getLogger("slack_bolt").setLevel(logging.WARNING)
                 assert socket_handler is not None
                 auth_task = asyncio.create_task(self._wait_for_auth())
                 socket_task = asyncio.create_task(socket_handler.start_async())
@@ -265,6 +277,7 @@ class SummonSession:
                 )
 
                 if auth_status == "authenticated":
+                    click.echo("Authenticated! Setting up session...")
                     await self._run_session(registry, client, app, socket_handler)
                     return True
                 if auth_status == "timed_out":
@@ -525,28 +538,24 @@ class SummonSession:
         async def _on_permission_action(ack, action, body) -> None:
             await ack()
             user_id = body.get("user", {}).get("id", "")
-            message = body.get("message", {})
             action_channel_id = body.get("channel", {}).get("id", rt.channel_id)
-            action_id = action.get("action_id", "")
+            response_url = body.get("response_url", "")
             await rt.permission_handler.handle_action(
-                action_id=action_id,
                 value=action.get("value", ""),
                 user_id=user_id,
                 channel_id=action_channel_id,
-                message_ts=message.get("ts", ""),
+                response_url=response_url,
             )
 
         async def _on_ask_user_action(ack, action, body) -> None:
             await ack()
             value = action.get("value", "")
             action_user_id = body.get("user", {}).get("id", "")
-            action_channel_id = body.get("channel", {}).get("id", rt.channel_id)
-            message = body.get("message", {})
+            response_url = body.get("response_url", "")
             await rt.permission_handler.handle_ask_user_action(
                 value=value,
                 user_id=action_user_id,
-                channel_id=action_channel_id,
-                message_ts=message.get("ts", ""),
+                response_url=response_url,
             )
 
         async def _on_reaction_added(event) -> None:
@@ -567,7 +576,11 @@ class SummonSession:
                 except Exception as e:
                     logger.debug("Failed to post cancellation message: %s", e)
 
-        app.event("message")(_on_message_event)
+        # Wire the real message handler into the early-registered dispatch slot
+        # (app.event("message") was registered pre-auth to prevent Bolt warnings)
+        self._message_handler.clear()
+        self._message_handler.append(_on_message_event)
+
         app.event("reaction_added")(_on_reaction_added)
         app.action("permission_approve")(_on_permission_action)
         app.action("permission_deny")(_on_permission_action)
