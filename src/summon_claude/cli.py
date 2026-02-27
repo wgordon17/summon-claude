@@ -53,38 +53,37 @@ def _print_auth_banner(short_code: str) -> None:
     click.echo(f"{border}\n")
 
 
-_LOG_FMT = logging.Formatter(
-    "%(asctime)s %(levelname)s %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+def _setup_logging(verbose: bool, log_file: pathlib.Path | None = None) -> None:
+    """Configure all logging: console + optional file handler.
 
+    Called once from cmd_start() where both verbose flag and session log
+    file path are known.  Non-session subcommands (version, config, etc.)
+    rely on basicConfig set in cli().
+    """
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
-def _setup_logging(verbose: bool) -> None:
-    """Configure console logging. File handler is added later via _add_file_logging."""
-    console_level = logging.DEBUG if verbose else logging.WARNING
-    # Root logger at INFO so a file handler (added later) captures diagnostics.
-    # The console handler restricts what the user actually sees.
     root = logging.getLogger()
+    root.handlers.clear()  # replace any handlers from basicConfig
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
 
     console = logging.StreamHandler()
-    console.setLevel(console_level)
-    console.setFormatter(_LOG_FMT)
+    console.setLevel(logging.DEBUG if verbose else logging.WARNING)
+    console.setFormatter(fmt)
     root.addHandler(console)
 
-    # Silence noisy libraries on console (file handler still captures INFO+)
+    if log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(logging.DEBUG if verbose else logging.INFO)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+
     if not verbose:
         logging.getLogger("slack_sdk").setLevel(logging.WARNING)
         logging.getLogger("asyncio").setLevel(logging.WARNING)
-
-
-def _add_file_logging(log_file: pathlib.Path, *, verbose: bool = False) -> None:
-    """Attach a file handler to the root logger for session diagnostics."""
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(log_file)
-    fh.setLevel(logging.DEBUG if verbose else logging.INFO)
-    fh.setFormatter(_LOG_FMT)
-    logging.getLogger().addHandler(fh)
 
 
 def _echo(msg: str, ctx: click.Context, err: bool = False) -> None:
@@ -142,7 +141,12 @@ def cli(
     if verbose and quiet:
         raise click.UsageError("--verbose and --quiet are mutually exclusive")
 
-    _setup_logging(verbose)  # console-only; file handler added in cmd_start()
+    # Minimal logging for non-session subcommands; cmd_start() sets up full logging
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        level=logging.DEBUG if verbose else logging.WARNING,
+    )
 
     if no_color or os.environ.get("NO_COLOR", ""):
         ctx.color = False
@@ -254,11 +258,12 @@ def cmd_start(
     session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
-    # Attach a file handler now that we know the session ID
+    # Set up full logging now that we know the session ID
     log_dir = get_data_dir() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{session_id}.log"
-    _add_file_logging(log_file, verbose=ctx.obj.get("verbose", False))
+    verbose = ctx.obj.get("verbose", False)
+    _setup_logging(verbose, log_file=log_file)
 
     options = SessionOptions(
         session_id=session_id,
