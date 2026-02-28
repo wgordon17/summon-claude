@@ -13,14 +13,12 @@ import logging
 import os
 import pathlib
 import re
-import signal
 import sys
 import threading
 import uuid
 from datetime import UTC, datetime
 
 import click
-import daemon
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude import __version__
@@ -28,9 +26,10 @@ from summon_claude.auth import SessionAuth, generate_session_token
 from summon_claude.channel_manager import ChannelManager
 from summon_claude.cli_config import config_check, config_edit, config_path, config_set, config_show
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
+from summon_claude.ipc import recv_msg, send_msg
 from summon_claude.providers.slack import SlackChatProvider
 from summon_claude.registry import SessionRegistry
-from summon_claude.session import SessionOptions, SummonSession
+from summon_claude.session import SessionOptions
 
 logger = logging.getLogger(__name__)
 
@@ -203,13 +202,6 @@ def cmd_version(ctx: click.Context, output: str) -> None:
 )
 @click.option("--name", default=None, help="Session name (used for Slack channel naming)")
 @click.option("--model", default=None, help="Model override (default: from config)")
-@click.option(
-    "--background",
-    "-b",
-    is_flag=True,
-    default=False,
-    help="Run session as a background daemon process",
-)
 @click.pass_context
 def cmd_start(
     ctx: click.Context,
@@ -217,9 +209,8 @@ def cmd_start(
     resume: str | None,
     name: str | None,
     model: str | None,
-    background: bool,
 ) -> None:
-    """Start a new summon session."""
+    """Start a new summon session (thin client — delegates to the daemon)."""
     import shutil  # noqa: PLC0415
 
     if not shutil.which("claude"):
@@ -228,9 +219,9 @@ def cmd_start(
         click.echo("Install Claude Code: https://claude.ai/code", err=True)
         raise SystemExit(1)
 
-    config_path = ctx.obj.get("config_path") if ctx.obj else None
+    config_path_override = ctx.obj.get("config_path") if ctx.obj else None
     try:
-        config = SummonConfig.from_file(config_path)
+        config = SummonConfig.from_file(config_path_override)
         config.validate()
     except Exception as e:
         click.echo(f"Configuration error: {e}", err=True)
@@ -256,10 +247,6 @@ def cmd_start(
     session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
-    # Add file logging now that we know the session ID
-    log_file = get_data_dir() / "logs" / f"{session_id}.log"
-    _setup_logging(ctx.obj.get("verbose", False), log_file=log_file)
-
     options = SessionOptions(
         session_id=session_id,
         cwd=resolved_cwd,
@@ -268,7 +255,7 @@ def cmd_start(
         resume=resume,
     )
 
-    # Phase 1: Generate auth token (foreground, pre-fork)
+    # Phase 1: Generate auth token (foreground, before talking to daemon)
     try:
         auth = asyncio.run(_generate_auth(session_id))
     except Exception as e:
@@ -276,7 +263,21 @@ def cmd_start(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    session = SummonSession(config=config, options=options, auth=auth)
+    # Phase 2: Ensure daemon is running (auto-start if not)
+    try:
+        _ensure_daemon(config)
+    except Exception as e:
+        click.echo(f"Error starting daemon: {e}", err=True)
+        sys.exit(1)
+
+    # Phase 3: Send create_session to daemon and wait for confirmation
+    try:
+        asyncio.run(_create_session_in_daemon(options, auth))
+    except Exception as e:
+        click.echo(f"Error communicating with daemon: {e}", err=True)
+        sys.exit(1)
+
+    # Phase 4: Print auth banner so user can authenticate via Slack
     _print_auth_banner(auth.short_code)
 
     # Show update notification if available (after banner)
@@ -284,40 +285,125 @@ def cmd_start(
     if update_result and not ctx.obj.get("quiet"):
         click.echo(update_result[0], err=True)
 
-    # Phase 2: Daemonize if requested (after banner is shown)
-    daemon_ctx: daemon.DaemonContext | contextlib.nullcontext[None] = contextlib.nullcontext()
-    if background:
-        if sys.platform == "win32":
-            click.echo("Background mode is not supported on Windows.", err=True)
-            sys.exit(1)
 
-        log_dir = get_data_dir() / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / f"{session_id}.log"
-        click.echo(f"Session started in background. Log: {log_file}")
+def _ensure_daemon(config: SummonConfig) -> None:
+    """Start the daemon if it is not already running."""
+    from summon_claude.daemon import is_daemon_running, start_daemon  # noqa: PLC0415
 
-        log_fh = log_file.open("a")
-        daemon_ctx = daemon.DaemonContext(
-            working_directory=resolved_cwd,
-            umask=0o022,
-            stdout=log_fh,
-            stderr=log_fh,
-            signal_map={signal.SIGHUP: signal.SIG_IGN},
-        )
+    if not is_daemon_running():
+        logger.debug("Daemon not running — starting")
+        start_daemon(config)
+    else:
+        logger.debug("Daemon already running")
 
-    # Phase 3: Run session (bolt + auth wait + message loop)
-    with daemon_ctx:
-        try:
-            success = asyncio.run(session.start())
-            if not success:
-                click.echo(f"Authentication timed out. Run '{ctx.command_path}' to try again.")
-                sys.exit(1)
-        except KeyboardInterrupt:
-            click.echo("\nInterrupted.")
-        except Exception as e:
-            logger.exception("Session error: %s", e)
-            click.echo(f"Error: {e}", err=True)
-            sys.exit(1)
+
+async def _create_session_in_daemon(options: SessionOptions, auth: SessionAuth) -> None:
+    """Send a create_session request to the daemon and await the response."""
+    from summon_claude.daemon import connect_to_daemon  # noqa: PLC0415
+
+    reader, writer = await connect_to_daemon()
+    try:
+        msg = {
+            "type": "create_session",
+            "options": {
+                "session_id": options.session_id,
+                "cwd": options.cwd,
+                "name": options.name,
+                "model": options.model,
+                "resume": options.resume,
+            },
+            "auth": {
+                "short_code": auth.short_code,
+                "session_id": auth.session_id,
+                "expires_at": auth.expires_at.isoformat(),
+            },
+        }
+        await send_msg(writer, msg)
+        response = await recv_msg(reader)
+        if response.get("type") != "session_created":
+            raise RuntimeError(f"Unexpected daemon response: {response}")
+        logger.debug("Session created: %s", response.get("session_id"))
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+
+
+# ---------------------------------------------------------------------------
+# Top-level stop command
+# ---------------------------------------------------------------------------
+
+
+@cli.command("stop")
+@click.argument("session_id", required=False, default=None)
+@click.option(
+    "--all",
+    "-a",
+    "stop_all",
+    is_flag=True,
+    default=False,
+    help="Stop all active sessions",
+)
+@click.pass_context
+def cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
+    """Stop a session (or all sessions) via the daemon."""
+    if not session_id and not stop_all:
+        click.echo("Provide SESSION_ID or --all.", err=True)
+        ctx.exit(1)
+    asyncio.run(_async_cmd_stop(session_id, stop_all))
+
+
+async def _async_cmd_stop(session_id: str | None, stop_all: bool) -> None:
+    from summon_claude.daemon import connect_to_daemon, is_daemon_running  # noqa: PLC0415
+
+    if not is_daemon_running():
+        click.echo("Daemon is not running.")
+        return
+
+    reader, writer = await connect_to_daemon()
+    try:
+        if stop_all:
+            # Query status to get session list
+            await send_msg(writer, {"type": "status"})
+            status = await recv_msg(reader)
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+            sessions = status.get("sessions", [])
+            if not sessions:
+                click.echo("No active sessions.")
+                return
+
+            for sess in sessions:
+                sid = sess.get("session_id", "")
+                if not sid:
+                    continue
+                r2, w2 = await connect_to_daemon()
+                try:
+                    await send_msg(w2, {"type": "stop_session", "session_id": sid})
+                    resp = await recv_msg(r2)
+                    found = resp.get("found", False)
+                    click.echo(f"Stop requested for {sid}: {'sent' if found else 'not found'}")
+                finally:
+                    w2.close()
+                    with contextlib.suppress(Exception):
+                        await w2.wait_closed()
+        else:
+            await send_msg(writer, {"type": "stop_session", "session_id": session_id})
+            resp = await recv_msg(reader)
+            if resp.get("found"):
+                click.echo(f"Stop requested for session {session_id}")
+            else:
+                click.echo(f"Session {session_id} not found in daemon")
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+    except Exception as exc:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        click.echo(f"Error: {exc}", err=True)
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +439,28 @@ def session_list(ctx: click.Context, show_all: bool, output: str) -> None:
 
 
 async def _async_session_list(ctx: click.Context, show_all: bool, output: str) -> None:
+    from summon_claude.daemon import connect_to_daemon, is_daemon_running  # noqa: PLC0415
+
+    # Print daemon status header (table mode only)
+    if output == "table" and not ctx.obj.get("quiet"):
+        if is_daemon_running():
+            # Query daemon for live status
+            try:
+                reader, writer = await connect_to_daemon()
+                await send_msg(writer, {"type": "status"})
+                status = await recv_msg(reader)
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+                pid = status.get("pid", "?")
+                uptime_s = status.get("uptime", 0)
+                uptime_str = _format_uptime(uptime_s)
+                click.echo(f"Daemon: running (pid {pid}, uptime {uptime_str})")
+            except Exception as e:
+                click.echo(f"Daemon: running (status unavailable: {e})")
+        else:
+            click.echo("Daemon: not running")
+
     async with SessionRegistry() as registry:
         if show_all:
             sessions = await registry.list_all(limit=50)
@@ -392,78 +500,6 @@ async def _async_session_info(session_id: str, output: str) -> None:
             click.echo(_format_json(session))
         else:
             _print_session_detail(session)
-
-
-@cmd_session.command("stop")
-@click.argument("session_id")
-def session_stop(session_id: str) -> None:
-    """Send SIGTERM to a running session process."""
-    asyncio.run(_async_stop(session_id))
-
-
-async def _async_stop(session_id: str) -> None:
-    async with SessionRegistry() as registry:
-        session = await registry.get_session(session_id)
-        if not session:
-            click.echo(f"Session not found: {session_id}")
-            return
-        if session["status"] not in ("pending_auth", "active"):
-            click.echo(f"Session {session_id} is not active (status: {session['status']})")
-            return
-
-        pid = session["pid"]
-
-        # Check if the process is still alive before trying to signal it
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            click.echo(f"Process {pid} no longer exists — marking session as errored")
-            await registry.update_status(
-                session_id,
-                "errored",
-                error_message="Process not found at stop time",
-                ended_at=datetime.now(UTC).isoformat(),
-            )
-            await registry.log_event(
-                "session_stopped",
-                session_id=session_id,
-                details={"pid": pid, "stopped_by": "cli", "reason": "dead_pid"},
-            )
-            return
-        except PermissionError:
-            # Process exists but owned by another user (PID was recycled)
-            click.echo(
-                f"Process {pid} exists but is owned by another user "
-                f"(PID was likely recycled) — marking session as errored"
-            )
-            await registry.update_status(
-                session_id,
-                "errored",
-                error_message=f"PID {pid} recycled by another user",
-                ended_at=datetime.now(UTC).isoformat(),
-            )
-            return
-
-        # Verify the PID belongs to the current user before signaling
-        if not _pid_owned_by_current_user(pid):
-            click.echo(f"Process {pid} is not owned by the current user — refusing to signal")
-            return
-
-        try:
-            os.kill(pid, signal.SIGTERM)
-            click.echo(f"Sent SIGTERM to session {session_id} (pid {pid})")
-            await registry.log_event(
-                "session_stopped",
-                session_id=session_id,
-                details={"pid": pid, "stopped_by": "cli"},
-            )
-        except ProcessLookupError:
-            click.echo(f"Process {pid} not found — marking session as errored")
-            await registry.update_status(
-                session_id, "errored", error_message="Process not found at stop time"
-            )
-        except PermissionError:
-            click.echo(f"Permission denied to send signal to pid {pid}")
 
 
 @cmd_session.command("logs")
@@ -722,46 +758,16 @@ def _format_ts(ts: str | None) -> str:
         return ts
 
 
-def _pid_uid_from_proc(pid: int) -> int | None:
-    """Read the real UID of *pid* from /proc (Linux only)."""
-    stat_file = pathlib.Path(f"/proc/{pid}/status")
-    if not stat_file.exists():
-        return None
-    for line in stat_file.read_text().splitlines():
-        if line.startswith("Uid:"):
-            return int(line.split()[1])
-    return None
-
-
-def _pid_owned_by_current_user(pid: int) -> bool:
-    """Return True if the process with the given PID is owned by the current user."""
-    try:
-        import psutil  # type: ignore[import]  # optional dependency  # noqa: PLC0415
-
-        proc = psutil.Process(pid)
-        return proc.uids().real == os.getuid()
-    except Exception as e:
-        logger.debug("psutil PID ownership check failed: %s", e)
-
-    # psutil not available or process gone; fall back to /proc on Linux
-    try:
-        uid = _pid_uid_from_proc(pid)
-        if uid is not None:
-            return uid == os.getuid()
-    except Exception as e:
-        logger.debug("/proc PID ownership check failed: %s", e)
-
-    # macOS/BSD fallback: check process exists via os.kill(pid, 0).
-    # Since only the current user registers sessions in the registry,
-    # existence is sufficient to confirm ownership on non-Linux systems.
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Process exists but owned by another user
-        return False
+def _format_uptime(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable uptime string."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
 
 
 def main() -> None:

@@ -6,37 +6,78 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
-import signal
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import click
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock
-from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude._formatting import format_file_references
-from summon_claude.auth import SessionAuth, verify_short_code
+from summon_claude.auth import SessionAuth
 from summon_claude.channel_manager import ChannelManager, _get_git_branch
 from summon_claude.commands import CommandContext, CommandRegistry, build_registry
-from summon_claude.config import SummonConfig, discover_installed_plugins
+from summon_claude.config import SummonConfig, discover_installed_plugins, get_data_dir
 from summon_claude.content_display import ContentDisplay, _split_text
 from summon_claude.context import ContextUsage
 from summon_claude.mcp_tools import create_summon_mcp_server
 from summon_claude.permissions import PermissionHandler
 from summon_claude.providers.slack import SlackChatProvider
-from summon_claude.rate_limiter import RateLimiter
 from summon_claude.registry import SessionRegistry
-from summon_claude.socket_health import SocketHealthMonitor
 from summon_claude.streamer import ResponseStreamer
 from summon_claude.thread_router import ThreadRouter
 
+if TYPE_CHECKING:
+    from summon_claude.event_dispatcher import EventDispatcher
+
 logger = logging.getLogger(__name__)
+
+# Per-session log correlation: set when a session starts so all log records
+# within that asyncio task carry the session_id in their context.
+_session_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
+
+
+class SessionIdFilter(logging.Filter):
+    """Injects the current ``session_id`` contextvar into every log record.
+
+    Install on the root logger (or any handler) so daemon log lines are
+    tagged with the session that produced them::
+
+        root = logging.getLogger()
+        root.addFilter(SessionIdFilter())
+
+    The filter sets ``record.session_id`` to a bracket-wrapped value like
+    ``[abc123]`` when a session is active, or ``""`` when at daemon level.
+    Use ``%(session_id)s`` in the log format string.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        sid = _session_id_var.get()
+        # Include trailing space so format "%(name)s%(session_id)s: %(message)s"
+        # produces "name[sid]: msg" for session records and "name: msg" for daemon records.
+        record.session_id = f"[{sid}] " if sid else ""  # type: ignore[attr-defined]
+        return True
+
+
+class _SessionLogFilter(logging.Filter):
+    """Passes only log records emitted within a specific session task.
+
+    Attached to a per-session ``FileHandler`` so that each session's log file
+    contains only records from that session.  Works by checking the
+    ``_session_id_var`` contextvar, which is task-scoped in asyncio.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__()
+        self._session_id = session_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _session_id_var.get() == self._session_id
+
 
 _HEARTBEAT_INTERVAL_S = 30
 _AUTH_POLL_INTERVAL_S = 1.0
@@ -44,9 +85,6 @@ _AUTH_TIMEOUT_S = 300  # 5 minutes to authenticate
 _QUEUE_POLL_INTERVAL_S = 1.0
 _MAX_USER_MESSAGE_CHARS = 10_000
 _CLEANUP_TIMEOUT_S = 10.0
-_WATCHDOG_CHECK_INTERVAL_S = 15
-_WATCHDOG_THRESHOLD_S = 90
-_OS_WATCHDOG_TIMEOUT_S = 120
 
 # Patterns that may appear in exception messages and should not be stored in the audit log
 _SECRET_PATTERN = re.compile(r"xox[a-z]-[A-Za-z0-9\-]+|sk-ant-[A-Za-z0-9\-]+")
@@ -80,25 +118,26 @@ class SessionOptions:
 @dataclass(frozen=True, slots=True)
 class _SessionRuntime:
     registry: SessionRegistry
-    client: AsyncWebClient
     provider: SlackChatProvider
     permission_handler: PermissionHandler
     channel_id: str
-    socket_handler: AsyncSocketModeHandler
     channel_manager: ChannelManager
 
 
 class SummonSession:
     """Orchestrates a Claude Code session bridged to a Slack channel.
 
+    In the daemon architecture this class runs as an asyncio task inside the
+    daemon process.  Slack events arrive via ``_message_queue`` (populated by
+    ``EventDispatcher``) rather than being received directly by a per-session
+    ``AsyncSocketModeHandler``.
+
     Lifecycle:
         1. Register session in SQLite (status: pending_auth)
-        2. Generate auth token + short code, print to terminal
-        3. Start Slack Socket Mode handler
-        4. Wait for /summon <code> command from an authorized user
-        5. Create session channel, post header
-        6. Enter message loop: Slack messages -> Claude -> Slack responses
-        7. Graceful shutdown on SIGINT/SIGTERM or session end
+        2. Wait for authentication signal via ``authenticate()``
+        3. Create session channel, register ``SessionHandle`` with dispatcher
+        4. Enter message loop: queued Slack messages -> Claude -> Slack responses
+        5. Graceful shutdown on ``request_shutdown()`` or session end
     """
 
     def __init__(
@@ -106,6 +145,8 @@ class SummonSession:
         config: SummonConfig,
         options: SessionOptions,
         auth: SessionAuth,
+        shared_provider: SlackChatProvider | None = None,
+        dispatcher: EventDispatcher | None = None,
     ) -> None:
         self._config = config
         self._session_id = options.session_id
@@ -118,8 +159,15 @@ class SummonSession:
         self._command_registry: CommandRegistry = build_registry()
         self._session_start_time: datetime = datetime.now(UTC)
 
-        # Message queue: Slack user messages -> Claude
-        self._message_queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
+        # Shared provider and dispatcher from the daemon (None for standalone/test use)
+        self._shared_provider = shared_provider
+        self._dispatcher = dispatcher
+
+        # Message queue: Slack user messages -> Claude (populated by EventDispatcher)
+        # maxsize=100 provides backpressure — EventDispatcher drops events when full
+        self._message_queue: asyncio.Queue[dict | tuple[str, str | None]] = asyncio.Queue(
+            maxsize=100
+        )
 
         # Shutdown signal
         self._shutdown_event = asyncio.Event()
@@ -138,21 +186,58 @@ class SummonSession:
         self._current_turn_task: asyncio.Task | None = None
         self._abort_event = asyncio.Event()
 
-        # Rate limiter for /summon slash command
-        self._rate_limiter = RateLimiter()
-
-        # Message dispatch — early handler delegates to this once registered
-        self._message_handler: list = []  # holds [handler_fn] once set
-
-        # Socket resilience state
-        self._active_socket_handler: AsyncSocketModeHandler | None = None
-        self._disconnect_reason: str | None = None  # one-way latch: set once, read in _shutdown
+        # Session state
         self._claude_session_id: str | None = None
         self._last_heartbeat_time: float = 0.0
-        self._health_monitor: SocketHealthMonitor | None = None
+        self._channel_id: str | None = None  # set after channel creation
 
-    async def start(self) -> bool:  # noqa: PLR0912, PLR0915
-        """Main entry point. Runs the full session lifecycle."""
+    # ------------------------------------------------------------------
+    # Public API (called by SessionManager / BoltRouter)
+    # ------------------------------------------------------------------
+
+    @property
+    def channel_id(self) -> str | None:
+        """Slack channel ID for this session, set after channel creation."""
+        return self._channel_id
+
+    def request_shutdown(self) -> None:
+        """Signal this session to shut down gracefully."""
+        if not self._shutdown_event.is_set():
+            logger.info("Session %s: shutdown requested", self._session_id)
+            self._shutdown_event.set()
+            # Unblock the message queue poll
+            self._message_queue.put_nowait(("", None))
+
+    def authenticate(self, user_id: str) -> None:
+        """Authenticate the session for *user_id* (called by SessionManager).
+
+        This is the daemon-side equivalent of the old ``/summon`` handler:
+        it sets ``_authenticated_event`` and records the user directly,
+        without requiring cross-process IPC or SQLite coordination.
+        """
+        self._authenticated_user_id = user_id
+        self._authenticated_event.set()
+        self._auth = None  # clear token from memory after successful auth
+        logger.info("Session %s: authenticated by user %s", self._session_id, user_id)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> bool:
+        """Main entry point. Runs the full session lifecycle.
+
+        In the daemon architecture:
+        - No Bolt app or socket handler is created here.
+        - Authentication is signalled externally via ``authenticate()``.
+        - Events arrive via ``_message_queue`` populated by ``EventDispatcher``.
+        """
+        # Set contextvar so all log records in this task carry session_id
+        _session_id_var.set(self._session_id)
+
+        # Per-session log file — all records from this task are written here
+        session_log_handler = self._install_session_log_handler()
+
         async with SessionRegistry() as registry:
             await registry.register(
                 session_id=self._session_id,
@@ -167,118 +252,13 @@ class SummonSession:
                 details={"cwd": self._cwd, "name": self._name, "model": self._model},
             )
 
-            socket_handler: AsyncSocketModeHandler | None = None
             try:
-                # Set up Slack app
-                client = AsyncWebClient(token=self._config.slack_bot_token)
-                app = AsyncApp(
-                    token=self._config.slack_bot_token,
-                    signing_secret=self._config.slack_signing_secret,
-                )
-                socket_handler = AsyncSocketModeHandler(app, self._config.slack_app_token)
-
-                # Register /summon handler before socket start
-                async def _on_summon_command(ack, command, respond) -> None:
-                    await ack()
-
-                    if self._authenticated_event.is_set():
-                        await respond(
-                            text="This session is already active.",
-                            response_type="ephemeral",
-                        )
-                        return
-
-                    user_id = command.get("user_id", "")
-
-                    if not self._rate_limiter.check(user_id):
-                        await respond(
-                            text="Please wait before trying again.", response_type="ephemeral"
-                        )
-                        return
-
-                    text = command.get("text", "").strip()
-                    if not text:
-                        await respond(
-                            text="Usage: `/summon <code>` — enter the code shown in terminal.",
-                            response_type="ephemeral",
-                        )
-                        return
-
-                    await registry.log_event(
-                        "auth_attempted",
-                        user_id=user_id,
-                    )
-
-                    auth_result = await verify_short_code(registry, text)
-                    if not auth_result:
-                        await registry.log_event("auth_failed", user_id=user_id)
-                        await respond(
-                            text=(
-                                ":x: Invalid or expired code. Run `summon start` to get a new code."
-                            ),
-                            response_type="ephemeral",
-                        )
-                        return
-
-                    self._authenticated_user_id = user_id
-                    self._authenticated_event.set()
-                    self._auth = None  # clear token from memory after successful auth
-
-                    await registry.log_event(
-                        "auth_succeeded", session_id=self._session_id, user_id=user_id
-                    )
-                    await respond(
-                        text=":rocket: Authenticated! Creating your session channel...",
-                        response_type="ephemeral",
-                    )
-
-                app.command("/summon")(_on_summon_command)
-
-                # Register a catch-all message handler early so Bolt doesn't
-                # warn about "Unhandled request" for message subtypes like
-                # channel_join that fire before post-auth handlers are registered.
-                # The real message processing logic is added after auth via
-                # _register_event_handlers which populates self._message_handler.
-                async def _on_message_event_early(event, say) -> None:
-                    if self._message_handler:
-                        await self._message_handler[0](event, say)
-
-                app.event("message")(_on_message_event_early)
-
-                # Install signal handlers
-                loop = asyncio.get_running_loop()
-                for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-                    loop.add_signal_handler(sig, self._handle_signal)
-
-                logger.info("Waiting for Slack authentication...")
-                assert socket_handler is not None
-                auth_task = asyncio.create_task(self._wait_for_auth())
-                socket_task = asyncio.create_task(socket_handler.start_async())
-                done, pending = await asyncio.wait(
-                    {auth_task, socket_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                # Cancel any still-running tasks
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except (asyncio.CancelledError, Exception) as e:
-                        logger.debug("Pending task cleanup: %s", e)
-                # Re-raise unexpected exceptions from auth_task
-                for task in done:
-                    if task is auth_task and not task.cancelled():
-                        exc = task.exception()
-                        if exc is not None:
-                            raise exc
-
-                auth_status: AuthResult = (
-                    auth_task.result() if not auth_task.cancelled() else "shutdown"
-                )
+                logger.info("Session %s: waiting for Slack authentication...", self._session_id)
+                auth_status = await self._wait_for_auth()
 
                 if auth_status == "authenticated":
-                    click.echo("Authenticated! Setting up session...")
-                    await self._run_session(registry, client, app, socket_handler)
+                    logger.info("Authenticated! Setting up session...")
+                    await self._run_session(registry)
                     return True
                 if auth_status == "timed_out":
                     if self._auth:
@@ -286,11 +266,6 @@ class SummonSession:
                             await registry.delete_pending_token(self._auth.short_code)
                         except Exception as e:
                             logger.debug("Failed to delete pending token on timeout: %s", e)
-                    if socket_handler is not None:
-                        try:
-                            await socket_handler.close_async()
-                        except Exception as e:
-                            logger.debug("Socket Mode cleanup error on timeout: %s", e)
                     logger.error("Authentication timed out")
                     await registry.update_status(
                         self._session_id, "errored", error_message="Authentication timed out"
@@ -302,33 +277,24 @@ class SummonSession:
                     )
                     self._shutdown_completed = True
                     return False
-                # shutdown
+                # shutdown — requested before auth completed
                 if self._auth:
                     try:
                         await registry.delete_pending_token(self._auth.short_code)
                     except Exception as e:
                         logger.debug("Failed to delete pending token on shutdown: %s", e)
-                if socket_handler is not None:
-                    try:
-                        await socket_handler.close_async()
-                    except Exception as e:
-                        logger.debug("Socket Mode cleanup error on shutdown: %s", e)
                 return False
 
             except asyncio.CancelledError:
-                logger.info("Session task cancelled during startup")
+                logger.info("Session %s: task cancelled during startup", self._session_id)
                 if self._auth:
                     try:
                         await registry.delete_pending_token(self._auth.short_code)
                     except Exception as e:
                         logger.debug("Failed to delete pending token on cancel: %s", e)
-                if socket_handler is not None:
-                    try:
-                        await socket_handler.close_async()
-                    except Exception as e:
-                        logger.debug("Socket Mode cleanup error on cancel: %s", e)
                 raise
             finally:
+                self._remove_session_log_handler(session_log_handler)
                 if not self._shutdown_completed:
                     try:
                         await registry.update_status(
@@ -355,26 +321,30 @@ class SummonSession:
             if elapsed >= next_countdown:
                 remaining = _AUTH_TIMEOUT_S - elapsed
                 if remaining > 0:
-                    click.echo(f"Waiting for authentication... {remaining:.0f}s remaining")
+                    logger.info("Waiting for authentication... %.0fs remaining", remaining)
                 next_countdown += 15.0
 
         self._shutdown_event.set()
         return "timed_out"
 
-    async def _run_session(  # noqa: PLR0915
-        self,
-        registry: SessionRegistry,
-        client: AsyncWebClient,
-        app: AsyncApp,
-        socket_handler: AsyncSocketModeHandler,
-    ) -> None:
-        """Create channel, connect Claude, run message loop."""
-        provider = SlackChatProvider(client)
+    async def _run_session(self, registry: SessionRegistry) -> None:
+        """Create channel, register with dispatcher, connect Claude, run message loop."""
+        # Always create a client for auth_test (to discover bot_user_id)
+        client = AsyncWebClient(token=self._config.slack_bot_token)
+        # Use shared provider from daemon if available; otherwise create a standalone one
+        if self._shared_provider is not None:
+            provider = self._shared_provider
+        else:
+            provider = SlackChatProvider(client)
+
         auth_resp = await client.auth_test()
         bot_user_id = auth_resp["user_id"]
         channel_manager = ChannelManager(provider, self._config.channel_prefix, bot_user_id)
         channel_id, channel_name = await channel_manager.create_session_channel(self._name)
         logger.info("Authenticated! Session channel: #%s", channel_name)
+
+        # Record channel_id for SessionManager status queries
+        self._channel_id = channel_id
 
         # Invite the authenticating user to the private channel
         if self._authenticated_user_id:
@@ -415,10 +385,10 @@ class SummonSession:
         # Notify the authenticating user
         if self._authenticated_user_id:
             try:
-                await client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=self._authenticated_user_id,
-                    text=f"Session ready! Welcome to <#{channel_id}>.",
+                await provider.post_ephemeral(
+                    channel_id,
+                    self._authenticated_user_id,
+                    f"Session ready! Welcome to <#{channel_id}>.",
                 )
             except Exception as e:
                 logger.debug("Failed to post ephemeral welcome: %s", e)
@@ -432,56 +402,37 @@ class SummonSession:
 
         rt = _SessionRuntime(
             registry=registry,
-            client=client,
             provider=provider,
             permission_handler=permission_handler,
             channel_id=channel_id,
-            socket_handler=socket_handler,
             channel_manager=channel_manager,
         )
-        self._active_socket_handler = socket_handler
 
-        # Register post-auth event handlers
-        self._register_event_handlers(app, rt)
+        # Register SessionHandle with the EventDispatcher so events are routed here
+        if self._dispatcher is not None:
+            from summon_claude.event_dispatcher import SessionHandle  # noqa: PLC0415
 
-        # Reconnect callback — uses nonlocal rt so closures see the updated runtime
-        async def _on_reconnect_needed() -> None:
-            nonlocal rt
-            new_rt = await self._reconnect_socket(rt)
-            rt = new_rt
-            health_monitor.update_handler(new_rt.socket_handler)
+            handle = SessionHandle(
+                session_id=self._session_id,
+                channel_id=channel_id,
+                message_queue=self._message_queue,
+                permission_handler=permission_handler,
+                abort_callback=self._abort_current_turn,
+                authenticated_user_id=self._authenticated_user_id or "",
+            )
+            self._dispatcher.register(channel_id, handle)
 
-        # Exhaustion callback — sets shutdown event + reason (runs synchronously in health task)
-        def _on_exhausted() -> None:
-            self._disconnect_reason = "reconnect_exhausted"
-            self._shutdown_event.set()
-            self._message_queue.put_nowait(("", None))
-
-        health_monitor = SocketHealthMonitor(
-            socket_handler=socket_handler,
-            on_reconnect_needed=_on_reconnect_needed,
-            on_exhausted=_on_exhausted,
-        )
-        self._health_monitor = health_monitor
-
-        # Start OS-level watchdog
-        self._start_os_watchdog()
         self._last_heartbeat_time = asyncio.get_running_loop().time()
 
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(rt))
-        health_task = asyncio.create_task(health_monitor.run())
-        watchdog_task = asyncio.create_task(self._watchdog_loop())
         try:
             await self._run_message_loop(rt, router, provider)
         finally:
-            health_task.cancel()
             heartbeat_task.cancel()
-            watchdog_task.cancel()
-            for task in (health_task, heartbeat_task, watchdog_task):
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception) as e:
-                    logger.debug("Task cleanup: %s", e)
+            try:
+                await heartbeat_task
+            except (asyncio.CancelledError, Exception) as e:
+                logger.debug("Heartbeat task cleanup: %s", e)
 
             current_task = asyncio.current_task()
             if current_task is not None and current_task.cancelling() > 0:
@@ -491,143 +442,9 @@ class SummonSession:
                 # CancelledError before cleanup can finish.
                 current_task.uncancel()
 
-            # Use latest rt (may have been updated by reconnect callback)
             await self._shutdown(rt)
 
-    def _register_event_handlers(self, app: AsyncApp, rt: _SessionRuntime) -> None:  # noqa: PLR0915
-        """Register all Slack event handlers on the given app."""
-
-        async def _on_message_event(event, say) -> None:
-            event_channel_id = event.get("channel", "")
-            user_id = event.get("user", "")
-            text = event.get("text", "")
-            subtype = event.get("subtype")
-
-            if subtype or not text or not user_id:
-                return
-            if event_channel_id != rt.channel_id:
-                return
-
-            if len(text) > _MAX_USER_MESSAGE_CHARS:
-                logger.warning("Message from %s truncated (%d chars)", user_id, len(text))
-                text = text[:_MAX_USER_MESSAGE_CHARS] + "\n[message truncated]"
-
-            files = event.get("files", [])
-            full_text = text
-            if files:
-                file_context = format_file_references(files)
-                if file_context:
-                    full_text = f"{text}\n\n{file_context}"
-
-            thread_ts = event.get("ts")
-
-            # Check for pending AskUserQuestion "Other" text input
-            if rt.permission_handler.has_pending_text_input():
-                await rt.permission_handler.receive_text_input(text)
-                return
-
-            # Check for command prefix
-            parsed = self._command_registry.parse(full_text)
-            if parsed is not None:
-                await self._dispatch_command(rt, parsed[0], parsed[1], user_id, thread_ts)
-                return
-
-            await self._message_queue.put((full_text, None))
-            # A successfully queued message means the socket is alive — reset failure counter
-            if self._health_monitor is not None:
-                self._health_monitor.mark_healthy()
-
-        async def _on_permission_action(ack, action, body) -> None:
-            await ack()
-            user_id = body.get("user", {}).get("id", "")
-            action_channel_id = body.get("channel", {}).get("id", rt.channel_id)
-            response_url = body.get("response_url", "")
-            await rt.permission_handler.handle_action(
-                value=action.get("value", ""),
-                user_id=user_id,
-                channel_id=action_channel_id,
-                response_url=response_url,
-            )
-
-        async def _on_ask_user_action(ack, action, body) -> None:
-            await ack()
-            value = action.get("value", "")
-            action_user_id = body.get("user", {}).get("id", "")
-            response_url = body.get("response_url", "")
-            await rt.permission_handler.handle_ask_user_action(
-                value=value,
-                user_id=action_user_id,
-                response_url=response_url,
-            )
-
-        async def _on_reaction_added(event) -> None:
-            reaction = event.get("reaction", "")
-            reaction_user = event.get("user", "")
-            item = event.get("item", {})
-            item_channel = item.get("channel", "")
-            if (
-                reaction == "octagonal_sign"
-                and reaction_user == self._authenticated_user_id
-                and item_channel == rt.channel_id
-            ):
-                self._abort_current_turn()
-                try:
-                    await rt.provider.post_message(
-                        rt.channel_id, ":octagonal_sign: Turn cancelled via reaction."
-                    )
-                except Exception as e:
-                    logger.debug("Failed to post cancellation message: %s", e)
-
-        # Wire the real message handler into the early-registered dispatch slot
-        # (app.event("message") was registered pre-auth to prevent Bolt warnings)
-        self._message_handler.clear()
-        self._message_handler.append(_on_message_event)
-
-        app.event("reaction_added")(_on_reaction_added)
-        app.action("permission_approve")(_on_permission_action)
-        app.action("permission_deny")(_on_permission_action)
-        app.action(re.compile(r"ask_user_\d+_.+"))(_on_ask_user_action)
-
-    async def _reconnect_socket(self, rt: _SessionRuntime) -> _SessionRuntime:
-        """Replace the socket handler with a fresh connection.
-
-        Returns a new _SessionRuntime with the updated socket_handler.
-        """
-        # Close old socket (best-effort)
-        try:
-            await asyncio.wait_for(rt.socket_handler.close_async(), timeout=5.0)
-        except Exception as e:
-            logger.debug("Old socket cleanup failed (expected on dead connection): %s", e)
-
-        # Create new app + socket handler (no /summon — already authenticated)
-        new_app = AsyncApp(
-            token=self._config.slack_bot_token,
-            signing_secret=self._config.slack_signing_secret,
-        )
-        new_socket_handler = AsyncSocketModeHandler(new_app, self._config.slack_app_token)
-
-        # Build new runtime preserving all non-socket state
-        new_rt = _SessionRuntime(
-            registry=rt.registry,
-            client=rt.client,
-            provider=rt.provider,
-            permission_handler=rt.permission_handler,
-            channel_id=rt.channel_id,
-            socket_handler=new_socket_handler,
-            channel_manager=rt.channel_manager,
-        )
-
-        # Re-register event handlers on the new app
-        self._register_event_handlers(new_app, new_rt)
-
-        # Start new socket connection
-        await new_socket_handler.connect_async()
-        self._active_socket_handler = new_socket_handler
-
-        logger.info("Socket reconnected successfully")
-        return new_rt
-
-    async def _run_message_loop(  # noqa: PLR0912
+    async def _run_message_loop(  # noqa: PLR0912, PLR0915
         self, rt: _SessionRuntime, router: ThreadRouter, provider: SlackChatProvider
     ) -> None:
         """Listen for Slack messages and forward them to Claude."""
@@ -710,7 +527,20 @@ class SummonSession:
                     except TimeoutError:
                         continue
 
-                    user_message, thread_ts = item
+                    # Items are either raw Slack event dicts (from EventDispatcher)
+                    # or internal tuples (sentinel / slash passthrough from _dispatch_command)
+                    if isinstance(item, dict):
+                        # Raw Slack event — run full preprocessing pipeline
+                        result = await self._process_incoming_event(item, rt)
+                        if result is None:
+                            # Filtered out (subtype, empty, permission input handled, etc.)
+                            continue
+                        user_message, thread_ts = result
+                    else:
+                        # Internal tuple: (text, thread_ts) from _dispatch_command passthrough
+                        # or ("", None) shutdown sentinel
+                        user_message, thread_ts = item
+
                     if not user_message:
                         continue
 
@@ -828,44 +658,8 @@ class SummonSession:
             try:
                 await rt.registry.heartbeat(self._session_id)
                 self._last_heartbeat_time = asyncio.get_running_loop().time()
-                self._pet_os_watchdog()
             except Exception as e:
                 logger.warning("Heartbeat failed: %s", e)
-
-    async def _watchdog_loop(self) -> None:
-        """Detect stuck event loop. If heartbeat hasn't updated in 90s, force recovery."""
-        while not self._shutdown_event.is_set():
-            await asyncio.sleep(_WATCHDOG_CHECK_INTERVAL_S)
-            if self._shutdown_event.is_set():
-                break
-            elapsed = asyncio.get_running_loop().time() - self._last_heartbeat_time
-            if elapsed > _WATCHDOG_THRESHOLD_S:
-                logger.critical(
-                    "Watchdog: event loop appears stuck (%.0fs since last heartbeat). "
-                    "Forcing shutdown.",
-                    elapsed,
-                )
-                self._disconnect_reason = "watchdog"
-                self._shutdown_event.set()
-                self._message_queue.put_nowait(("", None))
-                break
-
-    def _start_os_watchdog(self) -> None:
-        """Set a SIGALRM timer as last-resort watchdog for fully stuck event loops."""
-        if not hasattr(signal, "SIGALRM"):
-            return  # Windows does not support SIGALRM
-
-        def _alarm_handler(signum, frame) -> None:
-            logger.critical("OS watchdog fired — event loop unresponsive. Forcing exit.")
-            os._exit(2)
-
-        signal.signal(signal.SIGALRM, _alarm_handler)
-        signal.alarm(_OS_WATCHDOG_TIMEOUT_S)
-
-    def _pet_os_watchdog(self) -> None:
-        """Reset the OS watchdog timer. Called from heartbeat on each successful beat."""
-        if hasattr(signal, "SIGALRM"):
-            signal.alarm(_OS_WATCHDOG_TIMEOUT_S)
 
     async def _post_session_summary(self, rt: _SessionRuntime, claude: ClaudeSDKClient) -> None:
         """Generate and post a session summary via Claude."""
@@ -900,7 +694,7 @@ class SummonSession:
         )
 
         # Post disconnect message (channel is preserved, not archived)
-        await self._post_disconnect_message(rt, reason=self._disconnect_reason or "ended")
+        await self._post_disconnect_message(rt, reason="ended")
 
         # Update registry
         try:
@@ -923,16 +717,7 @@ class SummonSession:
             )
         except Exception as e:
             logger.warning("Failed to update registry on shutdown: %s", e)
-
-        # Disconnect Socket Mode (use most recent handler — may have been replaced by reconnect)
-        handler_to_close = self._active_socket_handler or rt.socket_handler
-        try:
-            await asyncio.wait_for(
-                handler_to_close.close_async(),
-                timeout=_CLEANUP_TIMEOUT_S,
-            )
-        except Exception as e:
-            logger.debug("Socket Mode cleanup error: %s", e)
+        # Socket Mode is now managed by BoltRouter — no per-session cleanup needed
 
     async def _post_disconnect_message(self, rt: _SessionRuntime, reason: str = "ended") -> None:
         """Post a clear disconnect notice to the channel."""
@@ -1084,17 +869,97 @@ class SummonSession:
         if self._current_turn_task and not self._current_turn_task.done():
             self._current_turn_task.cancel()
 
-    def _handle_signal(self) -> None:
-        """Signal handler for SIGINT/SIGTERM — triggers graceful shutdown."""
-        if self._shutdown_event.is_set():
-            logger.warning("Received second shutdown signal — forcing exit")
-            # Best-effort flush before hard exit (os._exit skips finally/atexit)
-            import sys  # noqa: PLC0415
+    # ------------------------------------------------------------------
+    # Per-session logging
+    # ------------------------------------------------------------------
 
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(1)
-        logger.info("Received shutdown signal")
-        self._shutdown_event.set()
-        # Put a sentinel to unblock the message queue
-        self._message_queue.put_nowait(("", None))
+    def _install_session_log_handler(self) -> logging.FileHandler | None:
+        """Create a per-session log file at ``~/.summon/logs/{session_id}.log``.
+
+        Attaches a ``_SessionLogFilter`` so only records from this session's
+        asyncio task (identified by ``_session_id_var``) are written.
+
+        Returns the handler (caller must pass it to ``_remove_session_log_handler``
+        on shutdown) or ``None`` if the handler could not be created.
+        """
+        try:
+            log_dir = get_data_dir() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"{self._session_id}.log"
+            fh = logging.FileHandler(log_file)
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s %(levelname)s %(name)s: %(message)s",
+                    datefmt="%H:%M:%S",
+                )
+            )
+            fh.addFilter(_SessionLogFilter(self._session_id))
+            logging.getLogger().addHandler(fh)
+            return fh
+        except Exception as e:
+            logger.debug("Failed to set up per-session log file: %s", e)
+            return None
+
+    @staticmethod
+    def _remove_session_log_handler(handler: logging.FileHandler | None) -> None:
+        """Remove and close the per-session log handler."""
+        if handler is not None:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+    async def _process_incoming_event(
+        self,
+        event: dict,  # type: ignore[type-arg]
+        rt: _SessionRuntime,
+    ) -> tuple[str, str | None] | None:
+        """Process a raw Slack message event from the EventDispatcher queue.
+
+        Replicates all pre-processing that used to live in the per-session
+        ``_on_message_event`` Bolt handler:
+
+        1. Subtype filtering — bot/system messages are ignored.
+        2. Empty text / empty user_id filtering.
+        3. Message truncation at ``_MAX_USER_MESSAGE_CHARS``.
+        4. File reference extraction via ``format_file_references``.
+        5. AskUserQuestion free-text capture via ``permission_handler``.
+        6. Command prefix routing via ``_command_registry.parse``.
+
+        Returns ``(full_text, thread_ts)`` when the message should be forwarded
+        to Claude, or ``None`` when it has been handled/filtered internally.
+        """
+        subtype = event.get("subtype")
+        user_id = event.get("user", "")
+        text = event.get("text", "")
+
+        # 1 & 2: Drop bot/system messages and empty content
+        if subtype or not text or not user_id:
+            return None
+
+        # 3: Truncate oversized messages
+        if len(text) > _MAX_USER_MESSAGE_CHARS:
+            logger.warning("Message from %s truncated (%d chars)", user_id, len(text))
+            text = text[:_MAX_USER_MESSAGE_CHARS] + "\n[message truncated]"
+
+        # 4: Append file references
+        files = event.get("files", [])
+        full_text = text
+        if files:
+            file_context = format_file_references(files)
+            if file_context:
+                full_text = f"{text}\n\n{file_context}"
+
+        thread_ts: str | None = event.get("ts")
+
+        # 5: Route to permission handler's pending free-text input if waiting
+        if rt.permission_handler.has_pending_text_input():
+            await rt.permission_handler.receive_text_input(text)
+            return None
+
+        # 6: Check for !command prefix and dispatch immediately
+        parsed = self._command_registry.parse(full_text)
+        if parsed is not None:
+            await self._dispatch_command(rt, parsed[0], parsed[1], user_id, thread_ts)
+            return None
+
+        return full_text, thread_ts

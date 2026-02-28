@@ -131,35 +131,52 @@ class TestFormatFileReferences:
         assert "unknown" in result
 
 
-class TestSessionSignalHandler:
-    async def test_handle_signal_sets_shutdown_event(self):
+class TestSessionShutdownControl:
+    """Test request_shutdown() and authenticate() — the new public control API."""
+
+    def test_request_shutdown_sets_event(self):
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
         assert not session._shutdown_event.is_set()
-        session._handle_signal()
+        session.request_shutdown()
         assert session._shutdown_event.is_set()
 
-    async def test_handle_signal_puts_sentinel_on_queue(self):
+    async def test_request_shutdown_puts_sentinel_on_queue(self):
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
-        session._handle_signal()
+        session.request_shutdown()
         item = await asyncio.wait_for(session._message_queue.get(), timeout=1.0)
         assert item == ("", None)
 
-    async def test_handle_signal_second_signal_force_exits(self):
-        """Second signal call should trigger os._exit(1) when event already set."""
+    def test_request_shutdown_idempotent(self):
+        """Calling request_shutdown() twice should not raise."""
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
+        session.request_shutdown()
+        session.request_shutdown()  # must not raise
+        assert session._shutdown_event.is_set()
 
-        with patch("os._exit") as mock_exit:
-            # First signal sets the event
-            session._handle_signal()
-            assert session._shutdown_event.is_set()
-            mock_exit.assert_not_called()
+    def test_authenticate_sets_event_and_user(self):
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        assert not session._authenticated_event.is_set()
+        session.authenticate("U001")
+        assert session._authenticated_event.is_set()
+        assert session._authenticated_user_id == "U001"
 
-            # Second signal should force exit
-            session._handle_signal()
-            mock_exit.assert_called_once_with(1)
+    def test_authenticate_clears_auth_token(self):
+        """authenticate() should clear the auth token from memory."""
+        config = make_config()
+        auth = make_auth()
+        session = SummonSession(config, make_options(), auth=auth)
+        assert session._auth is not None
+        session.authenticate("U001")
+        assert session._auth is None
+
+    def test_channel_id_property_initially_none(self):
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        assert session.channel_id is None
 
 
 class TestWaitForAuth:
@@ -225,10 +242,8 @@ class TestSessionShutdownSummary:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-sd", 1234, "/tmp")
 
-            mock_client = AsyncMock()
             mock_provider = AsyncMock()
             mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
             mock_channel_manager = AsyncMock(spec=ChannelManager)
 
             session = SummonSession(
@@ -241,11 +256,9 @@ class TestSessionShutdownSummary:
 
             rt = _SessionRuntime(
                 registry=registry,
-                client=mock_client,
                 provider=mock_provider,
                 permission_handler=mock_permission_handler,
                 channel_id="C_TEST_CHAN",
-                socket_handler=mock_socket_handler,
                 channel_manager=mock_channel_manager,
             )
             mock_channel_manager.archive_session_channel = AsyncMock()
@@ -269,12 +282,7 @@ class TestSessionShutdownSummary:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-arch", 1234, "/tmp")
 
-            mock_client = AsyncMock()
-            mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
-
             mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
-
             session = SummonSession(
                 config,
                 make_options(session_id="sess-arch"),
@@ -287,11 +295,9 @@ class TestSessionShutdownSummary:
 
             rt = _SessionRuntime(
                 registry=registry,
-                client=mock_client,
                 provider=mock_provider,
                 permission_handler=mock_permission_handler,
                 channel_id="C_ARCH_CHAN",
-                socket_handler=mock_socket_handler,
                 channel_manager=mock_channel_manager,
             )
 
@@ -315,12 +321,7 @@ class TestSessionShutdownSummary:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-comp", 1234, "/tmp")
 
-            mock_client = AsyncMock()
-            mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
-
             mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
-
             session = SummonSession(
                 config,
                 make_options(session_id="sess-comp"),
@@ -332,11 +333,9 @@ class TestSessionShutdownSummary:
 
             rt = _SessionRuntime(
                 registry=registry,
-                client=mock_client,
                 provider=AsyncMock(),
                 permission_handler=mock_permission_handler,
                 channel_id="C_COMP_CHAN",
-                socket_handler=mock_socket_handler,
                 channel_manager=mock_channel_manager,
             )
 
@@ -349,181 +348,98 @@ class TestSessionShutdownSummary:
 class TestSessionShutdown:
     """Test shutdown behavior including completion flag and error handling."""
 
+    def _make_rt(self, registry, channel_id="C_CHAN", provider=None):
+        from summon_claude.channel_manager import ChannelManager
+        from summon_claude.session import _SessionRuntime
+
+        return _SessionRuntime(
+            registry=registry,
+            provider=provider or AsyncMock(),
+            permission_handler=AsyncMock(),
+            channel_id=channel_id,
+            channel_manager=AsyncMock(spec=ChannelManager),
+        )
+
     async def test_shutdown_sets_completed_flag(self, tmp_path):
         """After successful _shutdown(), _shutdown_completed should be True."""
-        from summon_claude.channel_manager import ChannelManager
         from summon_claude.registry import SessionRegistry
-        from summon_claude.session import _SessionRuntime
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-flag", 1234, "/tmp")
-
-            mock_client = AsyncMock()
-            mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
-
-            mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
-
             session = SummonSession(
-                config,
-                make_options(session_id="sess-flag"),
-                auth=make_auth(session_id="sess-flag"),
+                config, make_options(session_id="sess-flag"), auth=make_auth(session_id="sess-flag")
             )
             assert session._shutdown_completed is False
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
-
-            rt = _SessionRuntime(
-                registry=registry,
-                client=mock_client,
-                provider=AsyncMock(),
-                permission_handler=mock_permission_handler,
-                channel_id="C_FLAG_CHAN",
-                socket_handler=mock_socket_handler,
-                channel_manager=mock_channel_manager,
-            )
-
+            rt = self._make_rt(registry, "C_FLAG_CHAN")
             await session._shutdown(rt)
-
             assert session._shutdown_completed is True
 
     async def test_shutdown_completed_flag_false_on_registry_failure(self, tmp_path):
         """If registry update raises, _shutdown_completed should remain False."""
-        from summon_claude.channel_manager import ChannelManager
         from summon_claude.registry import SessionRegistry
-        from summon_claude.session import _SessionRuntime
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-fail", 1234, "/tmp")
-
-            mock_client = AsyncMock()
-            mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
-
-            mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
-
             session = SummonSession(
-                config,
-                make_options(session_id="sess-fail"),
-                auth=make_auth(session_id="sess-fail"),
+                config, make_options(session_id="sess-fail"), auth=make_auth(session_id="sess-fail")
             )
             assert session._shutdown_completed is False
 
-            # Mock registry.update_status to raise an exception
             async def failing_update(*args, **kwargs):
                 raise RuntimeError("Registry update failed")
 
             registry.update_status = failing_update
-
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
-
-            rt = _SessionRuntime(
-                registry=registry,
-                client=mock_client,
-                provider=AsyncMock(),
-                permission_handler=mock_permission_handler,
-                channel_id="C_FAIL_CHAN",
-                socket_handler=mock_socket_handler,
-                channel_manager=mock_channel_manager,
-            )
-
+            rt = self._make_rt(registry, "C_FAIL_CHAN")
             await session._shutdown(rt)
-
-            # Flag should remain False because registry update failed
             assert session._shutdown_completed is False
 
     async def test_shutdown_disconnect_message_failure_continues(self, tmp_path):
         """If posting the disconnect message fails, shutdown should continue."""
-        from summon_claude.channel_manager import ChannelManager
         from summon_claude.registry import SessionRegistry
-        from summon_claude.session import _SessionRuntime
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-arch-fail", 1234, "/tmp")
-
-            mock_client = AsyncMock()
-            mock_client.chat_postMessage = AsyncMock(return_value={"ok": True})
-
-            mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
-
             session = SummonSession(
                 config,
                 make_options(session_id="sess-arch-fail"),
                 auth=make_auth(session_id="sess-arch-fail"),
             )
 
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
             mock_provider = AsyncMock()
             mock_provider.post_message = AsyncMock(side_effect=RuntimeError("Post failed"))
+            rt = self._make_rt(registry, "C_ARCH_FAIL_CHAN", provider=mock_provider)
 
-            rt = _SessionRuntime(
-                registry=registry,
-                client=mock_client,
-                provider=mock_provider,
-                permission_handler=mock_permission_handler,
-                channel_id="C_ARCH_FAIL_CHAN",
-                socket_handler=mock_socket_handler,
-                channel_manager=mock_channel_manager,
-            )
-
-            # Should not raise — should catch and continue
             await session._shutdown(rt)
 
-            # Registry should still be updated despite message failure
             sess = await registry.get_session("sess-arch-fail")
             assert sess["status"] == "completed"
             assert session._shutdown_completed is True
 
     async def test_shutdown_timeout_on_slack_call(self, tmp_path):
         """If Slack call hangs, asyncio.wait_for should timeout and continue."""
-        from summon_claude.channel_manager import ChannelManager
         from summon_claude.registry import SessionRegistry
-        from summon_claude.session import _SessionRuntime
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-timeout", 1234, "/tmp")
-
-            mock_client = AsyncMock()
-
-            # Make post_message hang forever (simulating timeout)
-            async def hanging_post(*args, **kwargs):
-                await asyncio.sleep(999)
-
-            mock_client.chat_postMessage = AsyncMock(side_effect=hanging_post)
-
-            mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
-
             session = SummonSession(
                 config,
                 make_options(session_id="sess-timeout"),
                 auth=make_auth(session_id="sess-timeout"),
             )
 
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
+            async def hanging_post(*args, **kwargs):
+                await asyncio.sleep(999)
 
-            rt = _SessionRuntime(
-                registry=registry,
-                client=mock_client,
-                provider=AsyncMock(),
-                permission_handler=mock_permission_handler,
-                channel_id="C_TIMEOUT_CHAN",
-                socket_handler=mock_socket_handler,
-                channel_manager=mock_channel_manager,
-            )
+            mock_provider = AsyncMock()
+            mock_provider.post_message = AsyncMock(side_effect=hanging_post)
+            rt = self._make_rt(registry, "C_TIMEOUT_CHAN", provider=mock_provider)
 
-            # Should timeout and continue (not hang forever)
             await session._shutdown(rt)
 
-            # Registry should still be updated despite Slack timeout
             sess = await registry.get_session("sess-timeout")
             assert sess["status"] == "completed"
             assert session._shutdown_completed is True
@@ -566,9 +482,7 @@ class TestDisconnectMessageVariants:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-ended", 1234, "/tmp")
 
-            mock_client = AsyncMock()
             mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
             mock_channel_manager = AsyncMock(spec=ChannelManager)
             mock_provider = AsyncMock()
 
@@ -583,11 +497,9 @@ class TestDisconnectMessageVariants:
 
             rt = _SessionRuntime(
                 registry=registry,
-                client=mock_client,
                 provider=mock_provider,
                 permission_handler=mock_permission_handler,
                 channel_id="C_ENDED",
-                socket_handler=mock_socket_handler,
                 channel_manager=mock_channel_manager,
             )
 
@@ -612,9 +524,7 @@ class TestDisconnectMessageVariants:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-exhausted", 1234, "/tmp")
 
-            mock_client = AsyncMock()
             mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
             mock_channel_manager = AsyncMock(spec=ChannelManager)
             mock_provider = AsyncMock()
 
@@ -630,11 +540,9 @@ class TestDisconnectMessageVariants:
 
             rt = _SessionRuntime(
                 registry=registry,
-                client=mock_client,
                 provider=mock_provider,
                 permission_handler=mock_permission_handler,
                 channel_id="C_EXHAUSTED",
-                socket_handler=mock_socket_handler,
                 channel_manager=mock_channel_manager,
             )
 
@@ -659,9 +567,7 @@ class TestDisconnectMessageVariants:
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-watchdog", 1234, "/tmp")
 
-            mock_client = AsyncMock()
             mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
             mock_channel_manager = AsyncMock(spec=ChannelManager)
             mock_provider = AsyncMock()
 
@@ -676,11 +582,9 @@ class TestDisconnectMessageVariants:
 
             rt = _SessionRuntime(
                 registry=registry,
-                client=mock_client,
                 provider=mock_provider,
                 permission_handler=mock_permission_handler,
                 channel_id="C_WATCHDOG",
-                socket_handler=mock_socket_handler,
                 channel_manager=mock_channel_manager,
             )
 
@@ -696,29 +600,7 @@ class TestDisconnectMessageVariants:
 
 
 class TestWatchdogLoop:
-    """Test the watchdog loop detection of stuck event loops."""
-
-    async def test_watchdog_detects_stuck_loop(self, tmp_path):
-        """When heartbeat is stale, watchdog should set disconnect_reason and shutdown event."""
-        config = make_config()
-        session = SummonSession(
-            config,
-            make_options(session_id="sess-wd-stuck"),
-            auth=make_auth(session_id="sess-wd-stuck"),
-        )
-
-        # Set heartbeat time far in the past (beyond 90s threshold)
-        loop = asyncio.get_running_loop()
-        session._last_heartbeat_time = loop.time() - 120.0
-
-        # Run the actual _watchdog_loop with a very short check interval so it
-        # completes in one iteration without sleeping for 15 seconds
-        with patch("summon_claude.session._WATCHDOG_CHECK_INTERVAL_S", 0.01):
-            await asyncio.wait_for(session._watchdog_loop(), timeout=1.0)
-
-        # Watchdog should have detected the stale heartbeat and triggered shutdown
-        assert session._disconnect_reason == "watchdog"
-        assert session._shutdown_event.is_set()
+    """Test the heartbeat loop timestamp tracking."""
 
     async def test_heartbeat_updates_timestamp(self, tmp_path):
         """Calling heartbeat loop should update _last_heartbeat_time."""
@@ -756,144 +638,220 @@ class TestWatchdogLoop:
         assert elapsed < 1.0  # Was updated during the loop iteration
 
 
-class TestReconnectSocket:
-    """Test socket reconnection and handler switching."""
+class TestSessionHandleRegistration:
+    """Test SessionHandle registration with EventDispatcher."""
 
-    async def test_reconnect_socket_creates_new_handler(self, tmp_path):
-        """_reconnect_socket should create new app and socket handler."""
-        from summon_claude.channel_manager import ChannelManager
+    async def test_channel_id_set_after_run_session(self):
+        """channel_id property should reflect the assigned channel once set."""
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        assert session.channel_id is None
+        # Simulate what _run_session does after creating the channel
+        session._channel_id = "C_NEW_CHAN"
+        assert session.channel_id == "C_NEW_CHAN"
+
+    async def test_dispatcher_registered_when_provided(self, tmp_path):
+        """When a dispatcher is provided, _run_session registers a SessionHandle with it."""
+        from summon_claude.event_dispatcher import EventDispatcher, SessionHandle
         from summon_claude.registry import SessionRegistry
-        from summon_claude.session import _SessionRuntime
 
         config = make_config()
+        dispatcher = EventDispatcher()
+
+        # Create a mock shared provider whose _client.auth_test returns bot_user_id
+        mock_client = AsyncMock()
+        mock_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+        mock_provider = AsyncMock()
+        mock_provider._client = mock_client
+        mock_provider.create_channel = AsyncMock(
+            return_value=AsyncMock(channel_id="C_DISP", name="disp")
+        )
+        mock_provider.post_message = AsyncMock()
+        mock_provider.post_ephemeral = AsyncMock()
+
+        # Patch ChannelManager to avoid real Slack calls
+        from unittest.mock import MagicMock, patch
+
+        mock_channel_manager = AsyncMock()
+        mock_channel_manager.create_session_channel = AsyncMock(return_value=("C_DISP", "disp"))
+        mock_channel_manager.invite_user_to_channel = AsyncMock()
+        mock_channel_manager.post_session_header = AsyncMock()
+        mock_channel_manager.set_session_topic = AsyncMock()
+
+        session = SummonSession(
+            config,
+            make_options(session_id="sess-disp"),
+            auth=make_auth(session_id="sess-disp"),
+            shared_provider=mock_provider,
+            dispatcher=dispatcher,
+        )
+        session.authenticate("U001")
+
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
-            await registry.register("sess-recon", 1234, "/tmp")
+            await registry.register("sess-disp", 1234, "/tmp")
 
-            mock_old_handler = AsyncMock()
-            mock_old_handler.client = AsyncMock()
-            mock_old_handler.close_async = AsyncMock()
+            with (
+                patch("summon_claude.session.AsyncWebClient", return_value=mock_client),
+                patch("summon_claude.session.ChannelManager", return_value=mock_channel_manager),
+                patch("summon_claude.session.ThreadRouter"),
+                patch("summon_claude.session.PermissionHandler"),
+                patch.object(session, "_run_message_loop", new=AsyncMock()),
+                patch.object(session, "_shutdown", new=AsyncMock()),
+            ):
+                await session._run_session(registry)
 
-            mock_client = AsyncMock()
-            mock_provider = AsyncMock()
-            mock_permission_handler = AsyncMock()
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
+        # After _run_session, dispatcher should have session registered
+        assert "C_DISP" in dispatcher._sessions
 
-            rt = _SessionRuntime(
-                registry=registry,
-                client=mock_client,
-                provider=mock_provider,
-                permission_handler=mock_permission_handler,
-                channel_id="C_RECON",
-                socket_handler=mock_old_handler,
-                channel_manager=mock_channel_manager,
-            )
 
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-recon"),
-                auth=make_auth(session_id="sess-recon"),
-            )
+class TestProcessIncomingEvent:
+    """Tests for _process_incoming_event — the message pre-processing pipeline."""
 
-            # Mock the new socket handler creation
-            with patch("summon_claude.session.AsyncSocketModeHandler") as mock_handler_class:
-                mock_new_handler = AsyncMock()
-                mock_new_handler.connect_async = AsyncMock()
-                mock_handler_class.return_value = mock_new_handler
-
-                new_rt = await session._reconnect_socket(rt)
-
-                # New runtime should have a fresh socket handler
-                assert new_rt.socket_handler is not rt.socket_handler
-                # Old handler should have been closed
-                mock_old_handler.close_async.assert_called_once()
-                # New handler should be connected
-                mock_new_handler.connect_async.assert_called_once()
-
-    async def test_reconnect_preserves_channel_id(self, tmp_path):
-        """_reconnect_socket should preserve channel_id in new runtime."""
-        from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
-        from summon_claude.session import _SessionRuntime
-
-        config = make_config()
-        async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
-            await registry.register("sess-preserve", 1234, "/tmp")
-
-            mock_old_handler = AsyncMock()
-            mock_old_handler.close_async = AsyncMock()
-
-            mock_client = AsyncMock()
-            mock_provider = AsyncMock()
-            mock_permission_handler = AsyncMock()
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-
-            rt = _SessionRuntime(
-                registry=registry,
-                client=mock_client,
-                provider=mock_provider,
-                permission_handler=mock_permission_handler,
-                channel_id="C_PRESERVE_ID",
-                socket_handler=mock_old_handler,
-                channel_manager=mock_channel_manager,
-            )
-
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-preserve"),
-                auth=make_auth(session_id="sess-preserve"),
-            )
-
-            # Mock AsyncSocketModeHandler with AsyncMock so connect_async is awaitable
-            with patch("summon_claude.session.AsyncSocketModeHandler") as mock_handler_class:
-                mock_new_handler = AsyncMock()
-                mock_handler_class.return_value = mock_new_handler
-
-                with patch("summon_claude.session.AsyncApp"):
-                    new_rt = await session._reconnect_socket(rt)
-
-                    # Channel ID should be preserved
-                    assert new_rt.channel_id == "C_PRESERVE_ID"
-                    assert new_rt.registry is rt.registry
-                    assert new_rt.client is rt.client
-
-    async def test_register_event_handlers_no_summon(self, tmp_path):
-        """After reconnect, /summon handler should not be re-registered."""
-        from slack_bolt.app.async_app import AsyncApp
+    def _make_rt(self, permission_handler=None):
+        """Build a minimal mock _SessionRuntime."""
+        from unittest.mock import MagicMock
 
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
         from summon_claude.session import _SessionRuntime
 
-        config = make_config()
-        async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
-            await registry.register("sess-no-summon", 1234, "/tmp")
-
-            new_app = AsyncApp(
-                token=config.slack_bot_token,
-                signing_secret=config.slack_signing_secret,
-            )
-
-            mock_client = AsyncMock()
-            mock_provider = AsyncMock()
+        if permission_handler is None:
             mock_permission_handler = AsyncMock()
-            mock_socket_handler = AsyncMock()
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
+            mock_permission_handler.has_pending_text_input = MagicMock(return_value=False)
+            mock_permission_handler.receive_text_input = AsyncMock()
+        else:
+            mock_permission_handler = permission_handler
+        return _SessionRuntime(
+            registry=AsyncMock(),
+            provider=AsyncMock(),
+            permission_handler=mock_permission_handler,
+            channel_id="C_TEST",
+            channel_manager=AsyncMock(spec=ChannelManager),
+        )
 
-            rt = _SessionRuntime(
-                registry=registry,
-                client=mock_client,
-                provider=mock_provider,
-                permission_handler=mock_permission_handler,
-                channel_id="C_NO_SUMMON",
-                socket_handler=mock_socket_handler,
-                channel_manager=mock_channel_manager,
-            )
+    async def test_normal_message_returns_text_and_ts(self):
+        """A normal user message returns (full_text, thread_ts)."""
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
 
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-no-summon"),
-                auth=make_auth(session_id="sess-no-summon"),
-            )
+        event = {"user": "U001", "text": "Hello Claude", "ts": "123.456"}
+        result = await session._process_incoming_event(event, rt)
 
-            # Smoke test: registers handlers without raising (does NOT register /summon)
-            session._register_event_handlers(new_app, rt)
+        assert result is not None
+        text, ts = result
+        assert text == "Hello Claude"
+        assert ts == "123.456"
+
+    async def test_subtype_message_filtered(self):
+        """Messages with a subtype (bot messages etc.) are filtered out."""
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
+
+        event = {"user": "U001", "text": "Hello", "subtype": "bot_message", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+        assert result is None
+
+    async def test_empty_text_filtered(self):
+        """Messages with empty text are filtered out."""
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
+
+        event = {"user": "U001", "text": "", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+        assert result is None
+
+    async def test_no_user_filtered(self):
+        """Messages without a user_id (system events) are filtered out."""
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
+
+        event = {"text": "Hello", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+        assert result is None
+
+    async def test_long_message_truncated(self):
+        """Messages exceeding _MAX_USER_MESSAGE_CHARS are truncated."""
+        from summon_claude.session import _MAX_USER_MESSAGE_CHARS
+
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
+
+        long_text = "x" * (_MAX_USER_MESSAGE_CHARS + 100)
+        event = {"user": "U001", "text": long_text, "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is not None
+        text, _ = result
+        assert len(text) <= _MAX_USER_MESSAGE_CHARS + len("\n[message truncated]")
+        assert "[message truncated]" in text
+
+    async def test_file_references_appended(self):
+        """File attachments are appended to the text."""
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
+
+        event = {
+            "user": "U001",
+            "text": "See attached",
+            "ts": "1",
+            "files": [{"name": "report.pdf", "filetype": "pdf", "size": 2048}],
+        }
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is not None
+        text, _ = result
+        assert "report.pdf" in text
+        assert "See attached" in text
+
+    async def test_pending_text_input_consumed(self):
+        """When permission handler is waiting for free-text, message is consumed."""
+        from unittest.mock import MagicMock
+
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+
+        mock_ph = AsyncMock()
+        mock_ph.has_pending_text_input = MagicMock(return_value=True)
+        mock_ph.receive_text_input = AsyncMock()
+        rt = self._make_rt(permission_handler=mock_ph)
+
+        event = {"user": "U001", "text": "My free-text answer", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is None
+        mock_ph.receive_text_input.assert_awaited_once_with("My free-text answer")
+
+    async def test_command_prefix_dispatched(self):
+        """Messages with ! prefix are dispatched as commands and return None."""
+        from unittest.mock import patch
+
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
+
+        # Mock _dispatch_command to avoid real execution
+        with patch.object(session, "_dispatch_command", new=AsyncMock()) as mock_dispatch:
+            event = {"user": "U001", "text": "!status", "ts": "1"}
+            result = await session._process_incoming_event(event, rt)
+
+        assert result is None
+        mock_dispatch.assert_awaited_once()
+
+    async def test_regular_message_not_command(self):
+        """A message without ! prefix is returned as-is for Claude."""
+        config = make_config()
+        session = SummonSession(config, make_options(), auth=make_auth())
+        rt = self._make_rt()
+
+        event = {"user": "U001", "text": "What is 2+2?", "ts": "789"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is not None
+        text, ts = result
+        assert text == "What is 2+2?"
+        assert ts == "789"
