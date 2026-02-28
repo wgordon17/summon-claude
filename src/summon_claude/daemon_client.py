@@ -46,22 +46,25 @@ async def _request(msg: dict) -> dict:  # type: ignore[type-arg]
     return response
 
 
-async def create_session(options: dict, auth: dict) -> str:  # type: ignore[type-arg]
+async def create_session(options: dict) -> tuple[str, str]:  # type: ignore[type-arg]
     """Send a ``create_session`` request to the daemon.
 
+    The daemon generates the session ID and auth token internally.
+
     Args:
-        options: Serialised ``SessionOptions`` dict.
-        auth: Serialised ``SessionAuth`` dict.
+        options: Serialised ``SessionOptions`` dict (cwd, name, model, resume).
 
     Returns:
-        The new ``session_id`` string.
+        ``(session_id, short_code)`` — the short code is shown to the user so
+        they can authenticate via ``/summon <code>`` in Slack.
     """
-    response = await _request({"type": "create_session", "options": options, "auth": auth})
+    response = await _request({"type": "create_session", "options": options})
     if response.get("type") != "session_created":
         raise DaemonError(f"Unexpected daemon response: {response}")
     session_id: str = response["session_id"]
-    logger.debug("Session created: %s", session_id)
-    return session_id
+    short_code: str = response["short_code"]
+    logger.debug("Session created: %s (code: %s)", session_id, short_code)
+    return session_id, short_code
 
 
 async def stop_session(session_id: str) -> bool:

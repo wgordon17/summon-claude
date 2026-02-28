@@ -105,7 +105,8 @@ AuthResult = Literal["authenticated", "timed_out", "shutdown"]
 class SessionOptions:
     """Options for creating a SummonSession.
 
-    All fields are resolved by the CLI layer before reaching the session.
+    ``session_id`` is assigned by the daemon (``SessionManager.create_session``).
+    The CLI passes an empty string as a placeholder; the daemon overwrites it.
     """
 
     session_id: str

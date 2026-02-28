@@ -19,11 +19,11 @@ import contextlib
 import logging
 import os
 import time
-from datetime import UTC, datetime
+import uuid
 from functools import partial
 from typing import TYPE_CHECKING
 
-from summon_claude.auth import SessionAuth, verify_short_code
+from summon_claude.auth import generate_session_token, verify_short_code
 from summon_claude.ipc import recv_msg, send_msg
 from summon_claude.registry import SessionRegistry
 from summon_claude.session import SessionOptions, SummonSession
@@ -72,31 +72,51 @@ class SessionManager:
         """Event that is set when the daemon should stop."""
         return self._shutdown_event
 
-    async def create_session(self, options: SessionOptions, auth: SessionAuth) -> str:
-        """Create and start a supervised session task.  Returns ``session_id``."""
+    async def create_session(self, options: SessionOptions) -> tuple[str, str]:
+        """Create and start a supervised session task.
+
+        Generates a new ``session_id`` and auth token internally so the CLI
+        does not need to touch the SQLite registry.
+
+        Returns:
+            ``(session_id, short_code)`` — the short code is printed by the CLI
+            so the user can authenticate via ``/summon <code>`` in Slack.
+        """
         # Cancel grace timer — a new session has arrived
         if self._grace_timer is not None:
             self._grace_timer.cancel()
             self._grace_timer = None
 
+        session_id = str(uuid.uuid4())
+        # Generate auth token in the daemon (single process owns the registry)
+        async with SessionRegistry() as registry:
+            auth = await generate_session_token(registry, session_id)
+
+        full_options = SessionOptions(
+            session_id=session_id,
+            cwd=options.cwd,
+            name=options.name,
+            model=options.model,
+            resume=options.resume,
+        )
         session = SummonSession(
             config=self._config,
-            options=options,
+            options=full_options,
             auth=auth,
             shared_provider=self._bolt_router.provider,
             dispatcher=self._dispatcher,
             bot_user_id=self._bolt_router.bot_user_id,
         )
-        self._sessions[options.session_id] = session
+        self._sessions[session_id] = session
 
         task = asyncio.create_task(
-            self._supervised_session(session, options.session_id),
-            name=f"session-{options.session_id}",
+            self._supervised_session(session, session_id),
+            name=f"session-{session_id}",
         )
-        task.add_done_callback(partial(self._on_task_done, session_id=options.session_id))
-        self._tasks[options.session_id] = task
-        logger.info("SessionManager: created session %s", options.session_id)
-        return options.session_id
+        task.add_done_callback(partial(self._on_task_done, session_id=session_id))
+        self._tasks[session_id] = task
+        logger.info("SessionManager: created session %s", session_id)
+        return session_id, auth.short_code
 
     async def stop_session(self, session_id: str) -> bool:
         """Signal a specific session to shut down.  Returns ``True`` if found."""
@@ -230,16 +250,12 @@ class SessionManager:
         match msg.get("type"):
             case "create_session":
                 options = SessionOptions(**msg["options"])
-                auth_data = msg["auth"]
-                # SessionAuth.expires_at is a datetime; IPC sends ISO string
-                if isinstance(auth_data.get("expires_at"), str):
-                    auth_data = dict(auth_data)
-                    auth_data["expires_at"] = datetime.fromisoformat(
-                        auth_data["expires_at"]
-                    ).replace(tzinfo=UTC)
-                auth = SessionAuth(**auth_data)
-                sid = await self.create_session(options, auth)
-                return {"type": "session_created", "session_id": sid}
+                sid, short_code = await self.create_session(options)
+                return {
+                    "type": "session_created",
+                    "session_id": sid,
+                    "short_code": short_code,
+                }
 
             case "stop_session":
                 found = await self.stop_session(msg["session_id"])

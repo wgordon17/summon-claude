@@ -557,19 +557,6 @@ def _mock_config():
     return config
 
 
-def _mock_auth():
-    """Return a mock SessionAuth."""
-    from datetime import UTC, datetime
-
-    from summon_claude.auth import SessionAuth
-
-    return SessionAuth(
-        short_code="ABCD1234",
-        session_id="test-session-id",
-        expires_at=datetime.now(UTC),
-    )
-
-
 def _start_patches(update_info=None):
     """Context manager that patches cmd_start dependencies and the update checker."""
     from contextlib import ExitStack
@@ -579,14 +566,14 @@ def _start_patches(update_info=None):
     stack.enter_context(
         patch("summon_claude.cli.SummonConfig.from_file", return_value=_mock_config())
     )
-    # Let asyncio.run() work normally — it will properly await these coroutines.
-    # Don't patch asyncio.run itself; that causes unawaited-coroutine warnings.
-    auth = _mock_auth()
-    stack.enter_context(patch("summon_claude.cli._generate_auth", AsyncMock(return_value=auth)))
-    # Patch daemon interaction so tests don't try to fork/connect
+    # Patch daemon interaction so tests don't try to fork/connect.
+    # _create_session_in_daemon now returns (session_id, short_code) from the daemon.
     stack.enter_context(patch("summon_claude.cli._ensure_daemon", return_value=None))
     stack.enter_context(
-        patch("summon_claude.cli._create_session_in_daemon", AsyncMock(return_value=None))
+        patch(
+            "summon_claude.cli._create_session_in_daemon",
+            AsyncMock(return_value=("test-session-id", "ABCD1234")),
+        )
     )
     stack.enter_context(
         patch(

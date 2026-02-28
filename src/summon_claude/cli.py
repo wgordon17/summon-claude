@@ -15,14 +15,12 @@ import pathlib
 import re
 import sys
 import threading
-import uuid
 from datetime import UTC, datetime
 
 import click
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude import __version__, daemon_client
-from summon_claude.auth import SessionAuth, generate_session_token
 from summon_claude.channel_manager import ChannelManager
 from summon_claude.cli_config import config_check, config_edit, config_path, config_set, config_show
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
@@ -34,12 +32,6 @@ from summon_claude.session import SessionOptions
 logger = logging.getLogger(__name__)
 
 _BANNER_WIDTH = 50
-
-
-async def _generate_auth(session_id: str) -> SessionAuth:
-    """Generate auth token with a short-lived registry connection."""
-    async with SessionRegistry() as registry:
-        return await generate_session_token(registry, session_id)
 
 
 def _print_auth_banner(short_code: str) -> None:
@@ -244,41 +236,32 @@ def cmd_start(
     update_thread.start()
 
     resolved_cwd = str(pathlib.Path(cwd).resolve()) if cwd else str(pathlib.Path.cwd())
-    session_id = str(uuid.uuid4())
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
     options = SessionOptions(
-        session_id=session_id,
+        session_id="",  # assigned by daemon
         cwd=resolved_cwd,
         name=resolved_name,
         model=model or config.default_model,
         resume=resume,
     )
 
-    # Phase 1: Generate auth token (foreground, before talking to daemon)
-    try:
-        auth = asyncio.run(_generate_auth(session_id))
-    except Exception as e:
-        logger.exception("Failed to generate auth token: %s", e)
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-
-    # Phase 2: Ensure daemon is running (auto-start if not)
+    # Phase 1: Ensure daemon is running (auto-start if not)
     try:
         _ensure_daemon(config)
     except Exception as e:
         click.echo(f"Error starting daemon: {e}", err=True)
         sys.exit(1)
 
-    # Phase 3: Send create_session to daemon and wait for confirmation
+    # Phase 2: Send create_session to daemon; daemon generates session_id + auth
     try:
-        asyncio.run(_create_session_in_daemon(options, auth))
+        _session_id, short_code = asyncio.run(_create_session_in_daemon(options))
     except Exception as e:
         click.echo(f"Error communicating with daemon: {e}", err=True)
         sys.exit(1)
 
-    # Phase 4: Print auth banner so user can authenticate via Slack
-    _print_auth_banner(auth.short_code)
+    # Phase 3: Print auth banner so user can authenticate via Slack
+    _print_auth_banner(short_code)
 
     # Show update notification if available (after banner)
     update_thread.join(timeout=4.0)
@@ -297,20 +280,18 @@ def _ensure_daemon(config: SummonConfig) -> None:
         logger.debug("Daemon already running")
 
 
-async def _create_session_in_daemon(options: SessionOptions, auth: SessionAuth) -> None:
-    """Send a create_session request to the daemon and await the response."""
-    await daemon_client.create_session(
+async def _create_session_in_daemon(options: SessionOptions) -> tuple[str, str]:
+    """Send a create_session request to the daemon.
+
+    Returns ``(session_id, short_code)`` assigned by the daemon.
+    """
+    return await daemon_client.create_session(
         options={
-            "session_id": options.session_id,
+            "session_id": "",  # daemon assigns real ID
             "cwd": options.cwd,
             "name": options.name,
             "model": options.model,
             "resume": options.resume,
-        },
-        auth={
-            "short_code": auth.short_code,
-            "session_id": auth.session_id,
-            "expires_at": auth.expires_at.isoformat(),
         },
     )
 
