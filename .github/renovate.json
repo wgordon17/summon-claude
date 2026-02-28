@@ -30,6 +30,11 @@
       "description": "Group all major updates into a single PR",
       "matchUpdateTypes": ["major"],
       "groupName": "all major dependencies"
+    },
+    {
+      "description": "Don't pin Python version (managed by .python-version)",
+      "matchDatasources": ["python-version"],
+      "enabled": false
     }
   ],
   "logLevelRemap": [
