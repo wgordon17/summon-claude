@@ -73,6 +73,9 @@ class BoltRouter:
         self._app, self._socket_handler = self._build_app()
         self._register_handlers(self._app)
 
+        # Cached from auth_test() at start() time
+        self._bot_user_id: str | None = None
+
         # Health monitor — created by start_health_monitor()
         self._health_monitor: SocketHealthMonitor | None = None
         self._exhausted_notice_task: asyncio.Task[None] | None = None
@@ -99,6 +102,9 @@ class BoltRouter:
         """Connect the Socket Mode handler to Slack."""
         logger.info("BoltRouter: connecting socket handler")
         await self._socket_handler.connect_async()
+        resp = await self._client.auth_test()
+        self._bot_user_id = resp["user_id"]
+        logger.debug("BoltRouter: bot_user_id cached as %s", self._bot_user_id)
 
     async def stop(self) -> None:
         """Gracefully close the Socket Mode connection."""
@@ -224,6 +230,11 @@ class BoltRouter:
     def provider(self) -> SlackChatProvider:
         """Return the shared ``SlackChatProvider`` (backed by the shared web client)."""
         return self._provider
+
+    @property
+    def bot_user_id(self) -> str | None:
+        """Return the bot's Slack user ID, cached after ``start()`` calls ``auth_test()``."""
+        return self._bot_user_id
 
     # ------------------------------------------------------------------
     # Internal helpers

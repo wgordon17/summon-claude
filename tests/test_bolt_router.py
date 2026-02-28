@@ -48,7 +48,10 @@ def _make_router(config: SummonConfig | None = None):
         # Expose the mocks for inspection
         router._mock_app = mock_a  # type: ignore[attr-defined]
         router._mock_handler = mock_h  # type: ignore[attr-defined]
-        return router
+
+    # Make auth_test() awaitable so start() works in tests
+    router._client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+    return router
 
 
 class TestBoltRouterInit:

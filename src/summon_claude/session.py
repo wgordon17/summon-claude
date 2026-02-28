@@ -147,6 +147,7 @@ class SummonSession:
         auth: SessionAuth,
         shared_provider: SlackChatProvider | None = None,
         dispatcher: EventDispatcher | None = None,
+        bot_user_id: str | None = None,
     ) -> None:
         self._config = config
         self._session_id = options.session_id
@@ -162,6 +163,8 @@ class SummonSession:
         # Shared provider and dispatcher from the daemon (None for standalone/test use)
         self._shared_provider = shared_provider
         self._dispatcher = dispatcher
+        # Pre-cached bot user ID from BoltRouter.start() — avoids a per-session auth_test() call
+        self._bot_user_id = bot_user_id
 
         # Message queue: Slack user messages -> Claude (populated by EventDispatcher)
         # maxsize=100 provides backpressure — EventDispatcher drops events when full
@@ -332,16 +335,16 @@ class SummonSession:
 
     async def _run_session(self, registry: SessionRegistry) -> None:
         """Create channel, register with dispatcher, connect Claude, run message loop."""
-        # Always create a client for auth_test (to discover bot_user_id)
-        client = AsyncWebClient(token=self._config.slack_bot_token)
-        # Use shared provider from daemon if available; otherwise create a standalone one
-        if self._shared_provider is not None:
+        # In daemon mode, bot_user_id is pre-cached by BoltRouter.start() — skip auth_test().
+        if self._shared_provider is not None and self._bot_user_id is not None:
             provider = self._shared_provider
+            bot_user_id = self._bot_user_id
         else:
-            provider = SlackChatProvider(client)
+            # Standalone/test mode: call auth_test() to discover bot_user_id
+            client = AsyncWebClient(token=self._config.slack_bot_token)
+            provider = self._shared_provider or SlackChatProvider(client)
+            bot_user_id = (await client.auth_test())["user_id"]
 
-        auth_resp = await client.auth_test()
-        bot_user_id = auth_resp["user_id"]
         channel_manager = ChannelManager(provider, self._config.channel_prefix, bot_user_id)
         channel_id, channel_name = await channel_manager.create_session_channel(self._name)
         logger.info("Authenticated! Session channel: #%s", channel_name)

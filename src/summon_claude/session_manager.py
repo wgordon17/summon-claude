@@ -85,6 +85,7 @@ class SessionManager:
             auth=auth,
             shared_provider=self._bolt_router.provider,
             dispatcher=self._dispatcher,
+            bot_user_id=self._bolt_router.bot_user_id,
         )
         self._sessions[options.session_id] = session
 
