@@ -4,6 +4,12 @@
 # click decorators: https://github.com/pallets/click/issues/2255
 # slack_sdk doesn't ship type stubs; pydantic-settings metaclass gaps
 
+# Naming conventions:
+# - Top-level click commands: cmd_X
+# - Group subcommands: group_subcommand (+ _cmd suffix for import shadowing)
+# - Async helpers mirroring a click command: _async_<click_function_name>
+# - Utility helpers: verb-noun descriptive names (e.g., _ensure_daemon)
+
 from __future__ import annotations
 
 import asyncio
@@ -238,10 +244,32 @@ def cmd_start(
     resolved_cwd = str(pathlib.Path(cwd).resolve()) if cwd else str(pathlib.Path.cwd())
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
+    try:
+        asyncio.run(_async_cmd_start(config, resolved_cwd, resolved_name, model, resume))
+    except SystemExit:
+        raise
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    # Show update notification if available (after banner)
+    update_thread.join(timeout=4.0)
+    if update_result and not ctx.obj.get("quiet"):
+        click.echo(update_result[0], err=True)
+
+
+async def _async_cmd_start(
+    config: SummonConfig,
+    cwd: str,
+    name: str,
+    model: str | None,
+    resume: str | None,
+) -> None:
+    """Orchestrate daemon startup, session creation, and auth banner display."""
     options = SessionOptions(
         session_id="",  # assigned by daemon
-        cwd=resolved_cwd,
-        name=resolved_name,
+        cwd=cwd,
+        name=name,
         model=model or config.default_model,
         resume=resume,
     )
@@ -251,22 +279,17 @@ def cmd_start(
         _ensure_daemon(config)
     except Exception as e:
         click.echo(f"Error starting daemon: {e}", err=True)
-        sys.exit(1)
+        raise SystemExit(1) from e
 
     # Phase 2: Send create_session to daemon; daemon generates session_id + auth
     try:
-        _session_id, short_code = asyncio.run(_create_session_in_daemon(options))
+        _session_id, short_code = await _create_session_in_daemon(options)
     except Exception as e:
         click.echo(f"Error communicating with daemon: {e}", err=True)
-        sys.exit(1)
+        raise SystemExit(1) from e
 
     # Phase 3: Print auth banner so user can authenticate via Slack
     _print_auth_banner(short_code)
-
-    # Show update notification if available (after banner)
-    update_thread.join(timeout=4.0)
-    if update_result and not ctx.obj.get("quiet"):
-        click.echo(update_result[0], err=True)
 
 
 def _ensure_daemon(config: SummonConfig) -> None:
@@ -482,10 +505,10 @@ def session_logs(session_id: str | None, tail: int) -> None:
 @click.pass_context
 def session_cleanup(ctx: click.Context, archive: bool) -> None:
     """Mark sessions with dead processes as errored."""
-    asyncio.run(_async_cleanup(ctx, archive=archive))
+    asyncio.run(_async_session_cleanup(ctx, archive=archive))
 
 
-async def _async_cleanup(ctx: click.Context, *, archive: bool = False) -> None:
+async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -> None:
     async with SessionRegistry() as registry:
         stale = await registry.list_stale()
         if not stale:
