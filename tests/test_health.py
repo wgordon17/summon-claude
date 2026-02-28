@@ -136,7 +136,7 @@ class TestBoltRouterHealthMonitor:
         """start_health_monitor() should return a running asyncio Task."""
         router = self._make_minimal_router()
         shutdown_event = asyncio.Event()
-        router.set_shutdown_callback(shutdown_event)
+        router.set_shutdown_callback(shutdown_event.set)
 
         # Patch SocketHealthMonitor.run to a no-op coroutine
         with patch("summon_claude.bolt_router.SocketHealthMonitor.run", new=AsyncMock()):
@@ -151,7 +151,7 @@ class TestBoltRouterHealthMonitor:
         """When reconnection is exhausted, shutdown_event should be set."""
         router = self._make_minimal_router()
         shutdown_event = asyncio.Event()
-        router.set_shutdown_callback(shutdown_event)
+        router.set_shutdown_callback(shutdown_event.set)
 
         # Set up dispatcher so all_channel_ids() returns empty list (no posts)
         mock_dispatcher = MagicMock()
@@ -166,8 +166,8 @@ class TestBoltRouterHealthMonitor:
         with pytest.raises((asyncio.CancelledError, Exception)):
             await task
 
-        # Simulate exhaustion by calling the monitor's _on_exhausted
-        router._health_monitor._on_exhausted()  # type: ignore[attr-defined]
+        # Simulate exhaustion by awaiting the monitor's _on_exhausted
+        await router._health_monitor._on_exhausted()  # type: ignore[attr-defined]
         assert shutdown_event.is_set()
 
 

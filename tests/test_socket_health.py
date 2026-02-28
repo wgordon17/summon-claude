@@ -20,7 +20,7 @@ class TestSocketHealthMonitor:
         mock_socket_handler.client.is_connected = AsyncMock(return_value=True)
 
         on_reconnect = AsyncMock()
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=mock_socket_handler,
@@ -47,7 +47,7 @@ class TestSocketHealthMonitor:
         mock_socket_handler.client.is_connected = AsyncMock(return_value=False)
 
         on_reconnect = AsyncMock()
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=mock_socket_handler,
@@ -73,7 +73,7 @@ class TestSocketHealthMonitor:
         mock_socket_handler.client.is_connected = AsyncMock(return_value=False)
 
         on_reconnect = AsyncMock()
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=mock_socket_handler,
@@ -100,7 +100,7 @@ class TestSocketHealthMonitor:
         mock_socket_handler.client.is_connected = AsyncMock(return_value=False)
 
         on_reconnect = AsyncMock()
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=mock_socket_handler,
@@ -137,7 +137,7 @@ class TestSocketHealthMonitor:
         new_handler.client.is_connected = AsyncMock(return_value=True)
 
         on_reconnect = AsyncMock()
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=old_handler,
@@ -169,7 +169,7 @@ class TestSocketHealthMonitor:
         mock_socket_handler.client.is_connected = AsyncMock(return_value=True)
 
         on_reconnect = AsyncMock()
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=mock_socket_handler,
@@ -205,7 +205,7 @@ class TestSocketHealthMonitor:
         mock_socket_handler.client.is_connected = AsyncMock(side_effect=is_connected_side_effect)
 
         on_reconnect = AsyncMock()
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=mock_socket_handler,
@@ -232,7 +232,7 @@ class TestSocketHealthMonitor:
         mock_socket_handler.client.is_connected = AsyncMock(return_value=False)
 
         on_reconnect = AsyncMock(side_effect=RuntimeError("Reconnect failed"))
-        on_exhausted = MagicMock()
+        on_exhausted = AsyncMock()
 
         monitor = SocketHealthMonitor(
             socket_handler=mock_socket_handler,

@@ -18,7 +18,7 @@ class SocketHealthMonitor:
         self,
         socket_handler: AsyncSocketModeHandler,
         on_reconnect_needed: Callable[[], Awaitable[None]],
-        on_exhausted: Callable[[], None],
+        on_exhausted: Callable[[], Awaitable[None]],
         check_interval: float = 10.0,
         max_reconnect_attempts: int = 5,
     ) -> None:
@@ -79,4 +79,4 @@ class SocketHealthMonitor:
                 self._max_reconnect_attempts,
             )
             self._stop_event.set()
-            self._on_exhausted()
+            await self._on_exhausted()

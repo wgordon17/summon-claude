@@ -127,7 +127,7 @@ async def daemon_main(config: SummonConfig) -> None:
 
     # Layer 1: Socket health monitor (BoltRouter-owned)
     # Register shutdown callback so health monitor can trigger daemon shutdown on exhaustion
-    bolt_router.set_shutdown_callback(session_manager.shutdown_event)
+    bolt_router.set_shutdown_callback(session_manager.shutdown_event.set)
     health_task = bolt_router.start_health_monitor()
 
     # Layer 2: Daemon-level event loop watchdog
