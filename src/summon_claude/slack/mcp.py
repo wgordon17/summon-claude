@@ -1,4 +1,4 @@
-"""In-process MCP tools that give Claude direct Slack channel access."""
+"""Dumb MCP tools — Slack actions bound to main channel only via SlackClient."""
 
 # pyright: reportArgumentType=false, reportReturnType=false
 # claude_agent_sdk doesn't ship type stubs
@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from summon_claude.slack.router import ThreadRouter
+from summon_claude.slack.client import SlackClient
 
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
@@ -24,18 +24,26 @@ _EMOJI_RE = re.compile(r"^[A-Za-z0-9_+]+$")
 
 
 def _sanitize_mrkdwn_meta(value: str) -> str:
-    """Strip mrkdwn formatting characters from metadata values (title, language)."""
-    # Remove characters that break Slack mrkdwn structure
+    """Strip mrkdwn formatting characters from metadata values (title, language).
+
+    Distinct from sanitize_for_mrkdwn — strips *`~\\n only, no \\r replacement,
+    no truncation.
+    """
     return re.sub(r"[*`~\n]", "", value)
 
 
-def create_summon_mcp_tools(router: ThreadRouter) -> list[SdkMcpTool]:
-    """Create MCP tool instances bound to the given router."""
+def create_summon_mcp_tools(client: SlackClient) -> list[SdkMcpTool]:
+    """Create MCP tool instances bound to the given SlackClient.
+
+    All tools post to the main channel only — no active-thread state.
+    BEHAVIOR CHANGE from mcp_tools.py: slack_upload_file and slack_post_snippet
+    previously posted to the active turn thread; they now post to main channel.
+    """
 
     @tool(
         "slack_upload_file",
         (
-            "Upload a file to the Slack session channel turn thread. "
+            "Upload a file to the Slack session channel. "
             "content: file text content. filename: name with extension (e.g. 'output.txt'). "
             "title: display title shown in Slack."
         ),
@@ -49,7 +57,7 @@ def create_summon_mcp_tools(router: ThreadRouter) -> list[SdkMcpTool]:
                 "is_error": True,
             }
         try:
-            await router.upload_to_turn_thread(
+            await client.upload(
                 args["content"],
                 args["filename"],
                 title=args.get("title", args["filename"]),
@@ -93,7 +101,7 @@ def create_summon_mcp_tools(router: ThreadRouter) -> list[SdkMcpTool]:
             }
         text = args["text"][:_MAX_TEXT_CHARS]
         try:
-            await router.post_to_main(text, thread_ts=parent_ts)
+            await client.post(text, thread_ts=parent_ts, raw=True)
         except Exception:
             return {
                 "content": [
@@ -138,11 +146,7 @@ def create_summon_mcp_tools(router: ThreadRouter) -> list[SdkMcpTool]:
                 "is_error": True,
             }
         try:
-            await router.add_reaction(
-                router.channel_id,
-                ts,
-                emoji_name,
-            )
+            await client.react(ts, emoji_name)
         except Exception:
             return {
                 "content": [
@@ -159,7 +163,7 @@ def create_summon_mcp_tools(router: ThreadRouter) -> list[SdkMcpTool]:
     @tool(
         "slack_post_snippet",
         (
-            "Post a formatted code snippet with syntax highlighting to the turn thread. "
+            "Post a formatted code snippet with syntax highlighting to the channel. "
             "code: source code content. "
             "language: syntax highlighting language (e.g. 'python', 'bash', 'json'). "
             "title: display title for the snippet."
@@ -180,7 +184,7 @@ def create_summon_mcp_tools(router: ThreadRouter) -> list[SdkMcpTool]:
             }
         ]
         try:
-            await router.post_to_turn_thread(title, blocks=blocks)
+            await client.post(title, blocks=blocks, raw=True)
         except Exception:
             return {
                 "content": [
@@ -197,7 +201,7 @@ def create_summon_mcp_tools(router: ThreadRouter) -> list[SdkMcpTool]:
     return [upload_file, create_thread, react, post_snippet]
 
 
-def create_summon_mcp_server(router: ThreadRouter) -> McpSdkServerConfig:
-    """Create an MCP server with Slack tools bound to the current session."""
-    tools = create_summon_mcp_tools(router)
+def create_summon_mcp_server(client: SlackClient) -> McpSdkServerConfig:
+    """Create an MCP server with Slack tools bound to the current SlackClient."""
+    tools = create_summon_mcp_tools(client)
     return create_sdk_mcp_server(name="summon-slack", version="1.0.0", tools=tools)

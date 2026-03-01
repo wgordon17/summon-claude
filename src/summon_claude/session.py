@@ -23,11 +23,11 @@ from summon_claude.commands import CommandContext, CommandRegistry, build_regist
 from summon_claude.config import SummonConfig, discover_installed_plugins, get_data_dir
 from summon_claude.content_display import ContentDisplay
 from summon_claude.context import ContextUsage
-from summon_claude.mcp_tools import create_summon_mcp_server
 from summon_claude.permissions import PermissionHandler
 from summon_claude.providers.slack import SlackChatProvider
 from summon_claude.registry import SessionRegistry
 from summon_claude.sessions.response import split_text as _split_text
+from summon_claude.slack.mcp import create_summon_mcp_server
 from summon_claude.slack.router import ThreadRouter
 from summon_claude.streamer import ResponseStreamer
 
@@ -472,7 +472,9 @@ class SummonSession:
         self, rt: _SessionRuntime, router: ThreadRouter, provider: SlackChatProvider
     ) -> None:
         """Listen for Slack messages and forward them to Claude."""
-        slack_mcp = create_summon_mcp_server(router)
+        # router._client is SlackClient or _LegacyProviderClient (duck-compatible)
+        # until session.py is refactored in Task 2.5 to pass SlackClient directly
+        slack_mcp = create_summon_mcp_server(router._client)  # type: ignore[arg-type]  # noqa: SLF001
 
         options = ClaudeAgentOptions(
             cwd=self._cwd,
