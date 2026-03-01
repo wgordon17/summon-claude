@@ -14,8 +14,9 @@ from typing import Any
 import aiohttp
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
 
-from summon_claude._formatting import get_tool_primary_arg, sanitize_for_mrkdwn
 from summon_claude.config import SummonConfig
+from summon_claude.sessions.response import get_tool_primary_arg
+from summon_claude.slack.client import sanitize_for_mrkdwn
 from summon_claude.thread_router import ThreadRouter
 
 logger = logging.getLogger(__name__)

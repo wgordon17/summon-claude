@@ -19,9 +19,10 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from summon_claude._formatting import get_tool_primary_arg
-from summon_claude.content_display import ContentDisplay, _split_text
+from summon_claude.content_display import ContentDisplay
 from summon_claude.context import ContextUsage, compute_context_usage
+from summon_claude.sessions.response import get_tool_primary_arg
+from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.thread_router import ThreadRouter
 
 logger = logging.getLogger(__name__)

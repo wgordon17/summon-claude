@@ -17,17 +17,17 @@ from typing import TYPE_CHECKING, Literal
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock
 from slack_sdk.web.async_client import AsyncWebClient
 
-from summon_claude._formatting import format_file_references
 from summon_claude.auth import SessionAuth
 from summon_claude.channel_manager import ChannelManager, _get_git_branch
 from summon_claude.commands import CommandContext, CommandRegistry, build_registry
 from summon_claude.config import SummonConfig, discover_installed_plugins, get_data_dir
-from summon_claude.content_display import ContentDisplay, _split_text
+from summon_claude.content_display import ContentDisplay
 from summon_claude.context import ContextUsage
 from summon_claude.mcp_tools import create_summon_mcp_server
 from summon_claude.permissions import PermissionHandler
 from summon_claude.providers.slack import SlackChatProvider
 from summon_claude.registry import SessionRegistry
+from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.streamer import ResponseStreamer
 from summon_claude.thread_router import ThreadRouter
 
@@ -39,6 +39,23 @@ logger = logging.getLogger(__name__)
 # Per-session log correlation: set when a session starts so all log records
 # within that asyncio task carry the session_id in their context.
 _session_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
+
+
+def _format_file_references(files: list[dict]) -> str:
+    """Format file attachment metadata as context for Claude.
+
+    Only includes filename and file type -- NOT the private download URL,
+    which requires Slack auth headers that Claude cannot provide.
+    Filenames are sanitized to prevent prompt injection via crafted names.
+    """
+    parts: list[str] = []
+    for f in files:
+        name = f.get("name", "unknown").replace("\n", " ").replace("\r", " ")[:200]
+        filetype = f.get("filetype", "")
+        size = f.get("size", 0)
+        size_str = f" ({size} bytes)" if size else ""
+        parts.append(f"[Attached file: {name} ({filetype}){size_str}]")
+    return "\n".join(parts)
 
 
 class SessionIdFilter(logging.Filter):
@@ -955,7 +972,7 @@ class SummonSession:
         files = event.get("files", [])
         full_text = text
         if files:
-            file_context = format_file_references(files)
+            file_context = _format_file_references(files)
             if file_context:
                 full_text = f"{text}\n\n{file_context}"
 

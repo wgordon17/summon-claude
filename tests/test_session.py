@@ -7,11 +7,10 @@ import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-from summon_claude._formatting import format_file_references
 from summon_claude.auth import SessionAuth
 from summon_claude.config import SummonConfig
 from summon_claude.rate_limiter import RateLimiter
-from summon_claude.session import SessionOptions, SummonSession
+from summon_claude.session import SessionOptions, SummonSession, _format_file_references
 
 
 def make_config(**overrides) -> SummonConfig:
@@ -96,12 +95,12 @@ class TestGenerateSessionToken:
 
 class TestFormatFileReferences:
     def test_empty_list_returns_empty_string(self):
-        result = format_file_references([])
+        result = _format_file_references([])
         assert result == ""
 
     def test_single_file_with_name(self):
         files = [{"name": "photo.png", "filetype": "png", "size": 1024}]
-        result = format_file_references(files)
+        result = _format_file_references(files)
         assert "photo.png" in result
         assert "(png)" in result
         assert "(1024 bytes)" in result
@@ -110,7 +109,7 @@ class TestFormatFileReferences:
 
     def test_single_file_without_url(self):
         files = [{"name": "doc.txt", "filetype": "txt"}]
-        result = format_file_references(files)
+        result = _format_file_references(files)
         assert "doc.txt" in result
         assert "(txt)" in result
 
@@ -119,7 +118,7 @@ class TestFormatFileReferences:
             {"name": "a.py", "url_private_download": "https://example.com/a"},
             {"name": "b.py", "url_private_download": "https://example.com/b"},
         ]
-        result = format_file_references(files)
+        result = _format_file_references(files)
         lines = result.splitlines()
         assert len(lines) == 2
         assert "a.py" in lines[0]
@@ -127,7 +126,7 @@ class TestFormatFileReferences:
 
     def test_missing_name_uses_unknown(self):
         files = [{"url_private": "https://example.com/f"}]
-        result = format_file_references(files)
+        result = _format_file_references(files)
         assert "unknown" in result
 
 
