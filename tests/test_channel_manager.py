@@ -9,8 +9,8 @@ import pytest
 
 from helpers import make_mock_provider
 from summon_claude.channel_manager import ChannelManager, _get_git_branch, _slugify
-from summon_claude.context import ContextUsage
 from summon_claude.providers.base import ChannelRef, MessageRef
+from summon_claude.sessions.context import ContextUsage
 
 
 class TestChannelManagerCreateChannel:

@@ -7,8 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from helpers import make_mock_provider
-from summon_claude.commands import (
+from summon_claude.sessions.commands import (
     CommandContext,
     CommandRegistry,
     CommandResult,
@@ -17,13 +16,7 @@ from summon_claude.commands import (
 
 
 @pytest.fixture
-def mock_provider():
-    """Provide a mocked ChatProvider."""
-    return make_mock_provider()
-
-
-@pytest.fixture
-def make_context(mock_provider):
+def make_context():
     """Factory for creating CommandContext instances."""
 
     def _make(**overrides):
@@ -31,7 +24,6 @@ def make_context(mock_provider):
             "channel_id": "C123",
             "thread_ts": "100.000",
             "user_id": "U123",
-            "provider": mock_provider,
             "session_id": "test-session",
             "model": "sonnet",
             "turns": 5,

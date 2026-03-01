@@ -6,10 +6,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from summon_claude.providers.base import ChatProvider
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +27,6 @@ class CommandContext:
     channel_id: str
     thread_ts: str | None
     user_id: str
-    provider: ChatProvider
     turns: int = 0
     cost_usd: float = 0.0
     start_time: datetime | None = None

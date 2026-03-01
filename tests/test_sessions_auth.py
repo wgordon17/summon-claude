@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from summon_claude.auth import (
+from summon_claude.sessions.auth import (
     SessionAuth,
     generate_session_token,
     verify_short_code,
@@ -99,7 +99,7 @@ class TestVerifyShortCode:
         assert result is not None
 
     async def test_locked_out_token_returns_none_and_does_not_increment(self, registry):
-        from summon_claude.registry import _MAX_FAILED_ATTEMPTS
+        from summon_claude.sessions.registry import _MAX_FAILED_ATTEMPTS
 
         auth = await generate_session_token(registry, "sess-lock")
         # Drive up to exactly the max failed attempts

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from slack_sdk.web.async_client import AsyncWebClient
 
-from summon_claude.registry import SessionRegistry
+from summon_claude.sessions.registry import SessionRegistry
 
 
 @pytest.fixture

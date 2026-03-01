@@ -174,7 +174,7 @@ class SessionRegistry:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = [*list(updates.values()), session_id]
         async with self._lock:
-            await db.execute(f"UPDATE sessions SET {set_clause} WHERE session_id = ?", values)
+            await db.execute(f"UPDATE sessions SET {set_clause} WHERE session_id = ?", values)  # noqa: S608
             await db.commit()
 
     async def heartbeat(self, session_id: str) -> None:

@@ -9,8 +9,8 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from summon_claude.context import ContextUsage
 from summon_claude.providers.base import ChatProvider
+from summon_claude.sessions.context import ContextUsage
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from summon_claude.registry import _MAX_FAILED_ATTEMPTS, SessionRegistry
+from summon_claude.sessions.registry import _MAX_FAILED_ATTEMPTS, SessionRegistry
 
 logger = logging.getLogger(__name__)
 

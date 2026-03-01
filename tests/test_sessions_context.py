@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from summon_claude.context import ContextUsage, compute_context_usage
+from summon_claude.sessions.context import ContextUsage, compute_context_usage
 
 
 class TestComputeContextUsage:

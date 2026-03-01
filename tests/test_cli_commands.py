@@ -271,7 +271,7 @@ class TestCleanupCommand:
         from unittest.mock import AsyncMock, patch
 
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             # Register a dead session with a channel

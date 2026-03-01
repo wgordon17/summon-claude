@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from summon_claude.registry import SessionRegistry
+from summon_claude.sessions.registry import SessionRegistry
 
 
 async def _query_audit_log(

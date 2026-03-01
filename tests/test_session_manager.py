@@ -12,11 +12,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from summon_claude.auth import SessionAuth
 from summon_claude.config import SummonConfig
 from summon_claude.ipc import recv_msg, send_msg
 from summon_claude.session import SessionOptions
 from summon_claude.session_manager import _GRACE_SECONDS, SessionManager
+from summon_claude.sessions.auth import SessionAuth
 
 # ---------------------------------------------------------------------------
 # Helpers

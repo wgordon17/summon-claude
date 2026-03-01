@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from summon_claude.registry import SessionRegistry, _pid_alive
+from summon_claude.sessions.registry import SessionRegistry, _pid_alive
 
 
 class TestSessionRegistryConnect:

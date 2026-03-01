@@ -6,9 +6,9 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-from summon_claude.auth import SessionAuth
 from summon_claude.config import SummonConfig
 from summon_claude.session import SessionOptions, SummonSession, _format_file_references
+from summon_claude.sessions.auth import SessionAuth
 
 
 def make_config(**overrides) -> SummonConfig:
@@ -48,8 +48,8 @@ def make_auth(**overrides) -> SessionAuth:
 class TestGenerateSessionToken:
     async def test_returns_session_auth(self, tmp_path):
         """generate_session_token should return a SessionAuth with correct fields."""
-        from summon_claude.auth import generate_session_token
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.auth import generate_session_token
+        from summon_claude.sessions.registry import SessionRegistry
 
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             auth = await generate_session_token(registry, "sess-test")
@@ -167,8 +167,8 @@ class TestSlashCommandHandler:
 
     async def test_verify_short_code_returns_result(self, tmp_path):
         """verify_short_code should return a result for a valid code."""
-        from summon_claude.auth import generate_session_token, verify_short_code
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.auth import generate_session_token, verify_short_code
+        from summon_claude.sessions.registry import SessionRegistry
 
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-1", 1234, "/tmp")
@@ -179,8 +179,8 @@ class TestSlashCommandHandler:
 
     async def test_slash_command_invalid_code_no_event_set(self, tmp_path):
         """Invalid code should NOT set authenticated_event."""
-        from summon_claude.auth import verify_short_code
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.auth import verify_short_code
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -201,8 +201,8 @@ class TestSessionShutdownSummary:
     async def test_shutdown_posts_summary_message(self, tmp_path):
         """_shutdown should post turns/cost summary to channel."""
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
         from summon_claude.session import _SessionRuntime
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -241,8 +241,8 @@ class TestSessionShutdownSummary:
     async def test_shutdown_preserves_channel(self, tmp_path):
         """_shutdown should NOT archive the session channel — channels are preserved."""
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
         from summon_claude.session import _SessionRuntime
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -280,8 +280,8 @@ class TestSessionShutdownSummary:
     async def test_shutdown_updates_registry_to_completed(self, tmp_path):
         """_shutdown should update session status to completed."""
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
         from summon_claude.session import _SessionRuntime
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -328,7 +328,7 @@ class TestSessionShutdown:
 
     async def test_shutdown_sets_completed_flag(self, tmp_path):
         """After successful _shutdown(), _shutdown_completed should be True."""
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -343,7 +343,7 @@ class TestSessionShutdown:
 
     async def test_shutdown_completed_flag_false_on_registry_failure(self, tmp_path):
         """If registry update raises, _shutdown_completed should remain False."""
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -363,7 +363,7 @@ class TestSessionShutdown:
 
     async def test_shutdown_disconnect_message_failure_continues(self, tmp_path):
         """If posting the disconnect message fails, shutdown should continue."""
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -386,7 +386,7 @@ class TestSessionShutdown:
 
     async def test_shutdown_timeout_on_slack_call(self, tmp_path):
         """If Slack call hangs, asyncio.wait_for should timeout and continue."""
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -414,7 +414,7 @@ class TestSessionShutdown:
 class TestAuditEventsLogged:
     async def test_registry_logs_session_created_event(self, tmp_path):
         """Registry.log_event is used in start() — test it works for session_created."""
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-audit", 1234, "/tmp")
@@ -441,8 +441,8 @@ class TestDisconnectMessageVariants:
     async def test_disconnect_message_ended(self, tmp_path):
         """Normal shutdown should post :wave: 'session ended' message."""
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
         from summon_claude.session import _SessionRuntime
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -483,8 +483,8 @@ class TestDisconnectMessageVariants:
     async def test_disconnect_message_reconnect_exhausted(self, tmp_path):
         """Reconnect exhaustion should post :x: 'disconnected' message."""
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
         from summon_claude.session import _SessionRuntime
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -526,8 +526,8 @@ class TestDisconnectMessageVariants:
     async def test_disconnect_message_watchdog(self, tmp_path):
         """Watchdog termination should post :rotating_light: message."""
         from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
         from summon_claude.session import _SessionRuntime
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
@@ -619,7 +619,7 @@ class TestSessionHandleRegistration:
     async def test_dispatcher_registered_when_provided(self, tmp_path):
         """When a dispatcher is provided, _run_session registers a SessionHandle with it."""
         from summon_claude.event_dispatcher import EventDispatcher, SessionHandle
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         config = make_config()
         dispatcher = EventDispatcher()

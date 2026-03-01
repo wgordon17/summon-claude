@@ -32,8 +32,8 @@ from summon_claude.cli_config import config_check, config_edit, config_path, con
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
 from summon_claude.daemon import is_daemon_running, start_daemon
 from summon_claude.providers.slack import SlackChatProvider
-from summon_claude.registry import SessionRegistry
 from summon_claude.session import SessionOptions
+from summon_claude.sessions.registry import SessionRegistry
 
 logger = logging.getLogger(__name__)
 

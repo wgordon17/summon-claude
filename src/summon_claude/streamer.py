@@ -20,7 +20,7 @@ from claude_agent_sdk import (
 )
 
 from summon_claude.content_display import ContentDisplay
-from summon_claude.context import ContextUsage, compute_context_usage
+from summon_claude.sessions.context import ContextUsage, compute_context_usage
 from summon_claude.sessions.response import get_tool_primary_arg
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.router import ThreadRouter

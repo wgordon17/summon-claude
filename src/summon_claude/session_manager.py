@@ -23,10 +23,10 @@ import uuid
 from functools import partial
 from typing import TYPE_CHECKING
 
-from summon_claude.auth import SessionAuth, generate_session_token, verify_short_code
 from summon_claude.ipc import recv_msg, send_msg
-from summon_claude.registry import SessionRegistry
 from summon_claude.session import _SECRET_PATTERN, SessionOptions, SummonSession
+from summon_claude.sessions.auth import SessionAuth, generate_session_token, verify_short_code
+from summon_claude.sessions.registry import SessionRegistry
 
 if TYPE_CHECKING:
     from summon_claude.config import SummonConfig

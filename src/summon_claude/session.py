@@ -17,15 +17,15 @@ from typing import TYPE_CHECKING, Literal
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock
 from slack_sdk.web.async_client import AsyncWebClient
 
-from summon_claude.auth import SessionAuth
 from summon_claude.channel_manager import ChannelManager, _get_git_branch
-from summon_claude.commands import CommandContext, CommandRegistry, build_registry
 from summon_claude.config import SummonConfig, discover_installed_plugins, get_data_dir
 from summon_claude.content_display import ContentDisplay
-from summon_claude.context import ContextUsage
 from summon_claude.permissions import PermissionHandler
 from summon_claude.providers.slack import SlackChatProvider
-from summon_claude.registry import SessionRegistry
+from summon_claude.sessions.auth import SessionAuth
+from summon_claude.sessions.commands import CommandContext, CommandRegistry, build_registry
+from summon_claude.sessions.context import ContextUsage
+from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.mcp import create_summon_mcp_server
 from summon_claude.slack.router import ThreadRouter

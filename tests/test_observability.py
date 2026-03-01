@@ -20,8 +20,8 @@ class TestQueueBackpressure:
         """SummonSession._message_queue must have maxsize=100 for backpressure."""
         from unittest.mock import MagicMock
 
-        from summon_claude.auth import SessionAuth
         from summon_claude.session import SessionOptions, SummonSession
+        from summon_claude.sessions.auth import SessionAuth
 
         config = MagicMock()
         options = SessionOptions(session_id="test-bp", cwd="/tmp", name="test")
@@ -116,8 +116,8 @@ class TestSessionIdFilter:
 
     async def test_session_start_sets_contextvar(self):
         """SummonSession.start() sets _session_id_var before registry work."""
-        from summon_claude.auth import SessionAuth
         from summon_claude.session import SessionOptions, SummonSession
+        from summon_claude.sessions.auth import SessionAuth
 
         captured_sid: list[str] = []
 
@@ -155,8 +155,8 @@ class TestPerSessionLogFile:
 
     def test_install_creates_log_file(self, tmp_path):
         """_install_session_log_handler creates a log file for the session."""
-        from summon_claude.auth import SessionAuth
         from summon_claude.session import SessionOptions, SummonSession
+        from summon_claude.sessions.auth import SessionAuth
 
         config = MagicMock()
         options = SessionOptions(session_id="log-test-session", cwd="/tmp", name="test")
@@ -176,8 +176,8 @@ class TestPerSessionLogFile:
 
     def test_handler_filters_by_session_id(self, tmp_path):
         """Only log records from the matching session task are written."""
-        from summon_claude.auth import SessionAuth
         from summon_claude.session import SessionOptions, SummonSession
+        from summon_claude.sessions.auth import SessionAuth
 
         config = MagicMock()
         options = SessionOptions(session_id="filter-test", cwd="/tmp", name="test")
@@ -218,8 +218,8 @@ class TestPerSessionLogFile:
 
     def test_remove_handler_cleans_up(self, tmp_path):
         """_remove_session_log_handler removes the handler from root logger."""
-        from summon_claude.auth import SessionAuth
         from summon_claude.session import SessionOptions, SummonSession
+        from summon_claude.sessions.auth import SessionAuth
 
         config = MagicMock()
         options = SessionOptions(session_id="cleanup-test", cwd="/tmp", name="test")

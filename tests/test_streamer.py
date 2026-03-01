@@ -463,7 +463,7 @@ class TestBug025ResponseDuplication:
 class TestStreamResult:
     async def test_stream_result_contains_context(self):
         """When ResultMessage has usage, StreamResult should have ContextUsage."""
-        from summon_claude.context import ContextUsage
+        from summon_claude.sessions.context import ContextUsage
 
         streamer, router, provider = make_streamer()
         result_msg = ResultMessage(
