@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -21,6 +21,10 @@ if TYPE_CHECKING:
     from summon_claude.permissions import PermissionHandler
 
 logger = logging.getLogger(__name__)
+
+# Callback signature for /summon command handling.
+# Arguments: (user_id: str, code: str, respond: Callable)
+CommandHandler = Callable[..., Awaitable[None]]
 
 # action_id pattern used to recognise AskUserQuestion button clicks
 _ASK_USER_RE = re.compile(r"ask_user_\d+_.+")
@@ -53,10 +57,15 @@ class EventDispatcher:
     Sessions are registered by ``channel_id``.  Events whose channel maps to
     no registered session are silently dropped — this is intentional behaviour
     for channels from previous sessions, bot DMs, and unrelated activity.
+
+    The dispatcher also holds an optional *command handler* callback for
+    ``/summon`` slash commands.  This allows ``SessionManager`` to register
+    itself without introducing a direct dependency from ``BoltRouter``.
     """
 
     def __init__(self) -> None:
         self._sessions: dict[str, SessionHandle] = {}  # channel_id → handle
+        self._command_handler: CommandHandler | None = None
 
     # ------------------------------------------------------------------
     # Registry
@@ -84,6 +93,27 @@ class EventDispatcher:
     def all_channel_ids(self) -> list[str]:
         """Return a snapshot of all registered channel IDs."""
         return list(self._sessions.keys())
+
+    # ------------------------------------------------------------------
+    # Command handler (for /summon slash commands)
+    # ------------------------------------------------------------------
+
+    def set_command_handler(self, handler: CommandHandler) -> None:
+        """Register a callback for ``/summon`` slash commands."""
+        self._command_handler = handler
+
+    async def dispatch_command(
+        self, user_id: str, code: str, respond: Callable[..., Awaitable[None]]
+    ) -> None:
+        """Route a ``/summon`` slash command to the registered handler."""
+        if self._command_handler is not None:
+            await self._command_handler(user_id=user_id, code=code, respond=respond)
+        else:
+            logger.warning("EventDispatcher: /summon received but no command handler set")
+            await respond(
+                text=":x: Service not ready. Please try again shortly.",
+                response_type="ephemeral",
+            )
 
     # ------------------------------------------------------------------
     # Dispatch

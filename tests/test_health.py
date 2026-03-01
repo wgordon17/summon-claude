@@ -43,7 +43,9 @@ class TestBoltRouterReconnect:
         )
         stack.enter_context(patch("summon_claude.bolt_router.AsyncWebClient"))
 
-        router = BoltRouter(mock_config)
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.all_channel_ids = MagicMock(return_value=[])
+        router = BoltRouter(mock_config, mock_dispatcher)
         router._client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
         router._patch_stack = stack  # keep patches alive
         await router.start()
@@ -147,7 +149,9 @@ class TestBoltRouterHealthMonitor:
         )
         stack.enter_context(patch("summon_claude.bolt_router.AsyncWebClient"))
 
-        router = BoltRouter(mock_config)
+        mock_dispatcher = MagicMock()
+        mock_dispatcher.all_channel_ids = MagicMock(return_value=[])
+        router = BoltRouter(mock_config, mock_dispatcher)
         router._client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
         router._patch_stack = stack  # keep patches alive
         await router.start()
@@ -174,10 +178,7 @@ class TestBoltRouterHealthMonitor:
         shutdown_event = asyncio.Event()
         router.shutdown_callback = shutdown_event.set
 
-        # Set up dispatcher so all_channel_ids() returns empty list (no posts)
-        mock_dispatcher = MagicMock()
-        mock_dispatcher.all_channel_ids.return_value = []
-        router.dispatcher = mock_dispatcher
+        # dispatcher is already wired via constructor in _make_minimal_router()
 
         # Manually trigger the exhaustion callback that start_health_monitor wires
         # by accessing the monitor after creation

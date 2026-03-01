@@ -77,20 +77,22 @@ class _StubSession:
 def _make_manager(
     stub_session: _StubSession | None = None,
 ) -> tuple[SessionManager, MagicMock, MagicMock]:
-    """Return (manager, mock_bolt_router, mock_dispatcher) with SummonSession patched."""
+    """Return (manager, mock_provider, mock_dispatcher) with SummonSession patched."""
     cfg = make_config()
-    mock_bolt = MagicMock()
-    mock_bolt.provider.post_message = AsyncMock()
+    mock_provider = MagicMock()
+    mock_provider.post_message = AsyncMock()
     mock_dispatcher = MagicMock()
     mock_dispatcher.unregister = MagicMock()
 
-    manager = SessionManager(config=cfg, bolt_router=mock_bolt, dispatcher=mock_dispatcher)
+    manager = SessionManager(
+        config=cfg, provider=mock_provider, bot_user_id="UBOT", dispatcher=mock_dispatcher
+    )
 
     if stub_session is not None:
         # Patch SummonSession construction to return our stub
         manager._create_stub = stub_session  # type: ignore[attr-defined]
 
-    return manager, mock_bolt, mock_dispatcher
+    return manager, mock_provider, mock_dispatcher
 
 
 def _patch_session(manager: SessionManager, stub: _StubSession, session_id: str = "s1"):
@@ -338,15 +340,15 @@ class TestSupervisedSession:
 
     async def test_recoverable_posts_error_on_final_failure(self):
         """After exhausting retries, best-effort error message posted to channel."""
-        manager, mock_bolt, _ = _make_manager()
+        manager, mock_provider, _ = _make_manager()
         stub = _StubSession(fail_with=ConnectionError("dropped"))
         stub.channel_id = "C001"
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await manager._supervised_session(stub, "s1")  # type: ignore[arg-type]
 
-        mock_bolt.provider.post_message.assert_awaited()
-        call_args = mock_bolt.provider.post_message.call_args
+        mock_provider.post_message.assert_awaited()
+        call_args = mock_provider.post_message.call_args
         assert call_args[0][0] == "C001"
         assert ":x:" in call_args[0][1]
 

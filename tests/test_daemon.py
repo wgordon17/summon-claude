@@ -223,7 +223,7 @@ class TestConnectToDaemon:
         ):
             reader, writer = await connect_to_daemon()
 
-        mock_connect.assert_called_once_with(str(tmp_path / "daemon.sock"))
+        mock_connect.assert_called_once_with(str(tmp_path / "daemon.sock"), limit=65536)
         assert reader is mock_reader
         assert writer is mock_writer
 

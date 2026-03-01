@@ -6,17 +6,15 @@ dispatched to ``EventDispatcher``, which routes them to the correct session.
 
 Lifecycle
 ---------
-1. ``BoltRouter.__init__`` — creates ``AsyncWebClient``, ``AsyncApp``, and
-   ``AsyncSocketModeHandler`` then registers all Bolt handlers.
-2. ``set_dispatcher`` / ``set_session_manager`` — deferred wiring called after
-   both objects are constructed (breaks the circular dependency between
-   BoltRouter and SessionManager).
-3. ``start()`` — connects the socket handler (calls ``connect_async``).
-4. ``stop()`` — gracefully closes the socket handler.
-5. ``reconnect()`` — creates a fresh ``AsyncApp`` + handler, re-registers all
+1. ``BoltRouter.__init__`` — creates ``AsyncWebClient`` and takes an
+   ``EventDispatcher`` reference for event and command routing.
+2. ``start()`` — builds the Bolt app, registers handlers, and connects the
+   socket handler (calls ``connect_async``).
+3. ``stop()`` — gracefully closes the socket handler.
+4. ``reconnect()`` — creates a fresh ``AsyncApp`` + handler, re-registers all
    Bolt handlers, and reconnects.  Used by the health-monitor when the socket
    drops.
-6. ``start_health_monitor()`` — starts the daemon-level socket health monitor
+5. ``start_health_monitor()`` — starts the daemon-level socket health monitor
    task.  On exhaustion, posts to all session channels and calls the registered
    shutdown callback.
 """
@@ -41,7 +39,6 @@ from summon_claude.socket_health import SocketHealthMonitor
 if TYPE_CHECKING:
     from summon_claude.config import SummonConfig
     from summon_claude.event_dispatcher import EventDispatcher
-    from summon_claude.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +56,9 @@ class BoltRouter:
     called both at construction time and after a ``reconnect()``.
     """
 
-    def __init__(self, config: SummonConfig) -> None:
+    def __init__(self, config: SummonConfig, dispatcher: EventDispatcher) -> None:
         self._config = config
-        self.dispatcher: EventDispatcher | None = None
-        self.session_manager: SessionManager | None = None
+        self._dispatcher = dispatcher
         self._rate_limiter = RateLimiter()
 
         # Shared web client — stays alive across reconnects
@@ -177,21 +173,20 @@ class BoltRouter:
         # Post disconnect notice to all active session channels (best-effort).
         # Stored in a task so notifications are awaited with a timeout before
         # the event loop exits, preventing fire-and-forget loss on fast shutdown.
-        if self.dispatcher is not None:
-            channel_ids = self.dispatcher.all_channel_ids()
-            if channel_ids:
+        channel_ids = self._dispatcher.all_channel_ids()
+        if channel_ids:
 
-                async def _send_notices() -> None:
-                    notice_tasks = [
-                        asyncio.create_task(self._post_exhausted_notice(cid)) for cid in channel_ids
-                    ]
-                    with contextlib.suppress(Exception):
-                        await asyncio.wait_for(
-                            asyncio.gather(*notice_tasks, return_exceptions=True),
-                            timeout=5.0,
-                        )
+            async def _send_notices() -> None:
+                notice_tasks = [
+                    asyncio.create_task(self._post_exhausted_notice(cid)) for cid in channel_ids
+                ]
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        asyncio.gather(*notice_tasks, return_exceptions=True),
+                        timeout=5.0,
+                    )
 
-                self._exhausted_notice_task = asyncio.ensure_future(_send_notices())
+            self._exhausted_notice_task = asyncio.ensure_future(_send_notices())
 
     async def _post_exhausted_notice(self, channel_id: str) -> None:
         """Post a permanent disconnect notice to a single channel."""
@@ -246,30 +241,14 @@ class BoltRouter:
             )
             return
 
-        if self.session_manager is None:
-            logger.warning("BoltRouter: /summon received but session_manager not set")
-            await respond(
-                text=":x: Service not ready. Please try again shortly.",
-                response_type="ephemeral",
-            )
-            return
-
-        # Delegate auth to session_manager
-        await self.session_manager.handle_summon_command(
-            user_id=user_id,
-            code=text,
-            respond=respond,
-        )
+        await self._dispatcher.dispatch_command(user_id=user_id, code=text, respond=respond)
 
     async def _on_message(self, event, say) -> None:  # noqa: ARG002
-        if self.dispatcher is not None:
-            await self.dispatcher.dispatch_message(event)
+        await self._dispatcher.dispatch_message(event)
 
     async def _on_reaction_added(self, event) -> None:
-        if self.dispatcher is not None:
-            await self.dispatcher.dispatch_reaction(event)
+        await self._dispatcher.dispatch_reaction(event)
 
     async def _on_dispatch_action(self, ack, action, body) -> None:
         await ack()
-        if self.dispatcher is not None:
-            await self.dispatcher.dispatch_action(action, body)
+        await self._dispatcher.dispatch_action(action, body)

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from summon_claude.bolt_router import BoltRouter
 from summon_claude.config import get_data_dir
 from summon_claude.event_dispatcher import EventDispatcher
+from summon_claude.ipc import MAX_MESSAGE_SIZE
 from summon_claude.session_manager import SessionManager
 
 if TYPE_CHECKING:
@@ -97,20 +98,27 @@ async def daemon_main(config: SummonConfig) -> None:
     socket_path = _daemon_socket()
     pid_path = _daemon_pid()
 
-    bolt_router = BoltRouter(config)
     dispatcher = EventDispatcher()
-    session_manager = SessionManager(config, bolt_router, dispatcher)
-
-    bolt_router.dispatcher = dispatcher
-    bolt_router.session_manager = session_manager
+    bolt_router = BoltRouter(config, dispatcher)
 
     await bolt_router.start()
     logger.info("BoltRouter started")
+
+    if bolt_router.bot_user_id is None:  # pragma: no cover — start() always sets this
+        raise RuntimeError("BoltRouter.start() did not set bot_user_id")
+    session_manager = SessionManager(
+        config=config,
+        provider=bolt_router.provider,
+        bot_user_id=bolt_router.bot_user_id,
+        dispatcher=dispatcher,
+    )
+    dispatcher.set_command_handler(session_manager.handle_summon_command)
 
     # Start Unix socket control server
     control_server = await asyncio.start_unix_server(
         session_manager.handle_client,
         path=str(socket_path),
+        limit=MAX_MESSAGE_SIZE,
     )
     # Restrict socket to owner-only (mode 600) so other users cannot connect
     try:
@@ -422,5 +430,5 @@ async def connect_to_daemon() -> tuple[asyncio.StreamReader, asyncio.StreamWrite
     socket does not exist or the connection is refused.
     """
     socket_path = _daemon_socket()
-    reader, writer = await asyncio.open_unix_connection(str(socket_path))
+    reader, writer = await asyncio.open_unix_connection(str(socket_path), limit=MAX_MESSAGE_SIZE)
     return reader, writer

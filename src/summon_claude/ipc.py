@@ -8,9 +8,10 @@ to implement on both ends with stdlib primitives.
 Wire format:
     [4-byte big-endian uint32 length][JSON payload bytes]
 
-The maximum allowed message size is 1 MiB (1_048_576 bytes).  Any message
+The maximum allowed message size is 64 KiB (65_536 bytes).  Any message
 that exceeds this limit is rejected by recv_msg to guard against runaway
-senders or corrupt streams.
+senders or corrupt streams.  This constant is also used as the
+``asyncio.StreamReader`` buffer limit so the two stay in sync.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import asyncio
 import json
 import struct
 
-MAX_MESSAGE_SIZE = 1_048_576  # 1 MiB
+MAX_MESSAGE_SIZE = 65_536  # 64 KiB
 
 
 async def send_msg(writer: asyncio.StreamWriter, data: dict) -> None:  # type: ignore[type-arg]

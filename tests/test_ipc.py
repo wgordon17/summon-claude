@@ -145,9 +145,9 @@ class TestSendRecvRoundTrip:
         writer.close()
 
     async def test_large_message_well_within_limit(self):
-        """A 100 KB message round-trips correctly."""
+        """A message near the 64 KiB limit round-trips correctly."""
         reader, writer = await _make_stream_pair()
-        data = {"payload": "x" * (100 * 1024)}
+        data = {"payload": "x" * (50 * 1024)}
 
         await send_msg(writer, data)
         result = await recv_msg(reader)
@@ -157,7 +157,7 @@ class TestSendRecvRoundTrip:
 
 
 class TestOversizedMessageRejection:
-    """recv_msg must raise ValueError for messages claiming to exceed 1 MiB."""
+    """recv_msg must raise ValueError for messages claiming to exceed 64 KiB."""
 
     async def test_oversized_header_raises_value_error(self):
         """A 4-byte header declaring length > MAX_MESSAGE_SIZE raises ValueError."""
