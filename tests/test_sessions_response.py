@@ -9,9 +9,9 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUse
 
 from helpers import make_mock_provider
 from summon_claude.config import SummonConfig
-from summon_claude.content_display import _split_text
+from summon_claude.sessions.response import ResponseStreamer, StreamResult, _format_tool_summary
+from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.router import ThreadRouter
-from summon_claude.streamer import ResponseStreamer, StreamResult, _format_tool_summary
 
 
 def make_config(**overrides) -> SummonConfig:
@@ -601,3 +601,81 @@ class TestResponseStreamerUserPing:
                         "Conclusion without user_id should not have ping prefix"
                     )
                     assert text.startswith("Here"), "Conclusion should start with original text"
+
+
+# ---------------------------------------------------------------------------
+# Tests absorbed from test_content_display.py
+# ---------------------------------------------------------------------------
+
+
+def make_streamer_for_display() -> ResponseStreamer:
+    """Create a ResponseStreamer for _format_diff tests."""
+    provider = make_mock_provider()
+    router = ThreadRouter(provider, "C123")
+    return ResponseStreamer(router, max_inline_chars=2500)
+
+
+class TestFormatDiff:
+    def test_no_change_returns_no_changes_message(self):
+        streamer = make_streamer_for_display()
+        blocks = streamer._format_diff("same", "same", "file.py")
+        assert len(blocks) == 1
+        assert "No changes" in blocks[0]["text"]["text"]
+
+    def test_change_returns_diff_block(self):
+        streamer = make_streamer_for_display()
+        blocks = streamer._format_diff("old line\n", "new line\n", "file.py")
+        assert len(blocks) >= 1
+        assert "file.py" in blocks[0]["text"]["text"]
+
+    def test_diff_contains_code_fence(self):
+        streamer = make_streamer_for_display()
+        blocks = streamer._format_diff("a\n", "b\n", "test.txt")
+        text = blocks[0]["text"]["text"]
+        assert "```" in text
+
+    def test_large_diff_splits_into_multiple_blocks(self):
+        streamer = make_streamer_for_display()
+        old = "\n".join(f"line {i}" for i in range(500))
+        new = "\n".join(f"changed {i}" for i in range(500))
+        blocks = streamer._format_diff(old, new, "big.py")
+        assert len(blocks) >= 1
+        for block in blocks:
+            assert len(block["text"]["text"]) <= 3000
+
+    def test_first_block_has_filename_header(self):
+        streamer = make_streamer_for_display()
+        blocks = streamer._format_diff("a", "b", "myfile.rs")
+        assert "myfile.rs" in blocks[0]["text"]["text"]
+
+
+class TestSplitTextAdditional:
+    """Additional split_text tests absorbed from test_content_display.py."""
+
+    def test_no_newline_split_at_limit(self):
+        text = "x" * 6000
+        chunks = _split_text(text, 3000)
+        assert len(chunks) == 2
+        assert len(chunks[0]) == 3000
+        assert len(chunks[1]) == 3000
+
+    def test_exactly_at_limit_not_split(self):
+        text = "x" * 3000
+        chunks = _split_text(text, 3000)
+        assert len(chunks) == 1
+
+    def test_all_chunks_within_limit(self):
+        import random
+
+        text = "".join(random.choice("abcde\n") for _ in range(10000))
+        chunks = _split_text(text, 3000)
+        for chunk in chunks:
+            assert len(chunk) <= 3000
+
+    def test_even_fence_count_not_modified(self):
+        """Chunks with even fence counts (closed blocks) should not be touched."""
+        text = "```a```\n" * 50 + "\n" + "```b```\n" * 50
+        chunks = _split_text(text, 200)
+        for chunk in chunks:
+            fence_count = chunk.count("```")
+            assert fence_count % 2 == 0

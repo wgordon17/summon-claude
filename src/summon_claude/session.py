@@ -19,17 +19,16 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.channel_manager import ChannelManager, _get_git_branch
 from summon_claude.config import SummonConfig, discover_installed_plugins, get_data_dir
-from summon_claude.content_display import ContentDisplay
 from summon_claude.providers.slack import SlackChatProvider
 from summon_claude.sessions.auth import SessionAuth
 from summon_claude.sessions.commands import CommandContext, CommandRegistry, build_registry
 from summon_claude.sessions.context import ContextUsage
 from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.sessions.registry import SessionRegistry
+from summon_claude.sessions.response import ResponseStreamer
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.mcp import create_summon_mcp_server
 from summon_claude.slack.router import ThreadRouter
-from summon_claude.streamer import ResponseStreamer
 
 if TYPE_CHECKING:
     from summon_claude.event_dispatcher import EventDispatcher
@@ -488,9 +487,10 @@ class SummonSession:
             model=self._model,
         )
 
-        display = ContentDisplay(self._config.max_inline_chars)
         streamer = ResponseStreamer(
-            router=router, display=display, user_id=self._authenticated_user_id
+            router=router,
+            max_inline_chars=self._config.max_inline_chars,
+            user_id=self._authenticated_user_id,
         )
 
         async with ClaudeSDKClient(options) as claude:
@@ -601,7 +601,7 @@ class SummonSession:
 
         async def _do_turn() -> None:
             self._total_turns += 1
-            await router.start_turn(self._total_turns)
+            await streamer.start_turn(self._total_turns)
             await claude.query(message)
             stream_result = await streamer.stream_with_flush(claude.receive_response())
             if stream_result:
@@ -610,7 +610,7 @@ class SummonSession:
                 cost = stream_result.result.total_cost_usd or 0.0
                 self._total_cost += cost
                 await rt.registry.record_turn(self._session_id, cost)
-                summary = router.generate_turn_summary()
+                summary = streamer.finalize_turn()
                 await router.update_turn_summary(summary)
                 if stream_result.context is not None:
                     self._last_context = stream_result.context
