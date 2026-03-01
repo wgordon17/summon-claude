@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from summon_claude.permissions import PermissionHandler
+    from summon_claude.sessions.permissions import PermissionHandler
 
 logger = logging.getLogger(__name__)
 

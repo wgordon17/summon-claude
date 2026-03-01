@@ -10,7 +10,7 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
 from helpers import make_mock_provider
 from summon_claude.config import SummonConfig
-from summon_claude.permissions import PermissionHandler
+from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.slack.router import ThreadRouter
 
 
@@ -103,7 +103,7 @@ class TestTimeoutDeniesAllPending:
         provider.post_ephemeral = AsyncMock()
 
         # Patch the permission timeout to be very short
-        import summon_claude.permissions as perm_module
+        import summon_claude.sessions.permissions as perm_module
 
         original_timeout = perm_module._PERMISSION_TIMEOUT_S
         perm_module._PERMISSION_TIMEOUT_S = 0.2

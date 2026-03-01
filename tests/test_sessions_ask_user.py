@@ -8,7 +8,7 @@ from claude_agent_sdk import PermissionResultAllow
 
 from helpers import make_mock_provider
 from summon_claude.config import SummonConfig
-from summon_claude.permissions import (
+from summon_claude.sessions.permissions import (
     PermissionHandler,
     _build_ask_user_blocks,
 )

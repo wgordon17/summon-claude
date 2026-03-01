@@ -10,7 +10,11 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
 from helpers import make_mock_provider
 from summon_claude.config import SummonConfig
-from summon_claude.permissions import PendingRequest, PermissionHandler, _format_request_summary
+from summon_claude.sessions.permissions import (
+    PendingRequest,
+    PermissionHandler,
+    _format_request_summary,
+)
 from summon_claude.slack.router import ThreadRouter
 
 
@@ -204,27 +208,27 @@ class TestHandleAction:
 
 class TestAutoApproveList:
     def test_list_files_approved(self):
-        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+        from summon_claude.sessions.permissions import _AUTO_APPROVE_TOOLS
 
         assert "ListFiles" in _AUTO_APPROVE_TOOLS
 
     def test_get_symbols_overview_approved(self):
-        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+        from summon_claude.sessions.permissions import _AUTO_APPROVE_TOOLS
 
         assert "GetSymbolsOverview" in _AUTO_APPROVE_TOOLS
 
     def test_find_symbol_approved(self):
-        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+        from summon_claude.sessions.permissions import _AUTO_APPROVE_TOOLS
 
         assert "FindSymbol" in _AUTO_APPROVE_TOOLS
 
     def test_bash_not_approved(self):
-        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+        from summon_claude.sessions.permissions import _AUTO_APPROVE_TOOLS
 
         assert "Bash" not in _AUTO_APPROVE_TOOLS
 
     def test_edit_not_approved(self):
-        from summon_claude.permissions import _AUTO_APPROVE_TOOLS
+        from summon_claude.sessions.permissions import _AUTO_APPROVE_TOOLS
 
         assert "Edit" not in _AUTO_APPROVE_TOOLS
 

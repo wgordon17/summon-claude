@@ -319,7 +319,7 @@ class PermissionHandler:
 
         # Post a persistent confirmation to the turn thread
         try:
-            await self._router.post_to_turn_thread(f"{status_text} by user")
+            await self._router.post_to_active_thread(f"{status_text} by user")
         except Exception as e:
             logger.warning("Failed to post permission confirmation: %s", e)
 
@@ -330,7 +330,7 @@ class PermissionHandler:
     async def _post_timeout_message(self) -> None:
         """Post a message indicating permission timed out."""
         try:
-            await self._router.post_to_turn_thread(
+            await self._router.post_to_active_thread(
                 ":hourglass: Permission request timed out after 5 minutes. Denied.",
             )
         except Exception as e:
@@ -389,7 +389,7 @@ class PermissionHandler:
         self,
         value: str,
         user_id: str,
-        response_url: str = "",
+        response_url: str = "",  # noqa: ARG002
     ) -> None:
         """Handle a Slack button click for an AskUserQuestion option.
 
@@ -568,7 +568,7 @@ def _parse_ask_user_value(value: str) -> tuple[str, int, str] | None:
 async def _post_quietly(router: ThreadRouter, text: str) -> None:
     """Post to the turn thread, swallowing errors."""
     try:
-        await router.post_to_turn_thread(text)
+        await router.post_to_active_thread(text)
     except Exception as e:
         logger.debug("Failed to post ask_user feedback: %s", e)
 
