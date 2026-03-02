@@ -752,7 +752,7 @@ class SummonSession:
                 self._total_cost += cost
                 await rt.registry.record_turn(self._session_id, cost)
                 summary = streamer.finalize_turn()
-                await router.update_turn_summary(summary)
+                await streamer.update_turn_summary(summary)
                 if stream_result.context is not None:
                     self._last_context = stream_result.context
                 if stream_result.model is not None:

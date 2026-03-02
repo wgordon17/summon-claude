@@ -32,7 +32,8 @@ class ChannelRef:
 
 def sanitize_for_mrkdwn(text: str, max_len: int = 100) -> str:
     """Remove mrkdwn-significant characters and newlines to prevent injection."""
-    return text.replace("\n", " ").replace("\r", " ").replace("`", "'").replace("*", "")[:max_len]
+    sanitized = text.replace("\n", " ").replace("\r", " ").replace("`", "'").replace("*", "")
+    return sanitized if max_len >= len(sanitized) else sanitized[:max_len]
 
 
 class SlackClient:

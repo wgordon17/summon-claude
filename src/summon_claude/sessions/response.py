@@ -196,6 +196,14 @@ class ResponseStreamer:
         """Build a concise summary string for the turn starter message."""
         return self._generate_turn_summary()
 
+    async def update_turn_summary(self, summary: str) -> None:
+        """Update the current turn's thread starter message with a summary."""
+        if self._router.active_thread_ref:
+            await self._router.update_message(
+                self._router.active_thread_ref.ts,
+                f"\U0001f527 Turn {self._current_turn_number}: {summary}",
+            )
+
     def _generate_turn_summary(self) -> str:
         """Build a concise summary string for the turn starter message."""
         parts: list[str] = []

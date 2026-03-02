@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
-from helpers import make_mock_provider
+from helpers import make_mock_slack_client
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.permissions import (
     PendingRequest,
@@ -32,11 +32,11 @@ def make_config(debounce_ms=10):
 
 def make_handler(debounce_ms=10, authenticated_user_id="U_TEST"):
     """Create a PermissionHandler with a mocked ThreadRouter."""
-    provider = make_mock_provider()
-    router = ThreadRouter(provider, "C123")
+    client = make_mock_slack_client()
+    router = ThreadRouter(client)
     config = make_config(debounce_ms=debounce_ms)
     handler = PermissionHandler(router, config, authenticated_user_id=authenticated_user_id)
-    return handler, provider, router
+    return handler, client, router
 
 
 def _ephemeral_auto_approve(handler):
@@ -180,7 +180,7 @@ class TestHandleAction:
         )
 
         # Should NOT update the ephemeral message
-        provider.update_message.assert_not_called()
+        provider.update.assert_not_called()
 
     async def test_unknown_action_value_ignored(self):
         handler, provider, _ = make_handler()
@@ -319,7 +319,7 @@ class TestPermissionEphemeral:
         )
 
         assert handler._batch.decisions.get(batch_id) is True
-        provider.update_message.assert_not_called()
+        provider.update.assert_not_called()
 
     async def test_authenticated_user_id_set(self):
         """PermissionHandler should store authenticated_user_id."""
@@ -328,8 +328,8 @@ class TestPermissionEphemeral:
 
     async def test_authenticated_user_id_default(self):
         """PermissionHandler should default authenticated_user_id to empty string."""
-        provider = make_mock_provider()
-        router = ThreadRouter(provider, "C123")
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
         config = make_config()
         handler = PermissionHandler(router, config)
         assert handler._authenticated_user_id == ""

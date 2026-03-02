@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
-from helpers import make_mock_provider
+from helpers import make_mock_slack_client
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.slack.router import ThreadRouter
@@ -26,10 +26,10 @@ def make_config(debounce_ms: int = 50) -> SummonConfig:
 
 
 def make_handler(debounce_ms: int = 50):
-    provider = make_mock_provider()
-    router = ThreadRouter(provider, "C_CHAN")
+    client = make_mock_slack_client()
+    router = ThreadRouter(client)
     config = make_config(debounce_ms=debounce_ms)
-    return PermissionHandler(router, config, authenticated_user_id="U_TEST"), provider, router
+    return PermissionHandler(router, config, authenticated_user_id="U_TEST"), client, router
 
 
 def _auto_approve_after_post(handler: PermissionHandler, delay: float = 0.05):

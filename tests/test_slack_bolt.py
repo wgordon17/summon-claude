@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -480,3 +481,79 @@ class TestBoltRouterHealthMonitor:
         router = _make_router()
         assert router.shutdown_callback is None
         await router._on_reconnect_exhausted()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Daemon watchdog (absorbed from test_health.py)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonWatchdog:
+    """Daemon-level event loop watchdog detects stalls and triggers shutdown."""
+
+    async def test_watchdog_exits_cleanly_on_shutdown(self):
+        """_watchdog_loop should exit cleanly when shutdown_event is set."""
+        from summon_claude.daemon import _watchdog_loop
+
+        shutdown_event = asyncio.Event()
+
+        with patch("summon_claude.daemon._WATCHDOG_CHECK_INTERVAL_S", 0.01):
+
+            async def _trigger_shutdown():
+                await asyncio.sleep(0.02)
+                shutdown_event.set()
+
+            trigger = asyncio.create_task(_trigger_shutdown())
+            await asyncio.wait_for(_watchdog_loop(shutdown_event), timeout=1.0)
+            trigger.cancel()
+
+    async def test_watchdog_detects_long_sleep(self):
+        """If elapsed time greatly exceeds check interval, watchdog sets shutdown."""
+        from summon_claude.daemon import _watchdog_loop
+
+        shutdown_event = asyncio.Event()
+
+        with (
+            patch("summon_claude.daemon._WATCHDOG_CHECK_INTERVAL_S", 0.01),
+            patch("summon_claude.daemon._WATCHDOG_THRESHOLD_S", 0.001),
+        ):
+            await asyncio.wait_for(_watchdog_loop(shutdown_event), timeout=1.0)
+
+        assert shutdown_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# SIGALRM watchdog (absorbed from test_health.py)
+# ---------------------------------------------------------------------------
+
+
+class TestSigAlrmWatchdog:
+    """SIGALRM watchdog arms/disarms correctly on Unix."""
+
+    def test_start_and_disarm_sigalrm(self):
+        """_start_sigalrm_watchdog arms SIGALRM; _disarm_sigalrm_watchdog cancels it."""
+        from summon_claude.daemon import _disarm_sigalrm_watchdog, _start_sigalrm_watchdog
+
+        if not hasattr(signal, "SIGALRM"):
+            pytest.skip("SIGALRM not available on this platform")
+
+        original = signal.getsignal(signal.SIGALRM)
+        try:
+            _start_sigalrm_watchdog()
+            remaining = signal.alarm(0)
+            assert remaining > 0 or remaining == 0  # no exception means success
+
+            _disarm_sigalrm_watchdog()
+            remaining_after = signal.alarm(0)
+            assert remaining_after == 0
+        finally:
+            signal.signal(signal.SIGALRM, original)
+            signal.alarm(0)
+
+    def test_start_sigalrm_no_op_on_no_sigalrm(self):
+        """On platforms without SIGALRM, _start_sigalrm_watchdog is a no-op."""
+        from summon_claude.daemon import _start_sigalrm_watchdog
+
+        with patch("summon_claude.daemon.signal") as mock_signal:
+            del mock_signal.SIGALRM
+            _start_sigalrm_watchdog()  # must not raise

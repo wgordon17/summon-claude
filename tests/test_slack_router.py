@@ -66,62 +66,6 @@ class TestThreadRouterActiveThread:
         assert router.active_thread_ref is None
 
 
-class TestThreadRouterStartTurn:
-    async def test_start_turn_posts_message(self):
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        ts = await router.start_turn(1)
-        assert ts == "1234567890.123456"
-        web.chat_postMessage.assert_called_once()
-        text = web.chat_postMessage.call_args.kwargs["text"]
-        assert "Turn 1" in text
-
-    async def test_start_turn_sets_active_thread(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        ts = await router.start_turn(1)
-        assert router.active_thread_ts == ts
-
-    async def test_start_turn_resets_tool_count(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        await router.start_turn(2)
-        assert router._tool_call_count == 0
-
-    async def test_start_turn_resets_files_touched(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        await router.start_turn(2)
-        assert router._files_touched == []
-
-    async def test_start_turn_sets_turn_number(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        await router.start_turn(5)
-        assert router._current_turn_number == 5
-
-
-class TestThreadRouterUpdateTurnSummary:
-    async def test_update_turn_summary_updates_message(self):
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        await router.start_turn(1)
-        await router.update_turn_summary("2 tool calls · config.py")
-        web.chat_update.assert_called_once()
-        call_kwargs = web.chat_update.call_args.kwargs
-        assert "Turn 1" in call_kwargs["text"]
-        assert "2 tool calls · config.py" in call_kwargs["text"]
-
-    async def test_update_turn_summary_no_op_when_no_turn(self):
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        # Should not raise
-        await router.update_turn_summary("summary")
-        web.chat_update.assert_not_called()
-
-
 class TestThreadRouterPostToMain:
     async def test_post_to_main_no_thread_ts(self):
         client, web = make_mock_client()
@@ -147,10 +91,11 @@ class TestThreadRouterPostToMain:
 
 
 class TestThreadRouterPostToActiveThread:
-    async def test_post_to_active_thread_with_active_turn(self):
+    async def test_post_to_active_thread_with_active_thread(self):
         client, web = make_mock_client()
         router = ThreadRouter(client)
-        await router.start_turn(1)
+        ref = MessageRef(channel_id="C123", ts="1234567890.123456")
+        router.set_active_thread("1234567890.123456", ref)
         await router.post_to_active_thread("Reply in thread")
         call_kwargs = web.chat_postMessage.call_args.kwargs
         assert call_kwargs["thread_ts"] == "1234567890.123456"
@@ -165,18 +110,10 @@ class TestThreadRouterPostToActiveThread:
     async def test_post_to_active_thread_returns_message_ref(self):
         client, _ = make_mock_client()
         router = ThreadRouter(client)
-        await router.start_turn(1)
-        ref = await router.post_to_active_thread("Text")
-        assert isinstance(ref, MessageRef)
-
-    async def test_post_to_turn_thread_alias(self):
-        """post_to_turn_thread should be an alias for post_to_active_thread."""
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        await router.start_turn(1)
-        await router.post_to_turn_thread("alias text")
-        call_kwargs = web.chat_postMessage.call_args.kwargs
-        assert call_kwargs["thread_ts"] == "1234567890.123456"
+        ref = MessageRef(channel_id="C123", ts="1234567890.123456")
+        router.set_active_thread("1234567890.123456", ref)
+        result = await router.post_to_active_thread("Text")
+        assert isinstance(result, MessageRef)
 
 
 class TestThreadRouterPostToSubagentThread:
@@ -191,7 +128,8 @@ class TestThreadRouterPostToSubagentThread:
     async def test_post_to_subagent_thread_falls_back_to_active(self):
         client, web = make_mock_client()
         router = ThreadRouter(client)
-        await router.start_turn(1)
+        ref = MessageRef(channel_id="C123", ts="1234567890.123456")
+        router.set_active_thread("1234567890.123456", ref)
         await router.post_to_subagent_thread("unknown_id", "Text")
         call_kwargs = web.chat_postMessage.call_args.kwargs
         assert call_kwargs["thread_ts"] == "1234567890.123456"
@@ -259,21 +197,14 @@ class TestThreadRouterUploadToActiveThread:
     async def test_upload_to_active_thread(self):
         client, web = make_mock_client()
         router = ThreadRouter(client)
-        await router.start_turn(1)
+        ref = MessageRef(channel_id="C123", ts="1234567890.123456")
+        router.set_active_thread("1234567890.123456", ref)
         await router.upload_to_active_thread("content", "file.txt")
         web.files_upload_v2.assert_called_once()
         call_kwargs = web.files_upload_v2.call_args.kwargs
         assert call_kwargs["content"] == "content"
         assert call_kwargs["filename"] == "file.txt"
         assert call_kwargs["thread_ts"] == "1234567890.123456"
-
-    async def test_upload_to_turn_thread_alias(self):
-        """upload_to_turn_thread should be an alias for upload_to_active_thread."""
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        await router.start_turn(1)
-        await router.upload_to_turn_thread("content", "file.txt")
-        web.files_upload_v2.assert_called_once()
 
 
 class TestThreadRouterPermissionEphemeral:
@@ -288,76 +219,3 @@ class TestThreadRouterPermissionEphemeral:
         assert call_kwargs["channel"] == "C123"
         assert call_kwargs["text"] == "Permission needed"
         assert call_kwargs["blocks"] == blocks
-
-
-class TestThreadRouterRecordToolCall:
-    def test_increments_count(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        assert router._tool_call_count == 1
-
-    def test_extracts_file_paths(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        assert "/src/main.py" in router._files_touched
-
-    def test_deduplicates_files(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        assert router._files_touched.count("/src/main.py") == 1
-
-    def test_ignores_non_path_keys(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Bash", {"command": "git status"})
-        assert len(router._files_touched) == 0
-
-
-class TestThreadRouterGenerateTurnSummary:
-    def test_includes_tool_count(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        router.record_tool_call("Edit", {"path": "/src/config.py"})
-        summary = router.generate_turn_summary()
-        assert "2 tool calls" in summary
-
-    def test_singular_tool(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        summary = router.generate_turn_summary()
-        assert "1 tool call" in summary
-
-    def test_includes_file_names(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        summary = router.generate_turn_summary()
-        assert "main.py" in summary
-
-    def test_limits_files_to_3(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        for i in range(5):
-            router.record_tool_call("Read", {"file_path": f"/src/file{i}.py"})
-        summary = router.generate_turn_summary()
-        assert "+2 more" in summary
-
-    def test_no_tools_returns_processing(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        summary = router.generate_turn_summary()
-        assert summary == "Processing..."
-
-    def test_uses_separator(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        router.record_tool_call("Read", {"file_path": "/src/main.py"})
-        router.record_tool_call("Edit", {"path": "/src/config.py"})
-        summary = router.generate_turn_summary()
-        assert " · " in summary

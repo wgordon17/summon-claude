@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
-from helpers import make_mock_provider
+from helpers import make_mock_slack_client
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.response import ResponseStreamer, StreamResult, _format_tool_summary
 from summon_claude.sessions.response import split_text as _split_text
@@ -26,11 +26,11 @@ def make_config(**overrides) -> SummonConfig:
 
 
 def make_streamer() -> tuple[ResponseStreamer, ThreadRouter, AsyncMock]:
-    """Create a ResponseStreamer with a mocked provider."""
-    provider = make_mock_provider()
-    router = ThreadRouter(provider, "C123")
+    """Create a ResponseStreamer with a mocked SlackClient."""
+    client = make_mock_slack_client()
+    router = ThreadRouter(client)
     streamer = ResponseStreamer(router)
-    return streamer, router, provider
+    return streamer, router, client
 
 
 def make_text_block(text: str) -> TextBlock:
@@ -75,7 +75,7 @@ class TestResponseStreamerStream:
         ]
         await streamer.stream_with_flush(agen(messages))
         # Text should be posted to main channel
-        provider.post_message.assert_called()
+        provider.post.assert_called()
 
     async def test_returns_result_message(self):
         streamer, router, provider = make_streamer()
@@ -104,7 +104,7 @@ class TestResponseStreamerStream:
         ]
         await streamer.stream_with_flush(agen(messages))
         # Should have posted at least one message
-        assert provider.post_message.call_count >= 1
+        assert provider.post.call_count >= 1
 
     async def test_result_summary_posted(self):
         """Result summary should be posted on ResultMessage."""
@@ -112,7 +112,7 @@ class TestResponseStreamerStream:
         messages = [make_result_message(cost=0.0123, turns=3)]
         await streamer.stream_with_flush(agen(messages))
         # Should post the summary
-        assert provider.post_message.call_count >= 1
+        assert provider.post.call_count >= 1
 
     async def test_long_text_triggers_new_message(self):
         """Long text should trigger multiple messages."""
@@ -123,7 +123,7 @@ class TestResponseStreamerStream:
             make_result_message(),
         ]
         await streamer.stream_with_flush(agen(messages))
-        assert provider.post_message.call_count >= 1
+        assert provider.post.call_count >= 1
 
     async def test_text_after_tool_use_goes_to_main_on_result(self):
         """Text after tool use should be buffered and flushed to main on ResultMessage."""
@@ -135,7 +135,7 @@ class TestResponseStreamerStream:
         ]
         await streamer.stream_with_flush(agen(messages))
         # Should have posted multiple messages (tool + conclusion)
-        assert provider.post_message.call_count >= 2
+        assert provider.post.call_count >= 2
 
     async def test_text_before_tool_goes_to_main(self):
         """Text before tool use should go to main channel."""
@@ -147,7 +147,7 @@ class TestResponseStreamerStream:
         ]
         await streamer.stream_with_flush(agen(messages))
         # Should post text to main and tool to thread
-        assert provider.post_message.call_count >= 2
+        assert provider.post.call_count >= 2
 
     async def test_empty_buffer_not_posted(self):
         """Empty buffers should not be posted."""
@@ -155,7 +155,7 @@ class TestResponseStreamerStream:
         messages = [make_result_message()]
         await streamer.stream_with_flush(agen(messages))
         # Only result summary should be posted (with blocks)
-        assert provider.post_message.call_count >= 1
+        assert provider.post.call_count >= 1
 
 
 class TestResponseStreamerStreamWithFlush:
@@ -177,7 +177,7 @@ class TestResponseStreamerStreamWithFlush:
             make_result_message(),
         ]
         await streamer.stream_with_flush(agen(messages))
-        assert provider.post_message.call_count >= 1
+        assert provider.post.call_count >= 1
 
 
 class TestResponseStreamerSubagentThreads:
@@ -215,7 +215,7 @@ class TestResponseStreamerSubagentThreads:
         await streamer.stream_with_flush(agen(messages))
 
         # Should have posted to subagent thread
-        provider.post_message.assert_called()
+        provider.post.assert_called()
 
 
 class TestFormatToolSummary:
@@ -275,7 +275,7 @@ class TestBUG029ResultMessageWithOutput:
         await streamer.stream_with_flush(agen(messages))
 
         # The result is posted via post_to_main, verify it was called at least once
-        assert provider.post_message.call_count >= 1
+        assert provider.post.call_count >= 1
 
     async def test_result_message_without_output_no_extra_post(self):
         """When ResultMessage.result is None, only summary should be posted."""
@@ -287,7 +287,7 @@ class TestBUG029ResultMessageWithOutput:
         await streamer.stream_with_flush(agen(messages))
 
         # Should post the summary (divider + context block)
-        assert provider.post_message.call_count >= 1
+        assert provider.post.call_count >= 1
 
 
 class TestBUG028ResolvedModelTracking:
@@ -364,14 +364,14 @@ class TestBug025ResponseDuplication:
         await streamer.stream_with_flush(agen(messages))
 
         # Extract all calls to post_message to check thread_ts patterns
-        calls = provider.post_message.call_args_list
+        calls = provider.post.call_args_list
 
         # Find thread posts (those with thread_ts argument)
         thread_posts = [call for call in calls if call.kwargs.get("thread_ts")]
 
         # Verify no thread post contains the conclusion text
         for call in thread_posts:
-            call_text = call.args[1] if len(call.args) > 1 else ""
+            call_text = call.args[0] if call.args else ""
             assert conclusion_text not in call_text
 
     async def test_post_tool_text_flushed_to_main(self):
@@ -386,13 +386,13 @@ class TestBug025ResponseDuplication:
         await streamer.stream_with_flush(agen(messages))
 
         # Extract all calls to post_message
-        calls = provider.post_message.call_args_list
+        calls = provider.post.call_args_list
 
         # Find main channel posts (those WITHOUT thread_ts)
         main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
 
         # Verify the conclusion text appears in a main post
-        main_texts = [call.args[1] for call in main_posts if len(call.args) > 1]
+        main_texts = [call.args[0] for call in main_posts if call.args]
         assert any(conclusion_text in t for t in main_texts), (
             f"Conclusion text not found in main posts: {main_texts}"
         )
@@ -414,10 +414,10 @@ class TestBug025ResponseDuplication:
         await streamer.stream_with_flush(agen(messages))
 
         # Check that conclusion contains both parts concatenated
-        calls = provider.post_message.call_args_list
+        calls = provider.post.call_args_list
         main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
 
-        full_text = "".join(call.args[1] if len(call.args) > 1 else "" for call in main_posts)
+        full_text = "".join(call.args[0] if call.args else "" for call in main_posts)
         assert "Part 1" in full_text
         assert "Part 2" in full_text
 
@@ -433,11 +433,11 @@ class TestBug025ResponseDuplication:
         await streamer.stream_with_flush(agen(messages))
 
         # Extract main channel posts
-        calls = provider.post_message.call_args_list
+        calls = provider.post.call_args_list
         main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
 
         # Verify pre-tool text appears in main
-        main_texts = [call.args[1] for call in main_posts if len(call.args) > 1]
+        main_texts = [call.args[0] for call in main_posts if call.args]
         assert any(pre_tool_text in t for t in main_texts), (
             f"Pre-tool text not found in main posts: {main_texts}"
         )
@@ -457,7 +457,7 @@ class TestBug025ResponseDuplication:
         assert streamer._turn.last_message_ts is not None
 
         # add_reaction should have been called (checkmark on conclusion or result)
-        assert provider.add_reaction.called
+        assert provider.react.called
 
 
 class TestStreamResult:
@@ -552,8 +552,8 @@ class TestResponseStreamerUserPing:
 
     async def test_conclusion_ping_with_user_id(self):
         """Conclusion text should be prefixed with <@user_id> ping when user_id is set."""
-        provider = make_mock_provider()
-        router = ThreadRouter(provider, "C123")
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
         streamer = ResponseStreamer(router, user_id="U_TESTUSER")
 
         tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
@@ -565,21 +565,18 @@ class TestResponseStreamerUserPing:
         await streamer.stream_with_flush(agen(messages))
 
         # Find the call that posts conclusion text (should be after tool use)
-        calls = [call for call in provider.post_message.call_args_list if len(call[0]) >= 2]
-        # Last non-result call should have the ping
         found_ping = False
-        for call in calls:
-            if len(call[0]) >= 2:
-                text = call[0][1]
-                if "analysis" in text and "<@U_TESTUSER>" in text:
-                    found_ping = True
-                    break
+        for call in client.post.call_args_list:
+            text = call.args[0] if call.args else ""
+            if "analysis" in text and "<@U_TESTUSER>" in text:
+                found_ping = True
+                break
         assert found_ping, "Conclusion text should contain user ping <@U_TESTUSER>"
 
     async def test_conclusion_no_ping_without_user_id(self):
         """Conclusion text should not be modified when user_id is None."""
-        provider = make_mock_provider()
-        router = ThreadRouter(provider, "C123")
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
         streamer = ResponseStreamer(router, user_id=None)
 
         tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
@@ -591,16 +588,14 @@ class TestResponseStreamerUserPing:
         await streamer.stream_with_flush(agen(messages))
 
         # Check that conclusion text doesn't have a ping prefix
-        calls = [call for call in provider.post_message.call_args_list if len(call[0]) >= 2]
-        for call in calls:
-            if len(call[0]) >= 2:
-                text = call[0][1]
-                if "analysis" in text:
-                    # Should not start with a user ping
-                    assert not text.startswith("<@"), (
-                        "Conclusion without user_id should not have ping prefix"
-                    )
-                    assert text.startswith("Here"), "Conclusion should start with original text"
+        for call in client.post.call_args_list:
+            text = call.args[0] if call.args else ""
+            if "analysis" in text:
+                # Should not start with a user ping
+                assert not text.startswith("<@"), (
+                    "Conclusion without user_id should not have ping prefix"
+                )
+                assert text.startswith("Here"), "Conclusion should start with original text"
 
 
 # ---------------------------------------------------------------------------
@@ -610,8 +605,8 @@ class TestResponseStreamerUserPing:
 
 def make_streamer_for_display() -> ResponseStreamer:
     """Create a ResponseStreamer for _format_diff tests."""
-    provider = make_mock_provider()
-    router = ThreadRouter(provider, "C123")
+    client = make_mock_slack_client()
+    router = ThreadRouter(client)
     return ResponseStreamer(router, max_inline_chars=2500)
 
 

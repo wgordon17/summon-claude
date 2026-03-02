@@ -6,7 +6,7 @@ import asyncio
 
 from claude_agent_sdk import PermissionResultAllow
 
-from helpers import make_mock_provider
+from helpers import make_mock_slack_client
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.permissions import (
     PermissionHandler,
@@ -27,10 +27,10 @@ def _make_config():
 
 
 def _make_handler():
-    provider = make_mock_provider()
-    router = ThreadRouter(provider, "C123")
+    client = make_mock_slack_client()
+    router = ThreadRouter(client)
     config = _make_config()
-    return PermissionHandler(router, config, authenticated_user_id="U1"), provider, router
+    return PermissionHandler(router, config, authenticated_user_id="U1"), client, router
 
 
 def _get_actions_block(blocks: list[dict], idx: int = 0) -> dict:
@@ -47,7 +47,7 @@ def _extract_request_id(provider) -> str:
             for b in blocks:
                 if b["type"] == "actions":
                     return b["elements"][0]["value"].split("|")[0]
-    for call in provider.post_message.call_args_list:
+    for call in provider.post.call_args_list:
         blocks = call.kwargs.get("blocks")
         if blocks:
             for b in blocks:
