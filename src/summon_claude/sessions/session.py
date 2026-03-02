@@ -305,7 +305,7 @@ class SummonSession:
         self._resume = options.resume
 
         self._auth: SessionAuth | None = auth
-        self._command_registry: CommandRegistry = build_registry()
+        self._command_registry: CommandRegistry | None = None
         self._session_start_time: datetime = datetime.now(UTC)
 
         # Shared web_client and dispatcher from the daemon (None for standalone/test use)
@@ -338,7 +338,6 @@ class SummonSession:
         self._abort_event = asyncio.Event()
 
         # Session state
-        self._claude_session_id: str | None = None
         self._last_heartbeat_time: float = 0.0
         self._channel_id: str | None = None  # set after channel creation
 
@@ -627,7 +626,6 @@ class SummonSession:
 
         streamer = ResponseStreamer(
             router=router,
-            max_inline_chars=self._config.max_inline_chars,
             user_id=self._authenticated_user_id,
         )
 
@@ -640,7 +638,6 @@ class SummonSession:
                     if server_info:
                         claude_session_id = server_info.get("session_id", "")
                         if claude_session_id:
-                            self._claude_session_id = claude_session_id
                             await rt.registry.update_status(
                                 self._session_id, "active", claude_session_id=claude_session_id
                             )
@@ -927,9 +924,6 @@ class SummonSession:
     ) -> None:
         """Dispatch a !-prefixed command and post the result as a threaded reply."""
         ctx = CommandContext(
-            channel_id=rt.client.channel_id,
-            thread_ts=thread_ts,
-            user_id=user_id,
             turns=self._total_turns,
             cost_usd=self._total_cost,
             start_time=self._session_start_time,

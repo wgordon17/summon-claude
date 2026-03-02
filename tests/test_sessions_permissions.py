@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
 from helpers import make_mock_slack_client
@@ -239,7 +238,6 @@ class TestFormatRequestSummary:
             request_id="r1",
             tool_name="Bash",
             input_data={"command": "git status"},
-            context=None,
         )
         summary = _format_request_summary(req)
         assert "git status" in summary
@@ -249,7 +247,6 @@ class TestFormatRequestSummary:
             request_id="r2",
             tool_name="Bash",
             input_data={"command": "x" * 200},
-            context=None,
         )
         summary = _format_request_summary(req)
         assert len(summary) < 200  # should be truncated
@@ -259,7 +256,6 @@ class TestFormatRequestSummary:
             request_id="r3",
             tool_name="Write",
             input_data={"file_path": "/tmp/output.txt"},
-            context=None,
         )
         summary = _format_request_summary(req)
         assert "/tmp/output.txt" in summary
@@ -269,7 +265,6 @@ class TestFormatRequestSummary:
             request_id="r4",
             tool_name="Edit",
             input_data={"path": "/src/main.py"},
-            context=None,
         )
         summary = _format_request_summary(req)
         assert "/src/main.py" in summary
@@ -279,7 +274,6 @@ class TestFormatRequestSummary:
             request_id="r5",
             tool_name="NotebookEdit",
             input_data={"notebook_path": "/notebooks/analysis.ipynb"},
-            context=None,
         )
         summary = _format_request_summary(req)
         assert "analysis.ipynb" in summary
@@ -289,7 +283,6 @@ class TestFormatRequestSummary:
             request_id="r6",
             tool_name="CustomTool",
             input_data={"key": "value"},
-            context=None,
         )
         summary = _format_request_summary(req)
         assert isinstance(summary, str)

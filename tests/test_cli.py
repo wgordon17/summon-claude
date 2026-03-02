@@ -567,7 +567,7 @@ def _start_patches(update_info=None):
         patch("summon_claude.cli.SummonConfig.from_file", return_value=_mock_config())
     )
     # Patch daemon interaction so tests don't try to fork/connect.
-    stack.enter_context(patch("summon_claude.cli._ensure_daemon", return_value=None))
+    stack.enter_context(patch("summon_claude.cli.start_daemon", return_value=None))
     stack.enter_context(
         patch(
             "summon_claude.cli.daemon_client.create_session",

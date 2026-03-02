@@ -59,7 +59,6 @@ class PendingRequest:
     request_id: str
     tool_name: str
     input_data: dict[str, Any]
-    context: ToolPermissionContext | None
     result_event: asyncio.Event = field(default_factory=asyncio.Event)
     approved: bool = False
 
@@ -106,7 +105,6 @@ class PermissionHandler:
         authenticated_user_id: str = "",
     ) -> None:
         self._router = router
-        self._config = config
         self._authenticated_user_id = authenticated_user_id
         self._debounce_ms = config.permission_debounce_ms
 
@@ -168,7 +166,6 @@ class PermissionHandler:
             request_id=request_id,
             tool_name=tool_name,
             input_data=input_data,
-            context=context,
         )
 
         async with self._batch_lock:
@@ -269,10 +266,10 @@ class PermissionHandler:
         ]
 
         try:
-            await self._router.post_permission_ephemeral(
+            await self._router.client.post_ephemeral(
                 self._authenticated_user_id,
                 f"Permission required: {header_text[:100]}",
-                blocks,
+                blocks=blocks,
             )
         except Exception as e:
             logger.error("Failed to post permission message: %s", e)
@@ -358,10 +355,10 @@ class PermissionHandler:
 
         blocks = _build_ask_user_blocks(request_id, questions)
         try:
-            await self._router.post_permission_ephemeral(
+            await self._router.client.post_ephemeral(
                 self._authenticated_user_id,
                 "Claude has a question for you",
-                blocks,
+                blocks=blocks,
             )
         except Exception as e:
             logger.error("Failed to post AskUserQuestion message: %s", e)
@@ -431,10 +428,10 @@ class PermissionHandler:
         q_text = sanitize_for_mrkdwn(question.get("question", ""))
         # Post as ephemeral to main channel so the user sees the prompt prominently
         try:
-            await self._router.post_permission_ephemeral(
+            await self._router.client.post_ephemeral(
                 self._authenticated_user_id,
                 f":pencil: Type your answer for: _{q_text}_",
-                [],
+                blocks=[],
             )
         except Exception as e:
             logger.debug("Failed to post 'Other' prompt: %s", e)

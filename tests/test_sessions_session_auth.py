@@ -6,8 +6,6 @@ import asyncio
 import logging
 from unittest.mock import patch
 
-import pytest
-
 from summon_claude.sessions.session import SummonSession
 
 

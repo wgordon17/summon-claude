@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -21,9 +20,6 @@ def make_context():
 
     def _make(**overrides):
         defaults = {
-            "channel_id": "C123",
-            "thread_ts": "100.000",
-            "user_id": "U123",
             "session_id": "test-session",
             "model": "sonnet",
             "turns": 5,

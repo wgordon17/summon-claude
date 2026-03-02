@@ -289,7 +289,7 @@ class SessionManager:
                     "sessions": [
                         {
                             "session_id": sid,
-                            "channel_id": getattr(s, "channel_id", None),
+                            "channel_id": s.channel_id,
                         }
                         for sid, s in self._sessions.items()
                     ],
@@ -336,14 +336,13 @@ class SessionManager:
                         exc_info=True,
                     )
                     # Best-effort: post error notice to the session channel
-                    channel_id = getattr(session, "channel_id", None)
-                    if channel_id:
+                    if session.channel_id:
                         with contextlib.suppress(Exception):
                             safe_msg = _SECRET_PATTERN.sub(
                                 "***", f":x: Session terminated unexpectedly: {e}"
                             )
                             await self._web_client.chat_postMessage(
-                                channel=channel_id,
+                                channel=session.channel_id,
                                 text=safe_msg,
                             )
                     break
@@ -353,10 +352,8 @@ class SessionManager:
         session = self._sessions.pop(session_id, None)
         self._tasks.pop(session_id, None)
 
-        if session is not None:
-            channel_id = getattr(session, "channel_id", None)
-            if channel_id:
-                self._dispatcher.unregister(channel_id)
+        if session is not None and session.channel_id:
+            self._dispatcher.unregister(session.channel_id)
 
         # Log unexpected task exceptions (CancelledError is expected on shutdown)
         if not task.cancelled():

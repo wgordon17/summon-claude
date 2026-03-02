@@ -17,7 +17,10 @@ from summon_claude.cli import cli
 
 
 def _mock_registry(**overrides: object) -> AsyncMock:
-    """Build an AsyncMock that acts as SessionRegistry async context manager."""
+    """Build an AsyncMock that acts as SessionRegistry async context manager.
+
+    NOTE: Duplicated from test_cli.py — consider extracting to tests/helpers.py.
+    """
     reg = AsyncMock()
     reg.list_active = AsyncMock(return_value=overrides.get("active", []))
     reg.list_all = AsyncMock(return_value=overrides.get("all", []))

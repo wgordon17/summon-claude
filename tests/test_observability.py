@@ -18,8 +18,6 @@ from summon_claude.sessions.session import SessionIdFilter, _session_id_var
 class TestQueueBackpressure:
     def test_queue_has_maxsize_100(self):
         """SummonSession._message_queue must have maxsize=100 for backpressure."""
-        from unittest.mock import MagicMock
-
         from summon_claude.sessions.auth import SessionAuth
         from summon_claude.sessions.session import SessionOptions, SummonSession
 

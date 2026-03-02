@@ -41,8 +41,6 @@ class TestIsDaemonRunning:
 
     def test_returns_false_when_socket_exists_but_refused(self, tmp_path):
         """Socket file present but connection refused → daemon not running."""
-        import socket as _socket
-
         with _patch_data_dir(tmp_path):
             sock_path = tmp_path / "daemon.sock"
             sock_path.touch()

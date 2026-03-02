@@ -24,9 +24,6 @@ class CommandResult:
 class CommandContext:
     """Context passed to command handlers."""
 
-    channel_id: str
-    thread_ts: str | None
-    user_id: str
     turns: int = 0
     cost_usd: float = 0.0
     start_time: datetime | None = None

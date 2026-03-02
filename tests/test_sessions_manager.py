@@ -554,6 +554,13 @@ class TestControlAPI:
         assert response["type"] == "error"
         assert "fly_to_moon" in response["message"]
 
+    async def test_dispatch_stop_session_missing_id(self):
+        """stop_session without session_id returns an error."""
+        manager, _, _ = _make_manager()
+        response = await manager._dispatch_control({"type": "stop_session"})
+        assert response["type"] == "error"
+        assert "session_id" in response["message"].lower()
+
     async def test_dispatch_stop_session_not_found(self):
         """stop_session for unknown id returns found=False."""
         manager, _, _ = _make_manager()

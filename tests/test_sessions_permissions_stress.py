@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
 from helpers import make_mock_slack_client

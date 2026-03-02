@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from summon_claude.slack.client import MessageRef, SlackClient
+from summon_claude.slack.client import SlackClient
 from summon_claude.slack.mcp import create_summon_mcp_server, create_summon_mcp_tools
 
 

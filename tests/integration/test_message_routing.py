@@ -40,15 +40,6 @@ class TestThreadRouter:
         reply_timestamps = [m["ts"] for m in replies["messages"]]
         assert reply.ts in reply_timestamps
 
-    async def test_post_permission_ephemeral(self, thread_router, slack_harness):
-        bot_id = await slack_harness.resolve_bot_user_id()
-        # Ephemeral — just verify no error
-        await thread_router.post_permission_ephemeral(
-            bot_id,
-            "Permission prompt",
-            [{"type": "section", "text": {"type": "mrkdwn", "text": "Approve?"}}],
-        )
-
     async def test_active_thread_isolation(
         self, thread_router, test_channel, slack_harness, slack_client
     ):
@@ -144,18 +135,3 @@ class TestConclusionMention:
         )
         msg_text = history["messages"][0]["text"]
         assert "<@" not in msg_text
-
-    async def test_turn_summary_update(
-        self, thread_router, test_channel, slack_harness, slack_client
-    ):
-        """Turn starter message should be updatable with summary."""
-        ref = await slack_client.post("\U0001f527 Turn 1: Processing...")
-        thread_router.set_active_thread(ref.ts, ref)
-
-        await thread_router.update_message(ref.ts, "\U0001f527 Turn 1: 2 tool calls · test.py")
-
-        history = await slack_harness.client.conversations_history(
-            channel=test_channel, latest=ref.ts, inclusive=True, limit=1
-        )
-        msg_text = history["messages"][0]["text"]
-        assert "2 tool calls" in msg_text

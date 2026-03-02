@@ -112,7 +112,6 @@ class DaemonAlreadyRunningError(Exception):
 
     def __init__(self, pid_file: Path) -> None:
         super().__init__(f"Daemon already running (see {pid_file})")
-        self.pid_file = pid_file
 
 
 # ---------------------------------------------------------------------------

@@ -168,11 +168,9 @@ class ResponseStreamer:
     def __init__(
         self,
         router: ThreadRouter,
-        max_inline_chars: int = 2500,
         user_id: str | None = None,
     ) -> None:
         self._router = router
-        self._max_inline = max_inline_chars
         self._user_id = user_id
 
         # Per-turn routing state (reset on each stream call)
@@ -198,7 +196,7 @@ class ResponseStreamer:
     async def update_turn_summary(self, summary: str) -> None:
         """Update the current turn's thread starter message with a summary."""
         if self._router.active_thread_ref:
-            await self._router.update_message(
+            await self._router.client.update(
                 self._router.active_thread_ref.ts,
                 f"\U0001f527 Turn {self._current_turn_number}: {summary}",
             )
@@ -265,11 +263,6 @@ class ResponseStreamer:
             return StreamResult(result=result, context=context, model=model)
 
         return None
-
-    @property
-    def resolved_model(self) -> str | None:
-        """Return the model name resolved from the first AssistantMessage, if any."""
-        return self._turn.resolved_model
 
     async def _handle_assistant_message(self, message: AssistantMessage) -> None:
         """Process content blocks from an AssistantMessage."""
@@ -379,7 +372,7 @@ class ResponseStreamer:
 
         if stored_ts:
             try:
-                await self._router.update_message(stored_ts, text)
+                await self._router.client.update(stored_ts, text)
             except Exception as e:
                 logger.warning("Failed to update message: %s — posting new", e)
                 ref = await post_fn(text)
@@ -465,7 +458,7 @@ class ResponseStreamer:
         # Add a reaction to the last text message
         if self._turn.last_message_ts:
             try:
-                await self._router.react(
+                await self._router.client.react(
                     self._turn.last_message_ts,
                     "white_check_mark",
                 )

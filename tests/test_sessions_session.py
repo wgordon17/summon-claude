@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.auth import SessionAuth
+from summon_claude.sessions.commands import build_registry
 from summon_claude.sessions.session import (
     SessionOptions,
     SummonSession,
@@ -573,6 +574,7 @@ class TestProcessIncomingEvent:
         """A normal user message returns (full_text, thread_ts)."""
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
+        session._command_registry = build_registry()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "Hello Claude", "ts": "123.456"}
@@ -619,6 +621,7 @@ class TestProcessIncomingEvent:
 
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
+        session._command_registry = build_registry()
         rt = self._make_rt()
 
         long_text = "x" * (_MAX_USER_MESSAGE_CHARS + 100)
@@ -634,6 +637,7 @@ class TestProcessIncomingEvent:
         """File attachments are appended to the text."""
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
+        session._command_registry = build_registry()
         rt = self._make_rt()
 
         event = {
@@ -669,6 +673,7 @@ class TestProcessIncomingEvent:
         """Messages with ! prefix are dispatched as commands and return None."""
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
+        session._command_registry = build_registry()
         rt = self._make_rt()
 
         # Mock _dispatch_command to avoid real execution
@@ -683,6 +688,7 @@ class TestProcessIncomingEvent:
         """A message without ! prefix is returned as-is for Claude."""
         config = make_config()
         session = SummonSession(config, make_options(), auth=make_auth())
+        session._command_registry = build_registry()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "What is 2+2?", "ts": "789"}

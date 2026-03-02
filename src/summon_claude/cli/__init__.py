@@ -49,12 +49,8 @@ def _print_auth_banner(short_code: str) -> None:
     click.echo(f"{border}\n")
 
 
-def _setup_logging(verbose: bool = False, log_file: pathlib.Path | None = None) -> None:
-    """Configure logging. Idempotent — safe to call multiple times.
-
-    First call (from cli()): sets up console handler only.
-    Second call (from cmd_start()): adds file handler for session diagnostics.
-    """
+def _setup_logging(verbose: bool = False) -> None:
+    """Configure logging. Idempotent — safe to call multiple times."""
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
 
@@ -70,16 +66,6 @@ def _setup_logging(verbose: bool = False, log_file: pathlib.Path | None = None) 
         console.setLevel(logging.DEBUG if verbose else logging.WARNING)
         console.setFormatter(fmt)
         root.addHandler(console)
-
-    # Add file handler if requested and not already attached
-    if log_file:
-        has_file = any(isinstance(h, logging.FileHandler) for h in root.handlers)
-        if not has_file:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            fh = logging.FileHandler(log_file)
-            fh.setLevel(logging.DEBUG if verbose else logging.INFO)
-            fh.setFormatter(fmt)
-            root.addHandler(fh)
 
     if not verbose:
         logging.getLogger("asyncio").setLevel(logging.WARNING)
@@ -147,8 +133,6 @@ def cli(
 
     ctx.ensure_object(dict)
     ctx.obj["quiet"] = quiet
-    ctx.obj["verbose"] = verbose
-    ctx.obj["no_color"] = no_color or bool(os.environ.get("NO_COLOR", ""))
     ctx.obj["config_path"] = config_path
 
 
@@ -245,8 +229,6 @@ def cmd_start(
 
     try:
         asyncio.run(_async_cmd_start(config, resolved_cwd, resolved_name, model, resume))
-    except SystemExit:
-        raise
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -274,7 +256,7 @@ async def _async_cmd_start(
 
     # Phase 1: Ensure daemon is running (auto-start if not)
     try:
-        _ensure_daemon(config)
+        start_daemon(config)
     except Exception as e:
         click.echo(f"Error starting daemon: {e}", err=True)
         raise SystemExit(1) from e
@@ -288,15 +270,6 @@ async def _async_cmd_start(
 
     # Phase 3: Print auth banner so user can authenticate via Slack
     _print_auth_banner(short_code)
-
-
-def _ensure_daemon(config: SummonConfig) -> None:
-    """Start the daemon if it is not already running."""
-    if not is_daemon_running():
-        logger.debug("Daemon not running — starting")
-        start_daemon(config)
-    else:
-        logger.debug("Daemon already running")
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +391,7 @@ async def _async_session_list(ctx: click.Context, show_all: bool, output: str) -
     default="table",
     help="Output format",
 )
-@click.pass_context
-def session_info(ctx: click.Context, session_id: str, output: str) -> None:
+def session_info(session_id: str, output: str) -> None:
     """Show detailed information for a specific session."""
     asyncio.run(_async_session_info(session_id, output))
 

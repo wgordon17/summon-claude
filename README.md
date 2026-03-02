@@ -197,17 +197,28 @@ A local `.env` in the project directory overrides the config file.
                            │ Socket Mode
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    SummonSession (Orchestrator)                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │ Claude SDK  │  Slack Bolt  │  Auth  │  Permissions       │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-           │                               │
-           ▼                               ▼
-┌──────────────────────┐      ┌──────────────────────┐
-│   Claude SDK         │      │   ChatProvider       │
-│   (streaming)        │      │   (Slack adapter)    │
-└──────────────────────┘      └──────────────────────┘
+│  BoltRouter (single Bolt app for the daemon)                    │
+│  Rate limiter · Health monitor · Event routing                  │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  EventDispatcher (routes events by channel → session)            │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+┌──────────────────┐ ┌──────────┐ ┌──────────┐
+│  SessionManager  │ │ Session  │ │ Session  │  (N concurrent sessions)
+│  IPC · lifecycle │ │          │ │          │
+└──────────────────┘ └─────┬────┘ └──────────┘
+                           │
+           ┌───────────────┼───────────────┐
+           ▼               ▼               ▼
+  ┌──────────────┐  ┌─────────────┐  ┌───────────────┐
+  │  SlackClient │  │ ThreadRouter│  │ ResponseStream│
+  │  (output)    │  │ (routing)   │  │ (streaming)   │
+  └──────────────┘  └─────────────┘  └───────────────┘
 ```
 
 ### Threading Model
@@ -221,32 +232,33 @@ Messages are organized into threads to keep the main channel clean:
 
 This structure keeps the main conversation readable while preserving full context in threads.
 
-### Provider Abstraction
+### Slack Integration
 
-All Slack API calls go through a `ChatProvider` protocol, enabling future support for Discord, Teams, or CLI providers without changing core routing logic. The `SlackChatProvider` implements this protocol for Slack.
+Slack input flows through `BoltRouter` (a single shared Bolt app per daemon), which dispatches events to sessions via `EventDispatcher`. Slack output goes through `SlackClient` (channel-bound posting, reactions, file uploads) and `ThreadRouter` (thread-aware message routing to main channel, turn threads, and subagent threads).
 
 ### Modules
 
 | Module | Purpose |
 |--------|---------|
-| `cli.py` | CLI entry point: global flags (--version, --quiet, --no-color, --config), subcommands |
-| `cli_config.py` | Config subcommand handlers: show, path, edit, set, check |
 | `config.py` | pydantic-settings config with XDG path resolution and plugin discovery |
-| `auth.py` | 8-char hex short codes with 5-min TTL, brute-force protection (5 attempts) |
-| `registry.py` | SQLite session registry with WAL mode, heartbeat, audit log |
-| `channel_manager.py` | Slack channel create/archive/header with collision handling |
-| `permissions.py` | Debounced permission batching with Slack interactive buttons |
-| `content_display.py` | Hybrid inline/file upload display with diff formatting |
-| `streamer.py` | Claude response streaming to Slack with threaded routing |
-| `thread_router.py` | Routes content to main channel, turn threads, and subagent threads |
-| `commands.py` | `!`-prefixed command dispatch: local handlers, passthrough, blocking, aliasing |
-| `session.py` | Core orchestrator: ties all modules together |
-| `mcp_tools.py` | In-process MCP server: `slack_upload_file`, `slack_create_thread`, `slack_react`, `slack_post_snippet` |
-| `providers/base.py` | ChatProvider protocol and message/channel abstractions |
-| `providers/slack.py` | SlackChatProvider implementation for Slack API calls |
-| `rate_limiter.py` | Per-key cooldown rate limiter for slash command spam protection |
-| `update_check.py` | PyPI update checker with 24h cache, shown on `summon start` |
-| `_formatting.py` | Slack mrkdwn formatting helpers and tool argument extraction |
+| `daemon.py` | Unix daemon with PID/lock management, IPC framing |
+| `event_dispatcher.py` | Routes Slack events to session handles by channel |
+| `cli/__init__.py` | CLI entry point: global flags, subcommands, daemon interaction |
+| `cli/config.py` | Config subcommand handlers: show, path, edit, set, check |
+| `cli/daemon_client.py` | Typed async client for daemon Unix socket control API |
+| `cli/update_check.py` | PyPI update checker with 24h cache, shown on `summon start` |
+| `sessions/session.py` | Session orchestrator: ties Claude SDK + Slack + permissions + streaming together |
+| `sessions/manager.py` | Session lifecycle, IPC control plane, daemon coordination |
+| `sessions/response.py` | Response streaming, text splitting, turn summaries |
+| `sessions/permissions.py` | Debounced permission batching with Slack interactive buttons |
+| `sessions/auth.py` | 8-char hex short codes with 5-min TTL, brute-force protection (5 attempts) |
+| `sessions/commands.py` | `!`-prefixed command dispatch: local handlers, passthrough, blocking, aliasing |
+| `sessions/context.py` | Context window usage tracking |
+| `sessions/registry.py` | SQLite session registry with WAL mode, heartbeat, audit log |
+| `slack/bolt.py` | Slack Bolt app, rate limiter, health monitor, event routing |
+| `slack/client.py` | Channel-bound Slack output client (post, update, react, upload) |
+| `slack/router.py` | Thread-aware message routing (main channel, turn threads, subagent threads) |
+| `slack/mcp.py` | MCP tools for Claude to interact with Slack |
 
 ## Security
 

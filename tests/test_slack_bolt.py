@@ -63,7 +63,7 @@ def _make_router(config: SummonConfig | None = None, dispatcher=None):
     router._mock_handler_factory = mock_h  # type: ignore[attr-defined]
     router._mock_dispatcher = dispatcher  # type: ignore[attr-defined]
 
-    router._client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+    router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
     return router
 
 
@@ -99,7 +99,7 @@ class TestRateLimiter:
         rl = _RateLimiter(cooldown_seconds=2.0)
         rl._last_attempt["old-user"] = time.monotonic() - 400
         rl.check("user1")
-        rl._cleanup(max_age=300.0)
+        rl._cleanup()
         assert "old-user" not in rl._last_attempt
         assert "user1" in rl._last_attempt
 
@@ -159,17 +159,6 @@ class TestHealthMonitor:
         await asyncio.wait_for(task, timeout=1.0)
         assert task.done()
 
-    async def test_mark_healthy_resets_counter(self):
-        monitor, _, on_exhausted = self._make_monitor(connected=False, max_attempts=5)
-        task = asyncio.create_task(monitor.run())
-        await asyncio.sleep(0.15)
-        monitor.mark_healthy()
-        monitor._socket_handler.client.is_connected = AsyncMock(return_value=True)
-        await asyncio.sleep(0.15)
-        monitor.stop()
-        await task
-        on_exhausted.assert_not_called()
-
     async def test_update_handler_switches_client(self):
         old_handler = MagicMock()
         old_handler.client = MagicMock()
@@ -205,7 +194,7 @@ class TestHealthMonitor:
 class TestBoltRouterInit:
     def test_web_client_exposed(self):
         router = _make_router()
-        assert router.web_client is router._client
+        assert router.web_client is not None
 
     def test_no_provider_attribute(self):
         router = _make_router()
@@ -270,7 +259,7 @@ class TestBoltRouterReconnect:
             patched_handler_cls.side_effect = [mock_h1, mock_h2]
 
             router = BoltRouter(cfg, mock_dispatcher)
-            router._client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+            router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
             await router.start()
             assert router._app is mock_a1
 
@@ -427,7 +416,7 @@ class TestBoltRouterHealthMonitor:
         mock_dispatcher = MagicMock()
         mock_dispatcher.all_channel_ids = MagicMock(return_value=[])
         router = BoltRouter(mock_config, mock_dispatcher)
-        router._client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+        router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
         router._patch_stack = stack
         await router.start()
         return router
@@ -463,13 +452,13 @@ class TestBoltRouterHealthMonitor:
         router = _make_router()
         router.shutdown_callback = MagicMock()
         router._mock_dispatcher.all_channel_ids.return_value = ["C001", "C002"]
-        router._client.chat_postMessage = AsyncMock(return_value={"ok": True})
+        router.web_client.chat_postMessage = AsyncMock(return_value={"ok": True})
 
         await router._on_reconnect_exhausted()
         if router._exhausted_notice_task is not None:
             await router._exhausted_notice_task
 
-        assert router._client.chat_postMessage.await_count == 2
+        assert router.web_client.chat_postMessage.await_count == 2
 
     async def test_no_channels_does_not_crash(self):
         router = _make_router()

@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from summon_claude.slack.client import (
-    ChannelRef,
     MessageRef,
     SlackClient,
     sanitize_for_mrkdwn,
@@ -31,20 +30,6 @@ class TestMessageRef:
         ref = MessageRef(channel_id="C456", ts="9.9")
         assert ref.channel_id == "C456"
         assert ref.ts == "9.9"
-
-
-class TestChannelRef:
-    def test_frozen(self):
-        from dataclasses import FrozenInstanceError
-
-        ref = ChannelRef(channel_id="C123", name="test-channel")
-        with pytest.raises(FrozenInstanceError):
-            ref.channel_id = "other"  # type: ignore[misc]
-
-    def test_fields(self):
-        ref = ChannelRef(channel_id="C789", name="my-channel")
-        assert ref.channel_id == "C789"
-        assert ref.name == "my-channel"
 
 
 class TestSanitizeForMrkdwn:

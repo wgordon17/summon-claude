@@ -77,10 +77,10 @@ class _RateLimiter:
         self._last_attempt[key] = now
         return True
 
-    def _cleanup(self, max_age: float = 300.0) -> None:
-        """Remove entries older than max_age."""
+    def _cleanup(self) -> None:
+        """Remove entries older than 5 minutes."""
         now = time.monotonic()
-        self._last_attempt = {k: v for k, v in self._last_attempt.items() if now - v < max_age}
+        self._last_attempt = {k: v for k, v in self._last_attempt.items() if now - v < 300.0}
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +112,6 @@ class _HealthMonitor:
         self._socket_handler = socket_handler
         self._consecutive_failures = 0
         logger.debug("_HealthMonitor: handler updated, failure counter reset")
-
-    def mark_healthy(self) -> None:
-        """Called when a message is successfully received; resets failure counter."""
-        self._consecutive_failures = 0
 
     def stop(self) -> None:
         """Signal the monitoring loop to stop."""
@@ -177,8 +173,7 @@ class BoltRouter:
         self._rate_limiter = _RateLimiter()
 
         # Shared web client — stays alive across reconnects
-        self._client = AsyncWebClient(token=config.slack_bot_token)
-        self.web_client = self._client  # public attribute — no provider abstraction
+        self.web_client = AsyncWebClient(token=config.slack_bot_token)
 
         # Set by start()
         self._app: AsyncApp | None = None
@@ -201,7 +196,7 @@ class BoltRouter:
         self._app, self._socket_handler = self._build_app()
         self._register_handlers(self._app)
         await self._socket_handler.connect_async()
-        resp = await self._client.auth_test()
+        resp = await self.web_client.auth_test()
         self.bot_user_id = resp["user_id"]
         logger.debug("BoltRouter: bot_user_id cached as %s", self.bot_user_id)
 
@@ -308,7 +303,7 @@ class BoltRouter:
         with contextlib.suppress(Exception):
             # Raw web_client call — accepted exception to single-output-path rule.
             # These are last-resort crash-path messages sent before SlackClient exists.
-            await self._client.chat_postMessage(
+            await self.web_client.chat_postMessage(
                 channel=channel_id,
                 text=(
                     ":x: *Slack connection lost permanently.*\n"

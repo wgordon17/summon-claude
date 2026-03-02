@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from summon_claude.slack.client import MessageRef, SlackClient
 from summon_claude.slack.router import ThreadRouter
 
@@ -27,7 +25,7 @@ class TestThreadRouterInit:
     def test_init_with_slack_client(self):
         client, _ = make_mock_client()
         router = ThreadRouter(client)
-        assert router.channel_id == "C123"
+        assert router.client.channel_id == "C123"
 
     def test_init_no_active_thread(self):
         client, _ = make_mock_client()
@@ -40,11 +38,11 @@ class TestThreadRouterInit:
         router = ThreadRouter(client)
         assert router.subagent_threads == {}
 
-    def test_client_is_private(self):
+    def test_client_is_public(self):
         client, _ = make_mock_client()
         router = ThreadRouter(client)
-        assert not hasattr(router, "client")
-        assert hasattr(router, "_client")
+        assert hasattr(router, "client")
+        assert router.client is client
 
 
 class TestThreadRouterActiveThread:
@@ -55,15 +53,6 @@ class TestThreadRouterActiveThread:
         router.set_active_thread("9999.0", ref)
         assert router.active_thread_ts == "9999.0"
         assert router.active_thread_ref == ref
-
-    def test_clear_active_thread(self):
-        client, _ = make_mock_client()
-        router = ThreadRouter(client)
-        ref = MessageRef(channel_id="C123", ts="9999.0")
-        router.set_active_thread("9999.0", ref)
-        router.clear_active_thread()
-        assert router.active_thread_ts is None
-        assert router.active_thread_ref is None
 
 
 class TestThreadRouterPostToMain:
@@ -162,37 +151,6 @@ class TestThreadRouterStartSubagentThread:
         assert len(router.subagent_threads) <= 51  # 50 remaining + 1 new
 
 
-class TestThreadRouterUpdateMessage:
-    async def test_update_message_channel_bound(self):
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        await router.update_message("9999.0", "Updated text")
-        web.chat_update.assert_called_once()
-        call_kwargs = web.chat_update.call_args.kwargs
-        assert call_kwargs["ts"] == "9999.0"
-        assert call_kwargs["text"] == "Updated text"
-        assert call_kwargs["channel"] == "C123"
-
-
-class TestThreadRouterReact:
-    async def test_react_channel_bound(self):
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        await router.react("9999.0", "white_check_mark")
-        web.reactions_add.assert_called_once()
-        call_kwargs = web.reactions_add.call_args.kwargs
-        assert call_kwargs["timestamp"] == "9999.0"
-        assert call_kwargs["name"] == "white_check_mark"
-        assert call_kwargs["channel"] == "C123"
-
-    async def test_react_strips_colons(self):
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        await router.react("9999.0", ":thumbsup:")
-        call_kwargs = web.reactions_add.call_args.kwargs
-        assert call_kwargs["name"] == "thumbsup"
-
-
 class TestThreadRouterUploadToActiveThread:
     async def test_upload_to_active_thread(self):
         client, web = make_mock_client()
@@ -205,17 +163,3 @@ class TestThreadRouterUploadToActiveThread:
         assert call_kwargs["content"] == "content"
         assert call_kwargs["filename"] == "file.txt"
         assert call_kwargs["thread_ts"] == "1234567890.123456"
-
-
-class TestThreadRouterPermissionEphemeral:
-    async def test_post_permission_ephemeral_calls_client(self):
-        client, web = make_mock_client()
-        router = ThreadRouter(client)
-        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "Approve?"}}]
-        await router.post_permission_ephemeral("U456", "Permission needed", blocks)
-        web.chat_postEphemeral.assert_called_once()
-        call_kwargs = web.chat_postEphemeral.call_args.kwargs
-        assert call_kwargs["user"] == "U456"
-        assert call_kwargs["channel"] == "C123"
-        assert call_kwargs["text"] == "Permission needed"
-        assert call_kwargs["blocks"] == blocks

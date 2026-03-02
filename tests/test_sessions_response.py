@@ -8,21 +8,9 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
 from helpers import make_mock_slack_client
-from summon_claude.config import SummonConfig
-from summon_claude.sessions.response import ResponseStreamer, StreamResult, _format_tool_summary
+from summon_claude.sessions.response import ResponseStreamer, _format_tool_summary
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.router import ThreadRouter
-
-
-def make_config(**overrides) -> SummonConfig:
-    defaults = {
-        "slack_bot_token": "xoxb-t",
-        "slack_app_token": "xapp-t",
-        "slack_signing_secret": "s",
-        "max_inline_chars": 2500,
-    }
-    defaults.update(overrides)
-    return SummonConfig.model_validate(defaults)
 
 
 def make_streamer() -> tuple[ResponseStreamer, ThreadRouter, AsyncMock]:
@@ -206,8 +194,6 @@ class TestResponseStreamerSubagentThreads:
         await router.start_subagent_thread("task_123", "Running analysis")
 
         # Now stream a response with parent_tool_use_id
-        from claude_agent_sdk import AssistantMessage
-
         msg = AssistantMessage(content=[make_text_block("Subagent response")], model="test")
         msg.parent_tool_use_id = "task_123"
 
@@ -291,27 +277,33 @@ class TestBUG029ResultMessageWithOutput:
 
 
 class TestBUG028ResolvedModelTracking:
-    """BUG-028: Test that streamer tracks resolved_model from AssistantMessage."""
+    """BUG-028: Test that streamer tracks resolved_model from AssistantMessage.
+
+    The resolved_model property was removed from ResponseStreamer. Model info
+    is now only available via StreamResult.model (returned from stream_with_flush).
+    These tests verify model tracking through the StreamResult API.
+    """
 
     async def test_resolved_model_set_from_assistant_message(self):
-        """After streaming AssistantMessage with model field, resolved_model should return it."""
+        """After streaming AssistantMessage with model, StreamResult.model returns it."""
         streamer, router, provider = make_streamer()
         msg = make_assistant_message([make_text_block("Response")])
         msg.model = "claude-opus-4-6"
         messages = [msg, make_result_message()]
 
-        await streamer.stream_with_flush(agen(messages))
+        result = await streamer.stream_with_flush(agen(messages))
 
-        assert streamer.resolved_model == "claude-opus-4-6"
+        assert result is not None
+        assert result.model == "claude-opus-4-6"
 
-    async def test_resolved_model_returns_none_when_no_model(self):
-        """Before any messages, resolved_model should return None."""
+    async def test_resolved_model_none_before_streaming(self):
+        """Before any messages, _turn.resolved_model should be None."""
         streamer, router, provider = make_streamer()
 
-        assert streamer.resolved_model is None
+        assert streamer._turn.resolved_model is None
 
     async def test_resolved_model_persists_across_multiple_messages(self):
-        """resolved_model should be set from first message and persist."""
+        """resolved_model should be set from first message and persist in StreamResult."""
         streamer, router, provider = make_streamer()
         msg1 = make_assistant_message([make_text_block("First")])
         msg1.model = "claude-opus-4-6"
@@ -320,10 +312,11 @@ class TestBUG028ResolvedModelTracking:
         msg2.model = "claude-sonnet-4"
         messages = [msg1, msg2, make_result_message()]
 
-        await streamer.stream_with_flush(agen(messages))
+        result = await streamer.stream_with_flush(agen(messages))
 
         # Should have the first model
-        assert streamer.resolved_model == "claude-opus-4-6"
+        assert result is not None
+        assert result.model == "claude-opus-4-6"
 
 
 class TestSplitText:
@@ -463,8 +456,6 @@ class TestBug025ResponseDuplication:
 class TestStreamResult:
     async def test_stream_result_contains_context(self):
         """When ResultMessage has usage, StreamResult should have ContextUsage."""
-        from summon_claude.sessions.context import ContextUsage
-
         streamer, router, provider = make_streamer()
         result_msg = ResultMessage(
             subtype="success",
@@ -607,7 +598,7 @@ def make_streamer_for_display() -> ResponseStreamer:
     """Create a ResponseStreamer for _format_diff tests."""
     client = make_mock_slack_client()
     router = ThreadRouter(client)
-    return ResponseStreamer(router, max_inline_chars=2500)
+    return ResponseStreamer(router)
 
 
 class TestFormatDiff:

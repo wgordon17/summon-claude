@@ -22,14 +22,6 @@ class MessageRef:
     ts: str
 
 
-@dataclass(frozen=True, slots=True)
-class ChannelRef:
-    """Reference to a created channel."""
-
-    channel_id: str
-    name: str
-
-
 def sanitize_for_mrkdwn(text: str, max_len: int = 100) -> str:
     """Remove mrkdwn-significant characters and newlines to prevent injection."""
     sanitized = text.replace("\n", " ").replace("\r", " ").replace("`", "'").replace("*", "")
