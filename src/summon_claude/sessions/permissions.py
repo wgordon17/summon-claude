@@ -40,13 +40,13 @@ _AUTO_APPROVE_TOOLS = frozenset(
 _PERMISSION_TIMEOUT_S = 300  # 5 minutes
 
 
-async def _dismiss_ephemeral(response_url: str, replacement_text: str) -> None:
-    """Dismiss or replace an ephemeral Slack message via its response_url."""
+async def _dismiss_ephemeral(response_url: str) -> None:
+    """Delete an ephemeral Slack message via its response_url."""
     try:
         async with aiohttp.ClientSession() as http:
             await http.post(
                 response_url,
-                json={"replace_original": True, "text": replacement_text},
+                json={"delete_original": True},
             )
     except Exception as e:
         logger.debug("Failed to dismiss ephemeral via response_url: %s", e)
@@ -310,11 +310,11 @@ class PermissionHandler:
         self._batch.decisions[batch_id] = approved
 
         # Dismiss the ephemeral message via response_url (the only reliable way)
-        status_text = ":white_check_mark: Approved" if approved else ":x: Denied"
         if response_url:
-            await _dismiss_ephemeral(response_url, status_text)
+            await _dismiss_ephemeral(response_url)
 
         # Post a persistent confirmation to the turn thread
+        status_text = ":white_check_mark: Approved" if approved else ":x: Denied"
         try:
             await self._router.post_to_active_thread(f"{status_text} by user")
         except Exception as e:
