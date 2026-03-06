@@ -22,9 +22,9 @@ class TestQueueBackpressure:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock()
-        options = SessionOptions(session_id="test-bp", cwd="/tmp", name="test")
+        options = SessionOptions(cwd="/tmp", name="test")
         auth = MagicMock(spec=SessionAuth)
-        session = SummonSession(config=config, options=options, auth=auth)
+        session = SummonSession(config=config, options=options, auth=auth, session_id="test-bp")
 
         assert session._message_queue.maxsize == 100
 
@@ -123,9 +123,11 @@ class TestSessionIdFilter:
             captured_sid.append(_session_id_var.get())
 
         config = MagicMock()
-        options = SessionOptions(session_id="ctx-test-session", cwd="/tmp", name="test")
+        options = SessionOptions(cwd="/tmp", name="test")
         auth = MagicMock(spec=SessionAuth)
-        session = SummonSession(config=config, options=options, auth=auth)
+        session = SummonSession(
+            config=config, options=options, auth=auth, session_id="ctx-test-session"
+        )
         # Trigger immediate shutdown so start() exits quickly
         session._shutdown_event.set()
 
@@ -157,9 +159,11 @@ class TestPerSessionLogFile:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock()
-        options = SessionOptions(session_id="log-test-session", cwd="/tmp", name="test")
+        options = SessionOptions(cwd="/tmp", name="test")
         auth = MagicMock(spec=SessionAuth)
-        session = SummonSession(config=config, options=options, auth=auth)
+        session = SummonSession(
+            config=config, options=options, auth=auth, session_id="log-test-session"
+        )
 
         with patch("summon_claude.sessions.session.get_data_dir", return_value=tmp_path):
             handler = session._install_session_log_handler()
@@ -178,9 +182,9 @@ class TestPerSessionLogFile:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock()
-        options = SessionOptions(session_id="filter-test", cwd="/tmp", name="test")
+        options = SessionOptions(cwd="/tmp", name="test")
         auth = MagicMock(spec=SessionAuth)
-        session = SummonSession(config=config, options=options, auth=auth)
+        session = SummonSession(config=config, options=options, auth=auth, session_id="filter-test")
 
         with patch("summon_claude.sessions.session.get_data_dir", return_value=tmp_path):
             handler = session._install_session_log_handler()
@@ -220,9 +224,11 @@ class TestPerSessionLogFile:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock()
-        options = SessionOptions(session_id="cleanup-test", cwd="/tmp", name="test")
+        options = SessionOptions(cwd="/tmp", name="test")
         auth = MagicMock(spec=SessionAuth)
-        session = SummonSession(config=config, options=options, auth=auth)
+        session = SummonSession(
+            config=config, options=options, auth=auth, session_id="cleanup-test"
+        )
 
         with patch("summon_claude.sessions.session.get_data_dir", return_value=tmp_path):
             handler = session._install_session_log_handler()

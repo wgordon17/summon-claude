@@ -9,7 +9,6 @@ Raises ``DaemonError`` when the daemon returns ``{"type": "error", ...}``.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import dataclasses
 import logging
@@ -99,20 +98,13 @@ async def list_sessions() -> list[dict[str, Any]]:
 
 
 async def stop_all_sessions() -> list[tuple[str, bool]]:
-    """Stop every active session reported by the daemon.
-
-    Queries ``get_status()`` for the current session list, then stops each
-    session concurrently.  Each ``stop_session()`` call opens its own
-    connection — this is intentional: the daemon IPC protocol is stateless
-    one-shot, and separate connections avoid the double-close bug from the
-    previous implementation.
+    """Stop every active session via a single ``stop_all`` IPC message.
 
     Returns:
         List of ``(session_id, was_found)`` tuples — one per session.
     """
-    sessions = await list_sessions()
-    sids = [s.get("session_id", "") for s in sessions if s.get("session_id")]
-    if not sids:
-        return []
-    results = await asyncio.gather(*(stop_session(sid) for sid in sids))
-    return list(zip(sids, results, strict=True))
+    response = await _request({"type": "stop_all"})
+    if response.get("type") != "all_stopped":
+        raise DaemonError(f"Unexpected daemon response: {response}")
+    results: list[dict[str, Any]] = response.get("results", [])
+    return [(r["session_id"], r["found"]) for r in results]

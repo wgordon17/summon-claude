@@ -196,9 +196,11 @@ class BoltRouter:
         self._app, self._socket_handler = self._build_app()
         self._register_handlers(self._app)
         await self._socket_handler.connect_async()
-        resp = await self.web_client.auth_test()
-        self.bot_user_id = resp["user_id"]
-        logger.debug("BoltRouter: bot_user_id cached as %s", self.bot_user_id)
+        # Only fetch bot_user_id on first start — it never changes across reconnects
+        if self.bot_user_id is None:
+            resp = await self.web_client.auth_test()
+            self.bot_user_id = resp["user_id"]
+            logger.debug("BoltRouter: bot_user_id cached as %s", self.bot_user_id)
 
     async def stop(self) -> None:
         """Gracefully close the Socket Mode connection and health monitor."""

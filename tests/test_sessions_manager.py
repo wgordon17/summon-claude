@@ -33,8 +33,8 @@ def make_config(**overrides) -> SummonConfig:
     return SummonConfig.model_validate(defaults)
 
 
-def make_options(session_id: str = "sess-1", **overrides) -> SessionOptions:
-    defaults = {"session_id": session_id, "cwd": "/tmp", "name": "test"}
+def make_options(**overrides) -> SessionOptions:
+    defaults = {"cwd": "/tmp", "name": "test"}
     defaults.update(overrides)
     return SessionOptions(**defaults)
 
@@ -157,7 +157,7 @@ class TestCreateSession:
         stub = _StubSession()
         _patch_session(manager, stub)
 
-        options = make_options("s1")
+        options = make_options()
         short_code = await manager.create_session(options)
 
         assert short_code == "test-code"
@@ -190,7 +190,7 @@ class TestCreateSession:
             mock_session_cls.return_value = MagicMock()
             mock_session_cls.return_value.start = AsyncMock()
 
-            result = await manager.create_session(make_options(""))
+            result = await manager.create_session(make_options())
 
         assert result == "XY123456"
         mock_gen.assert_awaited_once()
@@ -210,7 +210,7 @@ class TestCreateSession:
 
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s2"))
+        await manager.create_session(make_options())
 
         assert manager._grace_timer is None
         assert called == []  # timer was cancelled before it fired
@@ -226,7 +226,7 @@ class TestCreateSession:
             sid = f"s{i}"
             stub = _StubSession()
             _patch_session(manager, stub, session_id=sid)
-            await manager.create_session(make_options(sid))
+            await manager.create_session(make_options())
             created_ids.append(sid)
 
         # Each call returned a distinct session_id
@@ -246,7 +246,7 @@ class TestStopSession:
         manager, _, _ = _make_manager()
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         result = manager.stop_session("s1")
         assert result is True
@@ -261,7 +261,7 @@ class TestStopSession:
         manager, _, _ = _make_manager()
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         # Stop before task runs
         manager.stop_session("s1")
@@ -282,7 +282,7 @@ class TestAuthenticateSession:
         manager, _, _ = _make_manager()
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         result = manager.authenticate_session("s1", "U001")
         assert result is True
@@ -366,7 +366,7 @@ class TestOnTaskDone:
         manager, _, mock_dispatcher = _make_manager()
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         # Wait for the task to complete naturally
         await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
@@ -380,7 +380,7 @@ class TestOnTaskDone:
         stub = _StubSession()
         stub.channel_id = "C001"
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
         await asyncio.sleep(0)
@@ -400,7 +400,7 @@ class TestGraceTimer:
         manager, _, _ = _make_manager()
         stub = _StubSession()  # completes immediately
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
         await asyncio.sleep(0)  # allow callbacks
@@ -415,7 +415,7 @@ class TestGraceTimer:
         # Session 1: completes immediately
         stub1 = _StubSession()
         _patch_session(manager, stub1)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         # Session 2: will be long-running (we keep a reference)
         long_running = asyncio.Event()
@@ -452,7 +452,7 @@ class TestGraceTimer:
 
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         assert manager._grace_timer is None
         assert fired == []
@@ -478,7 +478,7 @@ class TestShutdown:
         manager, _, _ = _make_manager()
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         # Task may have already finished by now; if so, this is a no-op
         await manager.shutdown()
@@ -575,13 +575,34 @@ class TestControlAPI:
         manager, _, _ = _make_manager()
         stub = _StubSession()
         _patch_session(manager, stub)
-        await manager.create_session(make_options("s1"))
+        await manager.create_session(make_options())
 
         response = await manager._dispatch_control({"type": "stop_session", "session_id": "s1"})
         assert response["type"] == "session_stopped"
         assert response["found"] is True
 
         await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
+
+    async def test_dispatch_stop_all(self):
+        """stop_all stops every active session in a single IPC call."""
+        manager, _, _ = _make_manager()
+        stub = _StubSession()
+        _patch_session(manager, stub)
+        await manager.create_session(make_options())
+
+        response = await manager._dispatch_control({"type": "stop_all"})
+        assert response["type"] == "all_stopped"
+        assert len(response["results"]) == 1
+        assert response["results"][0]["found"] is True
+
+        await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
+
+    async def test_dispatch_stop_all_empty(self):
+        """stop_all with no sessions returns empty results."""
+        manager, _, _ = _make_manager()
+        response = await manager._dispatch_control({"type": "stop_all"})
+        assert response["type"] == "all_stopped"
+        assert response["results"] == []
 
     async def test_handle_client_roundtrip(self):
         """handle_client reads a status request and writes a response."""

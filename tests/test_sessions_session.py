@@ -34,7 +34,6 @@ def make_config(**overrides) -> SummonConfig:
 
 def make_options(**overrides) -> SessionOptions:
     defaults = {
-        "session_id": "test-session",
         "cwd": "/tmp/test",
         "name": "test",
     }
@@ -50,6 +49,20 @@ def make_auth(**overrides) -> SessionAuth:
     }
     defaults.update(overrides)
     return SessionAuth(**defaults)
+
+
+def make_session(session_id: str = "test-session", **overrides) -> SummonSession:
+    opt_fields = ("cwd", "name", "model", "resume")
+    opts_kw = {k: overrides.pop(k) for k in list(overrides) if k in opt_fields}
+    auth_fields = ("short_code", "expires_at")
+    auth_kw = {k: overrides.pop(k) for k in list(overrides) if k in auth_fields}
+    return SummonSession(
+        config=make_config(),
+        options=make_options(**opts_kw),
+        auth=make_auth(session_id=session_id, **auth_kw),
+        session_id=session_id,
+        **overrides,
+    )
 
 
 def make_mock_client(channel_id: str = "C_TEST_CHAN") -> AsyncMock:
@@ -134,30 +147,26 @@ class TestSessionShutdownControl:
     """Test request_shutdown() and authenticate() — the new public control API."""
 
     def test_request_shutdown_sets_event(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         assert not session._shutdown_event.is_set()
         session.request_shutdown()
         assert session._shutdown_event.is_set()
 
     async def test_request_shutdown_puts_sentinel_on_queue(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session.request_shutdown()
         item = await asyncio.wait_for(session._message_queue.get(), timeout=1.0)
         assert item == ("", None)
 
     def test_request_shutdown_idempotent(self):
         """Calling request_shutdown() twice should not raise."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session.request_shutdown()
         session.request_shutdown()  # must not raise
         assert session._shutdown_event.is_set()
 
     def test_authenticate_sets_event_and_user(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         assert not session._authenticated_event.is_set()
         session.authenticate("U001")
         assert session._authenticated_event.is_set()
@@ -165,31 +174,26 @@ class TestSessionShutdownControl:
 
     def test_authenticate_clears_auth_token(self):
         """authenticate() should clear the auth token from memory."""
-        config = make_config()
-        auth = make_auth()
-        session = SummonSession(config, make_options(), auth=auth)
+        session = make_session()
         assert session._auth is not None
         session.authenticate("U001")
         assert session._auth is None
 
     def test_channel_id_property_initially_none(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         assert session.channel_id is None
 
 
 class TestWaitForAuth:
     async def test_returns_immediately_when_event_set(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session._authenticated_event.set()
 
         # Should complete quickly since event is already set
         await asyncio.wait_for(session._wait_for_auth(), timeout=2.0)
 
     async def test_returns_when_shutdown_event_set(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session._shutdown_event.set()
 
         await asyncio.wait_for(session._wait_for_auth(), timeout=2.0)
@@ -199,8 +203,7 @@ class TestCreateChannel:
     """Tests for _create_channel retry logic."""
 
     async def test_succeeds_on_first_attempt(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
 
         mock_client = AsyncMock()
         mock_client.conversations_create = AsyncMock(
@@ -213,8 +216,7 @@ class TestCreateChannel:
         mock_client.conversations_create.assert_awaited_once()
 
     async def test_retries_on_name_taken(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
 
         mock_client = AsyncMock()
         mock_client.conversations_create = AsyncMock(
@@ -229,8 +231,7 @@ class TestCreateChannel:
         assert mock_client.conversations_create.await_count == 2
 
     async def test_raises_after_all_retries_exhausted(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
 
         mock_client = AsyncMock()
         mock_client.conversations_create = AsyncMock(side_effect=Exception("name_taken"))
@@ -242,8 +243,7 @@ class TestCreateChannel:
         assert mock_client.conversations_create.await_count == 3
 
     async def test_non_name_taken_error_raises_immediately(self):
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
 
         mock_client = AsyncMock()
         mock_client.conversations_create = AsyncMock(side_effect=Exception("invalid_auth"))
@@ -275,15 +275,10 @@ class TestSlashCommandHandler:
         from summon_claude.sessions.auth import verify_short_code
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-2", 1234, "/tmp")
 
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-2"),
-                auth=make_auth(session_id="sess-2"),
-            )
+            session = make_session(session_id="sess-2")
 
             result = await verify_short_code(registry, "badcod")
             assert result is None
@@ -295,16 +290,11 @@ class TestSessionShutdownSummary:
         """_shutdown should post turns/cost summary to channel."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-sd", 1234, "/tmp")
 
             mock_client = make_mock_client("C_TEST_CHAN")
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-sd"),
-                auth=make_auth(session_id="sess-sd"),
-            )
+            session = make_session(session_id="sess-sd")
             session._total_turns = 3
             session._total_cost = 0.0456
 
@@ -327,16 +317,11 @@ class TestSessionShutdownSummary:
         """_shutdown should NOT archive the session channel — channels are preserved."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-arch", 1234, "/tmp")
 
             mock_client = make_mock_client("C_ARCH_CHAN")
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-arch"),
-                auth=make_auth(session_id="sess-arch"),
-            )
+            session = make_session(session_id="sess-arch")
 
             rt = _SessionRuntime(
                 registry=registry,
@@ -356,15 +341,10 @@ class TestSessionShutdownSummary:
         """_shutdown should update session status to completed."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-comp", 1234, "/tmp")
 
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-comp"),
-                auth=make_auth(session_id="sess-comp"),
-            )
+            session = make_session(session_id="sess-comp")
 
             rt = make_rt(registry, "C_COMP_CHAN")
             await session._shutdown(rt)
@@ -380,12 +360,9 @@ class TestSessionShutdown:
         """After successful _shutdown(), _shutdown_completed should be True."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-flag", 1234, "/tmp")
-            session = SummonSession(
-                config, make_options(session_id="sess-flag"), auth=make_auth(session_id="sess-flag")
-            )
+            session = make_session(session_id="sess-flag")
             assert session._shutdown_completed is False
             rt = make_rt(registry, "C_FLAG_CHAN")
             await session._shutdown(rt)
@@ -395,12 +372,9 @@ class TestSessionShutdown:
         """If registry update raises, _shutdown_completed should remain False."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-fail", 1234, "/tmp")
-            session = SummonSession(
-                config, make_options(session_id="sess-fail"), auth=make_auth(session_id="sess-fail")
-            )
+            session = make_session(session_id="sess-fail")
             assert session._shutdown_completed is False
 
             async def failing_update(*args, **kwargs):
@@ -415,14 +389,9 @@ class TestSessionShutdown:
         """If posting the disconnect message fails, shutdown should continue."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-arch-fail", 1234, "/tmp")
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-arch-fail"),
-                auth=make_auth(session_id="sess-arch-fail"),
-            )
+            session = make_session(session_id="sess-arch-fail")
 
             mock_client = make_mock_client("C_ARCH_FAIL_CHAN")
             mock_client.post = AsyncMock(side_effect=RuntimeError("Post failed"))
@@ -438,14 +407,9 @@ class TestSessionShutdown:
         """If Slack call hangs, asyncio.wait_for should timeout and continue."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-timeout", 1234, "/tmp")
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-timeout"),
-                auth=make_auth(session_id="sess-timeout"),
-            )
+            session = make_session(session_id="sess-timeout")
 
             async def hanging_post(*args, **kwargs):
                 await asyncio.sleep(999)
@@ -492,16 +456,11 @@ class TestDisconnectMessage:
         """Shutdown should post :wave: 'session ended' message."""
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             await registry.register("sess-ended", 1234, "/tmp")
 
             mock_client = make_mock_client("C_ENDED")
-            session = SummonSession(
-                config,
-                make_options(session_id="sess-ended"),
-                auth=make_auth(session_id="sess-ended"),
-            )
+            session = make_session(session_id="sess-ended")
             session._total_turns = 5
             session._total_cost = 0.125
 
@@ -527,12 +486,7 @@ class TestWatchdogLoop:
 
     async def test_heartbeat_updates_timestamp(self, tmp_path):
         """Calling heartbeat loop should update _last_heartbeat_time."""
-        config = make_config()
-        session = SummonSession(
-            config,
-            make_options(session_id="sess-hb-ts"),
-            auth=make_auth(session_id="sess-hb-ts"),
-        )
+        session = make_session(session_id="sess-hb-ts")
 
         loop = asyncio.get_running_loop()
         old_time = loop.time() - 50.0
@@ -564,8 +518,7 @@ class TestSessionHandleRegistration:
 
     async def test_channel_id_set_after_run_session(self):
         """channel_id property should reflect the assigned channel once set."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         assert session.channel_id is None
         # Simulate what _run_session does after creating the channel
         session._channel_id = "C_NEW_CHAN"
@@ -576,7 +529,6 @@ class TestSessionHandleRegistration:
         from summon_claude.event_dispatcher import EventDispatcher
         from summon_claude.sessions.registry import SessionRegistry
 
-        config = make_config()
         dispatcher = EventDispatcher()
 
         # Create a mock web_client that simulates channel creation
@@ -587,10 +539,8 @@ class TestSessionHandleRegistration:
         )
         mock_web_client.conversations_invite = AsyncMock()
 
-        session = SummonSession(
-            config,
-            make_options(session_id="sess-disp"),
-            auth=make_auth(session_id="sess-disp"),
+        session = make_session(
+            session_id="sess-disp",
             web_client=mock_web_client,
             dispatcher=dispatcher,
         )
@@ -632,8 +582,7 @@ class TestProcessIncomingEvent:
 
     async def test_normal_message_returns_text_and_ts(self):
         """A normal user message returns (full_text, thread_ts)."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session._command_registry = build_registry()
         rt = self._make_rt()
 
@@ -647,8 +596,7 @@ class TestProcessIncomingEvent:
 
     async def test_subtype_message_filtered(self):
         """Messages with a subtype (bot messages etc.) are filtered out."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "Hello", "subtype": "bot_message", "ts": "1"}
@@ -657,8 +605,7 @@ class TestProcessIncomingEvent:
 
     async def test_empty_text_filtered(self):
         """Messages with empty text are filtered out."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "", "ts": "1"}
@@ -667,8 +614,7 @@ class TestProcessIncomingEvent:
 
     async def test_no_user_filtered(self):
         """Messages without a user_id (system events) are filtered out."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         rt = self._make_rt()
 
         event = {"text": "Hello", "ts": "1"}
@@ -679,8 +625,7 @@ class TestProcessIncomingEvent:
         """Messages exceeding _MAX_USER_MESSAGE_CHARS are truncated."""
         from summon_claude.sessions.session import _MAX_USER_MESSAGE_CHARS
 
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session._command_registry = build_registry()
         rt = self._make_rt()
 
@@ -695,8 +640,7 @@ class TestProcessIncomingEvent:
 
     async def test_file_references_appended(self):
         """File attachments are appended to the text."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session._command_registry = build_registry()
         rt = self._make_rt()
 
@@ -715,8 +659,7 @@ class TestProcessIncomingEvent:
 
     async def test_pending_text_input_consumed(self):
         """When permission handler is waiting for free-text, message is consumed."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
 
         mock_ph = AsyncMock()
         mock_ph.has_pending_text_input = MagicMock(return_value=True)
@@ -731,8 +674,7 @@ class TestProcessIncomingEvent:
 
     async def test_command_prefix_dispatched(self):
         """Messages with ! prefix are dispatched as commands and return None."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session._command_registry = build_registry()
         rt = self._make_rt()
 
@@ -746,8 +688,7 @@ class TestProcessIncomingEvent:
 
     async def test_regular_message_not_command(self):
         """A message without ! prefix is returned as-is for Claude."""
-        config = make_config()
-        session = SummonSession(config, make_options(), auth=make_auth())
+        session = make_session()
         session._command_registry = build_registry()
         rt = self._make_rt()
 

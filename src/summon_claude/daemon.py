@@ -397,14 +397,15 @@ def is_daemon_running() -> bool:
     sock_path = _daemon_socket()
     if not sock_path.exists():
         return False
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(2.0)
         s.connect(str(sock_path))
-        s.close()
         return True
     except (ConnectionRefusedError, FileNotFoundError, OSError):
         return False
+    finally:
+        s.close()
 
 
 def _clear_stale_daemon_files() -> None:

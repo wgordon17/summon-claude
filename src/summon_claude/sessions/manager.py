@@ -93,17 +93,11 @@ class SessionManager:
         session_id = str(uuid.uuid4())
         auth = await self._generate_auth(session_id)
 
-        full_options = SessionOptions(
-            session_id=session_id,
-            cwd=options.cwd,
-            name=options.name,
-            model=options.model,
-            resume=options.resume,
-        )
         session = SummonSession(
             config=self._config,
-            options=full_options,
+            options=options,
             auth=auth,
+            session_id=session_id,
             web_client=self._web_client,
             dispatcher=self._dispatcher,
             bot_user_id=self._bot_user_id,
@@ -281,6 +275,13 @@ class SessionManager:
                 found = self.stop_session(session_id)
                 return {"type": "session_stopped", "found": found}
 
+            case "stop_all":
+                results = [
+                    {"session_id": sid, "found": self.stop_session(sid)}
+                    for sid in list(self._sessions)
+                ]
+                return {"type": "all_stopped", "results": results}
+
             case "status":
                 return {
                     "type": "status",
@@ -332,8 +333,7 @@ class SessionManager:
                     logger.error(
                         "Session %s failed permanently: %s",
                         session_id,
-                        e,
-                        exc_info=True,
+                        _SECRET_PATTERN.sub("***", str(e)),
                     )
                     # Best-effort: post error notice to the session channel
                     if session.channel_id:
