@@ -18,9 +18,8 @@ from pathlib import Path
 import pytest
 from slack_sdk.web.async_client import AsyncWebClient
 
-from summon_claude.channel_manager import ChannelManager
-from summon_claude.providers.slack import SlackChatProvider
-from summon_claude.thread_router import ThreadRouter
+from summon_claude.slack.client import SlackClient
+from summon_claude.slack.router import ThreadRouter
 
 # Load .env file so credentials are available for local runs
 _env_file = Path(__file__).resolve().parents[2] / ".env"
@@ -131,11 +130,13 @@ async def test_channel(slack_harness):
     global _shared_channel_id  # noqa: PLW0603
     if _shared_channel_id is None:
         _shared_channel_id = await slack_harness.create_test_channel()
-        # Transitive lifecycle signal: invite a real user
+        # Transitive lifecycle signal: invite a real user via raw web_client
         user_id = await slack_harness.find_non_bot_user()
         if user_id:
-            provider = SlackChatProvider(slack_harness.client)
-            await provider.invite_user(_shared_channel_id, user_id)
+            with contextlib.suppress(Exception):
+                await slack_harness.client.conversations_invite(
+                    channel=_shared_channel_id, users=user_id
+                )
         # Transitive lifecycle signal: set topic
         await slack_harness.client.conversations_setTopic(
             channel=_shared_channel_id, topic="Integration test channel"
@@ -144,21 +145,15 @@ async def test_channel(slack_harness):
 
 
 @pytest.fixture
-def slack_provider(slack_harness):
-    """SlackChatProvider backed by real credentials."""
-    return SlackChatProvider(slack_harness.client)
+def slack_client(slack_harness, test_channel):
+    """SlackClient bound to test channel."""
+    return SlackClient(slack_harness.client, test_channel)
 
 
 @pytest.fixture
-def channel_manager(slack_provider):
-    """ChannelManager backed by real SlackChatProvider."""
-    return ChannelManager(slack_provider, channel_prefix="test")
-
-
-@pytest.fixture
-async def thread_router(slack_provider, test_channel):
-    """ThreadRouter backed by real provider and test channel."""
-    return ThreadRouter(slack_provider, test_channel)
+async def thread_router(slack_client):
+    """ThreadRouter backed by real SlackClient and test channel."""
+    return ThreadRouter(slack_client)
 
 
 def pytest_sessionfinish(session, exitstatus):

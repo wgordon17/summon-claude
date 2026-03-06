@@ -1,4 +1,4 @@
-"""Tests for summon_claude.update_check."""
+"""Tests for summon_claude.cli.update_check."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from summon_claude.update_check import (
+from summon_claude.cli.update_check import (
     UpdateInfo,
     _fetch_latest_from_pypi,
     _read_cache,
@@ -17,7 +17,7 @@ from summon_claude.update_check import (
     format_update_message,
 )
 
-_URLOPEN = "summon_claude.update_check.urllib.request.urlopen"
+_URLOPEN = "summon_claude.cli.update_check.urllib.request.urlopen"
 
 
 class TestUpdateInfo:
@@ -302,7 +302,7 @@ class TestCheckForUpdate:
         """check_for_update queries PyPI when cache is missing."""
         monkeypatch.setenv("SUMMON_NO_UPDATE_CHECK", "0")
         monkeypatch.setattr(
-            "summon_claude.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
+            "summon_claude.cli.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
         )
 
         mock_response = MagicMock()
@@ -312,7 +312,7 @@ class TestCheckForUpdate:
 
         with (
             patch(_URLOPEN, return_value=mock_response),
-            patch("summon_claude.update_check.version", return_value="1.0.0"),
+            patch("summon_claude.cli.update_check.version", return_value="1.0.0"),
         ):
             result = check_for_update()
 
@@ -338,11 +338,13 @@ class TestCheckForUpdate:
         }
         cache_path.write_text(json.dumps(cache_data))
 
-        monkeypatch.setattr("summon_claude.update_check.get_update_check_path", lambda: cache_path)
+        monkeypatch.setattr(
+            "summon_claude.cli.update_check.get_update_check_path", lambda: cache_path
+        )
 
         with (
             patch(_URLOPEN) as mock_urlopen,
-            patch("summon_claude.update_check.version", return_value="1.0.0"),
+            patch("summon_claude.cli.update_check.version", return_value="1.0.0"),
         ):
             result = check_for_update()
 
@@ -359,7 +361,9 @@ class TestCheckForUpdate:
         }
         cache_path.write_text(json.dumps(cache_data))
 
-        monkeypatch.setattr("summon_claude.update_check.get_update_check_path", lambda: cache_path)
+        monkeypatch.setattr(
+            "summon_claude.cli.update_check.get_update_check_path", lambda: cache_path
+        )
 
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({"info": {"version": "2.0.0"}}).encode()
@@ -368,7 +372,7 @@ class TestCheckForUpdate:
 
         with (
             patch(_URLOPEN, return_value=mock_response),
-            patch("summon_claude.update_check.version", return_value="1.0.0"),
+            patch("summon_claude.cli.update_check.version", return_value="1.0.0"),
         ):
             result = check_for_update()
 
@@ -377,7 +381,7 @@ class TestCheckForUpdate:
     def test_check_for_update_current_equals_latest_returns_none(self, tmp_path, monkeypatch):
         """check_for_update returns None when current == latest."""
         monkeypatch.setattr(
-            "summon_claude.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
+            "summon_claude.cli.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
         )
 
         mock_response = MagicMock()
@@ -387,7 +391,7 @@ class TestCheckForUpdate:
 
         with (
             patch(_URLOPEN, return_value=mock_response),
-            patch("summon_claude.update_check.version", return_value="1.0.0"),
+            patch("summon_claude.cli.update_check.version", return_value="1.0.0"),
         ):
             result = check_for_update()
 
@@ -396,7 +400,7 @@ class TestCheckForUpdate:
     def test_check_for_update_current_greater_than_latest_returns_none(self, tmp_path, monkeypatch):
         """check_for_update returns None when current > latest (dev build)."""
         monkeypatch.setattr(
-            "summon_claude.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
+            "summon_claude.cli.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
         )
 
         mock_response = MagicMock()
@@ -406,7 +410,7 @@ class TestCheckForUpdate:
 
         with (
             patch(_URLOPEN, return_value=mock_response),
-            patch("summon_claude.update_check.version", return_value="2.0.0dev"),
+            patch("summon_claude.cli.update_check.version", return_value="2.0.0dev"),
         ):
             result = check_for_update()
 
@@ -415,7 +419,7 @@ class TestCheckForUpdate:
     def test_check_for_update_pypi_fetch_returns_none(self, tmp_path, monkeypatch):
         """check_for_update returns None when PyPI fetch fails."""
         monkeypatch.setattr(
-            "summon_claude.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
+            "summon_claude.cli.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
         )
 
         with patch(_URLOPEN, side_effect=urllib.error.URLError("timeout")):
@@ -426,7 +430,9 @@ class TestCheckForUpdate:
     def test_check_for_update_cache_write_failure_still_returns_info(self, tmp_path, monkeypatch):
         """check_for_update returns info even if cache write fails."""
         cache_path = tmp_path / "cache.json"
-        monkeypatch.setattr("summon_claude.update_check.get_update_check_path", lambda: cache_path)
+        monkeypatch.setattr(
+            "summon_claude.cli.update_check.get_update_check_path", lambda: cache_path
+        )
 
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({"info": {"version": "2.0.0"}}).encode()
@@ -435,7 +441,7 @@ class TestCheckForUpdate:
 
         with (
             patch(_URLOPEN, return_value=mock_response),
-            patch("summon_claude.update_check.version", return_value="1.0.0"),
+            patch("summon_claude.cli.update_check.version", return_value="1.0.0"),
             patch.object(Path, "write_text", side_effect=PermissionError("denied")),
         ):
             result = check_for_update()
@@ -448,7 +454,7 @@ class TestCheckForUpdate:
         def raise_error():
             raise RuntimeError("something went wrong")
 
-        monkeypatch.setattr("summon_claude.update_check.get_update_check_path", raise_error)
+        monkeypatch.setattr("summon_claude.cli.update_check.get_update_check_path", raise_error)
 
         result = check_for_update()
 
@@ -457,7 +463,7 @@ class TestCheckForUpdate:
     def test_check_for_update_version_parsing(self, tmp_path, monkeypatch):
         """check_for_update correctly handles version comparison."""
         monkeypatch.setattr(
-            "summon_claude.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
+            "summon_claude.cli.update_check.get_update_check_path", lambda: tmp_path / "cache.json"
         )
 
         mock_response = MagicMock()
@@ -467,7 +473,7 @@ class TestCheckForUpdate:
 
         with (
             patch(_URLOPEN, return_value=mock_response),
-            patch("summon_claude.update_check.version", return_value="1.0.0"),
+            patch("summon_claude.cli.update_check.version", return_value="1.0.0"),
         ):
             result = check_for_update()
 
@@ -476,7 +482,9 @@ class TestCheckForUpdate:
     def test_check_for_update_caches_result(self, tmp_path, monkeypatch):
         """check_for_update writes fetched version to cache."""
         cache_path = tmp_path / "cache.json"
-        monkeypatch.setattr("summon_claude.update_check.get_update_check_path", lambda: cache_path)
+        monkeypatch.setattr(
+            "summon_claude.cli.update_check.get_update_check_path", lambda: cache_path
+        )
 
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({"info": {"version": "2.0.0"}}).encode()
@@ -485,7 +493,7 @@ class TestCheckForUpdate:
 
         with (
             patch(_URLOPEN, return_value=mock_response),
-            patch("summon_claude.update_check.version", return_value="1.0.0"),
+            patch("summon_claude.cli.update_check.version", return_value="1.0.0"),
         ):
             check_for_update()
 

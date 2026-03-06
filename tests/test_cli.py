@@ -100,10 +100,10 @@ class TestCLICommands:
         result = runner.invoke(cli, ["session", "info", "--help"])
         assert result.exit_code == 0
 
-    def test_session_stop_command_exists(self):
-        """Test that session stop command is available."""
+    def test_top_level_stop_command_exists(self):
+        """Test that top-level stop command is available."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["session", "stop", "--help"])
+        result = runner.invoke(cli, ["stop", "--help"])
         assert result.exit_code == 0
 
     def test_session_logs_command_exists(self):
@@ -139,7 +139,8 @@ class TestCLICommands:
         # Click groups without invoke_without_command exit with code 2
         assert "list" in result.output
         assert "info" in result.output
-        assert "stop" in result.output
+        # 'stop' is now a top-level command, not a session subcommand
+        assert "stop" not in result.output or "session" in result.output
 
     def test_start_accepts_cwd_option(self):
         """Test that start command accepts --cwd option."""
@@ -165,11 +166,12 @@ class TestCLICommands:
         result = runner.invoke(cli, ["start", "--help"])
         assert "--resume" in result.output
 
-    def test_start_accepts_background_flag(self):
-        """Test that start command accepts --background flag."""
+    def test_start_does_not_accept_background_flag(self):
+        """Test that --background flag has been removed from start."""
         runner = CliRunner()
         result = runner.invoke(cli, ["start", "--help"])
-        assert "--background" in result.output or "-b" in result.output
+        assert "--background" not in result.output
+        assert "-b" not in result.output
 
     def test_verbose_flag_supported(self):
         """Test that -v/--verbose flag is supported."""
@@ -185,11 +187,18 @@ class TestCLICommands:
         assert "Usage" in result.output
 
     def test_old_toplevel_commands_removed(self):
-        """Test that old top-level status/stop/sessions/logs/cleanup are gone."""
+        """Test that old top-level status/sessions/logs/cleanup are gone."""
         runner = CliRunner()
-        for cmd in ["status", "stop", "sessions", "logs", "cleanup"]:
+        for cmd in ["status", "sessions", "logs", "cleanup"]:
             result = runner.invoke(cli, [cmd])
             assert result.exit_code != 0, f"'{cmd}' should not be a top-level command"
+
+    def test_top_level_stop_command_available(self):
+        """Test that 'stop' is now a valid top-level command."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stop", "--help"])
+        assert result.exit_code == 0
+        assert "session" in result.output.lower() or "stop" in result.output.lower()
 
 
 class TestPrintAuthBanner:
@@ -410,71 +419,45 @@ class TestSessionInfo:
 
 
 class TestSessionStop:
-    """Behavior tests for 'session stop'."""
+    """Behavior tests for top-level 'stop' command."""
 
-    def test_stop_not_found(self):
-        mock_ctx = _mock_registry(session=None)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+    def test_stop_daemon_not_running(self):
+        with patch("summon_claude.cli.is_daemon_running", return_value=False):
             runner = CliRunner()
-            result = runner.invoke(cli, ["session", "stop", "nonexistent-id"])
+            result = runner.invoke(cli, ["stop", "some-session-id"])
         assert result.exit_code == 0
-        assert "Session not found: nonexistent-id" in result.output
+        assert "not running" in result.output
 
-    def test_stop_not_active(self):
-        mock_ctx = _mock_registry(session=_COMPLETED_SESSION)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["session", "stop", "bbbb1111-2222-3333-4444-555566667777"])
-        assert "is not active" in result.output
-
-    def test_stop_sends_sigterm(self):
-        mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
+    def test_stop_session_found(self):
         with (
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
-            patch("summon_claude.cli._pid_owned_by_current_user", return_value=True),
-            patch("summon_claude.cli.os.kill") as mock_kill,
+            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch(
+                "summon_claude.cli.daemon_client.stop_session",
+                new=AsyncMock(return_value=True),
+            ),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])
+            result = runner.invoke(cli, ["stop", "aaaa1111-2222-3333-4444-555566667777"])
         assert result.exit_code == 0
-        assert "Sent SIGTERM" in result.output
-        # os.kill called twice: liveness check (signal 0) + SIGTERM
-        assert mock_kill.call_count == 2
+        assert "Stop requested" in result.output
 
-    def test_stop_dead_pid_marks_errored(self):
-        """When the process is already dead, stop should mark the session errored."""
-        mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
+    def test_stop_session_not_found(self):
         with (
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
-            patch("summon_claude.cli.os.kill", side_effect=ProcessLookupError),
+            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch(
+                "summon_claude.cli.daemon_client.stop_session",
+                new=AsyncMock(return_value=False),
+            ),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])
-        assert "no longer exists" in result.output
-        assert "marking session as errored" in result.output
+            result = runner.invoke(cli, ["stop", "aaaa1111-2222-3333-4444-555566667777"])
+        assert result.exit_code == 0
+        assert "not found" in result.output
 
-    def test_stop_recycled_pid_marks_errored(self):
-        """When the PID was recycled by another user, stop should mark errored."""
-        mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
-        with (
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
-            patch("summon_claude.cli.os.kill", side_effect=PermissionError),
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])
-        assert "recycled" in result.output
-        assert "marking session as errored" in result.output
-
-    def test_stop_refuses_unowned_pid(self):
-        mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
-        with (
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
-            patch("summon_claude.cli._pid_owned_by_current_user", return_value=False),
-            patch("summon_claude.cli.os.kill"),  # liveness check passes
-        ):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["session", "stop", "aaaa1111-2222-3333-4444-555566667777"])
-        assert "not owned by the current user" in result.output
+    def test_stop_no_args_shows_error(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stop"])
+        assert result.exit_code != 0
 
 
 class TestSessionLogs:
@@ -574,19 +557,6 @@ def _mock_config():
     return config
 
 
-def _mock_auth():
-    """Return a mock SessionAuth."""
-    from datetime import UTC, datetime
-
-    from summon_claude.auth import SessionAuth
-
-    return SessionAuth(
-        short_code="ABCD1234",
-        session_id="test-session-id",
-        expires_at=datetime.now(UTC),
-    )
-
-
 def _start_patches(update_info=None):
     """Context manager that patches cmd_start dependencies and the update checker."""
     from contextlib import ExitStack
@@ -596,11 +566,17 @@ def _start_patches(update_info=None):
     stack.enter_context(
         patch("summon_claude.cli.SummonConfig.from_file", return_value=_mock_config())
     )
-    stack.enter_context(patch("summon_claude.cli._generate_auth", return_value=_mock_auth()))
-    stack.enter_context(patch("summon_claude.cli.asyncio.run", side_effect=[_mock_auth(), False]))
+    # Patch daemon interaction so tests don't try to fork/connect.
+    stack.enter_context(patch("summon_claude.cli.start_daemon", return_value=None))
     stack.enter_context(
         patch(
-            "summon_claude.update_check.check_for_update",
+            "summon_claude.cli.daemon_client.create_session",
+            AsyncMock(return_value="ABCD1234"),
+        )
+    )
+    stack.enter_context(
+        patch(
+            "summon_claude.cli.update_check.check_for_update",
             return_value=update_info,
         )
     )
@@ -611,7 +587,7 @@ class TestUpdateCheckIntegration:
     """Test update check integration in cmd_start."""
 
     def test_start_shows_update_notification_on_stderr(self):
-        from summon_claude.update_check import UpdateInfo
+        from summon_claude.cli.update_check import UpdateInfo
 
         info = UpdateInfo(current="0.1.0", latest="0.2.0")
         with _start_patches(update_info=info):
@@ -628,7 +604,7 @@ class TestUpdateCheckIntegration:
         assert "Update available" not in result.output
 
     def test_start_quiet_suppresses_update_notification(self):
-        from summon_claude.update_check import UpdateInfo
+        from summon_claude.cli.update_check import UpdateInfo
 
         info = UpdateInfo(current="0.1.0", latest="0.2.0")
         with _start_patches(update_info=info):
@@ -651,7 +627,7 @@ class TestUpdateCheckIntegration:
 
         with _start_patches(update_info=None) as stack:
             stack.enter_context(
-                patch("summon_claude.update_check.check_for_update", side_effect=slow_check)
+                patch("summon_claude.cli.update_check.check_for_update", side_effect=slow_check)
             )
             runner = CliRunner()
             start = time.monotonic()

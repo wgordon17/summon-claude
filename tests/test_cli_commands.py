@@ -5,11 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from click.testing import CliRunner
 
 from summon_claude.cli import cli
-from summon_claude.cli_config import config_path, config_set, config_show
+from summon_claude.cli.config import config_path, config_set, config_show
 
 
 class TestCLIInitCommand:
@@ -138,7 +137,7 @@ class TestConfigShow:
             "SUMMON_SLACK_SIGNING_SECRET=mysecretvalue12345\n"
         )
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -154,7 +153,7 @@ class TestConfigShow:
         config_file = tmp_path / "config.env"
         config_file.write_text("SUMMON_SLACK_BOT_TOKEN=\n")
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -166,7 +165,7 @@ class TestConfigShow:
             "SUMMON_SLACK_BOT_TOKEN=xoxb-testtest\nSUMMON_DEFAULT_MODEL=claude-opus-4-6\n"
         )
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -175,7 +174,7 @@ class TestConfigShow:
     def test_config_show_no_file_prints_message(self, tmp_path, capsys):
         missing_file = tmp_path / "nonexistent.env"
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=missing_file):
+        with patch("summon_claude.cli.config.get_config_file", return_value=missing_file):
             config_show()
 
         captured = capsys.readouterr()
@@ -250,7 +249,7 @@ class TestConfigPath:
         """config path should print the config file location."""
         expected_path = tmp_path / "summon" / "config.env"
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=expected_path):
+        with patch("summon_claude.cli.config.get_config_file", return_value=expected_path):
             config_path()
 
         captured = capsys.readouterr()
@@ -267,11 +266,10 @@ class TestCleanupCommand:
         assert result.exit_code == 0
 
     async def test_cleanup_archives_session_channel(self, tmp_path):
-        """Test that cleanup with stale sessions calls archive_session_channel."""
-        from unittest.mock import AsyncMock, patch
+        """Test that cleanup with stale sessions archives channel via web_client."""
+        from unittest.mock import AsyncMock
 
-        from summon_claude.channel_manager import ChannelManager
-        from summon_claude.registry import SessionRegistry
+        from summon_claude.sessions.registry import SessionRegistry
 
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             # Register a dead session with a channel
@@ -279,9 +277,9 @@ class TestCleanupCommand:
             await registry.register("sess-stale", dead_pid, "/tmp")
             await registry.update_status("sess-stale", "pending_auth", slack_channel_id="C_STALE")
 
-            # Mock the Slack client and ChannelManager
-            mock_channel_manager = AsyncMock(spec=ChannelManager)
-            mock_channel_manager.archive_session_channel = AsyncMock()
+            # Mock conversations_archive directly
+            mock_web_client = AsyncMock()
+            mock_web_client.conversations_archive = AsyncMock()
 
             # Manually run cleanup logic
             stale = await registry.list_stale()
@@ -289,8 +287,8 @@ class TestCleanupCommand:
 
             for session in stale:
                 channel_id = session.get("slack_channel_id")
-                if channel_id and mock_channel_manager:
-                    await mock_channel_manager.archive_session_channel(channel_id)
+                if channel_id and mock_web_client:
+                    await mock_web_client.conversations_archive(channel=channel_id)
 
             # Verify archive was called
-            mock_channel_manager.archive_session_channel.assert_called_once_with("C_STALE")
+            mock_web_client.conversations_archive.assert_called_once_with(channel="C_STALE")

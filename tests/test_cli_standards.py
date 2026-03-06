@@ -17,7 +17,10 @@ from summon_claude.cli import cli
 
 
 def _mock_registry(**overrides: object) -> AsyncMock:
-    """Build an AsyncMock that acts as SessionRegistry async context manager."""
+    """Build an AsyncMock that acts as SessionRegistry async context manager.
+
+    NOTE: Duplicated from test_cli.py — consider extracting to tests/helpers.py.
+    """
     reg = AsyncMock()
     reg.list_active = AsyncMock(return_value=overrides.get("active", []))
     reg.list_all = AsyncMock(return_value=overrides.get("all", []))
@@ -249,7 +252,7 @@ class TestConfigFlag:
         custom_config = tmp_path / "custom.env"
         custom_config.write_text("SUMMON_SLACK_BOT_TOKEN=xoxb-test\n")
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=custom_config):
+        with patch("summon_claude.cli.config.get_config_file", return_value=custom_config):
             result = runner.invoke(cli, ["--config", str(custom_config), "config", "show"])
             assert result.exit_code == 0
             # Secret values should show as 'configured', not the raw token
@@ -275,8 +278,8 @@ class TestConfigCheck:
         )
 
         with (
-            patch("summon_claude.cli_config.get_config_file", return_value=config_file),
-            patch("summon_claude.cli_config.get_data_dir") as mock_data_dir,
+            patch("summon_claude.cli.config.get_config_file", return_value=config_file),
+            patch("summon_claude.cli.config.get_data_dir") as mock_data_dir,
         ):
             mock_data_dir.return_value = tmp_path
             result = runner.invoke(cli, ["config", "check"])
@@ -288,7 +291,7 @@ class TestConfigCheck:
         config_file = tmp_path / "config.env"
         config_file.write_text("SUMMON_SLACK_BOT_TOKEN=xoxb-token\n")
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
             result = runner.invoke(cli, ["config", "check"])
             assert result.exit_code != 0
             assert "FAIL" in result.output
@@ -303,7 +306,7 @@ class TestConfigCheck:
             "SUMMON_SLACK_SIGNING_SECRET=abcd1234\n"
         )
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
             result = runner.invoke(cli, ["config", "check"])
             assert result.exit_code != 0
             assert "FAIL" in result.output
@@ -319,8 +322,8 @@ class TestConfigCheck:
         )
 
         with (
-            patch("summon_claude.cli_config.get_config_file", return_value=config_file),
-            patch("summon_claude.cli_config.get_data_dir") as mock_data_dir,
+            patch("summon_claude.cli.config.get_config_file", return_value=config_file),
+            patch("summon_claude.cli.config.get_data_dir") as mock_data_dir,
         ):
             mock_data_dir.return_value = tmp_path
             result = runner.invoke(cli, ["--quiet", "config", "check"])
@@ -335,7 +338,7 @@ class TestConfigCheck:
         # Missing required keys
         config_file.write_text("SUMMON_SLACK_BOT_TOKEN=xoxb-token\n")
 
-        with patch("summon_claude.cli_config.get_config_file", return_value=config_file):
+        with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
             result = runner.invoke(cli, ["config", "check"])
             assert result.exit_code == 1
 
@@ -350,8 +353,8 @@ class TestConfigCheck:
         )
 
         with (
-            patch("summon_claude.cli_config.get_config_file", return_value=config_file),
-            patch("summon_claude.cli_config.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.config.get_config_file", return_value=config_file),
+            patch("summon_claude.cli.config.get_data_dir", return_value=tmp_path),
         ):
             result = runner.invoke(cli, ["config", "check"])
             # Should pass since tmp_path is writable

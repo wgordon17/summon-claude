@@ -1,4 +1,4 @@
-"""Integration tests for SlackChatProvider against real Slack API.
+"""Integration tests for SlackClient against real Slack API.
 
 Channel lifecycle (create, invite, set_topic, archive) is exercised
 transitively by the shared test_channel fixture in conftest.py.
@@ -15,16 +15,16 @@ pytestmark = [pytest.mark.slack]
 
 
 class TestMessaging:
-    """Test SlackChatProvider messaging operations."""
+    """Test SlackClient messaging operations."""
 
-    async def test_post_message(self, slack_provider, test_channel):
-        ref = await slack_provider.post_message(test_channel, "Hello from integration test")
+    async def test_post_message(self, slack_client, test_channel):
+        ref = await slack_client.post("Hello from integration test")
         assert ref.channel_id == test_channel
         assert ref.ts
 
-    async def test_post_message_with_thread(self, slack_provider, test_channel, slack_harness):
-        parent = await slack_provider.post_message(test_channel, "Parent message")
-        reply = await slack_provider.post_message(test_channel, "Thread reply", thread_ts=parent.ts)
+    async def test_post_message_with_thread(self, slack_client, test_channel, slack_harness):
+        parent = await slack_client.post("Parent message")
+        reply = await slack_client.post("Thread reply", thread_ts=parent.ts)
         assert reply.ts != parent.ts
         replies = await slack_harness.client.conversations_replies(
             channel=test_channel, ts=parent.ts
@@ -32,25 +32,23 @@ class TestMessaging:
         reply_timestamps = [m["ts"] for m in replies["messages"]]
         assert reply.ts in reply_timestamps
 
-    async def test_update_message(self, slack_provider, test_channel, slack_harness):
-        ref = await slack_provider.post_message(test_channel, "Original text")
-        await slack_provider.update_message(test_channel, ref.ts, "Updated text")
+    async def test_update_message(self, slack_client, test_channel, slack_harness):
+        ref = await slack_client.post("Original text")
+        await slack_client.update(ref.ts, "Updated text")
         history = await slack_harness.client.conversations_history(
             channel=test_channel, latest=ref.ts, inclusive=True, limit=1
         )
         assert history["messages"][0]["text"] == "Updated text"
 
-    async def test_add_reaction(self, slack_provider, test_channel, slack_harness):
-        ref = await slack_provider.post_message(test_channel, "React to this")
-        await slack_provider.add_reaction(test_channel, ref.ts, "eyes")
+    async def test_add_reaction(self, slack_client, test_channel, slack_harness):
+        ref = await slack_client.post("React to this")
+        await slack_client.react(ref.ts, "eyes")
         reactions = await slack_harness.client.reactions_get(channel=test_channel, timestamp=ref.ts)
         reaction_names = [r["name"] for r in reactions["message"]["reactions"]]
         assert "eyes" in reaction_names
 
-    async def test_upload_file(self, slack_provider, test_channel, slack_harness):
-        await slack_provider.upload_file(
-            test_channel, "test content", "test.txt", title="Test File"
-        )
+    async def test_upload_file(self, slack_client, test_channel, slack_harness):
+        await slack_client.upload("test content", "test.txt", title="Test File")
         has_file = False
         for _ in range(3):
             await asyncio.sleep(1)
@@ -64,24 +62,15 @@ class TestMessaging:
                 break
         assert has_file
 
-    async def test_post_ephemeral(self, slack_provider, test_channel, slack_harness):
+    async def test_post_ephemeral(self, slack_client, slack_harness):
         bot_id = await slack_harness.resolve_bot_user_id()
-        await slack_provider.post_ephemeral(test_channel, bot_id, "Ephemeral test")
+        await slack_client.post_ephemeral(bot_id, "Ephemeral test")
 
 
 class TestErrorHandling:
-    """Test graceful error handling in SlackChatProvider."""
+    """Test graceful error handling in SlackClient."""
 
-    async def test_archive_nonexistent_channel(self, slack_provider):
-        await slack_provider.archive_channel("C000NONEXISTENT")
-
-    async def test_invite_self_raises(self, slack_provider, test_channel, slack_harness):
-        """Provider is transparent — cant_invite_self propagates to caller."""
-        bot_id = await slack_harness.resolve_bot_user_id()
-        with pytest.raises(Exception, match="cant_invite_self"):
-            await slack_provider.invite_user(test_channel, bot_id)
-
-    async def test_add_reaction_duplicate(self, slack_provider, test_channel):
-        ref = await slack_provider.post_message(test_channel, "Duplicate reaction test")
-        await slack_provider.add_reaction(test_channel, ref.ts, "thumbsup")
-        await slack_provider.add_reaction(test_channel, ref.ts, "thumbsup")
+    async def test_add_reaction_duplicate(self, slack_client, test_channel):
+        ref = await slack_client.post("Duplicate reaction test")
+        await slack_client.react(ref.ts, "thumbsup")
+        await slack_client.react(ref.ts, "thumbsup")  # Should not raise
