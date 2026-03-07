@@ -279,9 +279,6 @@ async def daemon_main(config: SummonConfig) -> None:
 
     logger.info("Daemon stopped cleanly")
 
-    # Stop the background log listener last — flush remaining records
-    _stop_daemon_logging()
-
 
 async def _watchdog_loop(shutdown_event: asyncio.Event) -> None:
     """Daemon-level event loop watchdog.
@@ -351,11 +348,7 @@ def _disarm_sigalrm_watchdog() -> None:
         logger.debug("SIGALRM watchdog disarmed")
 
 
-_daemon_log_listener: logging.handlers.QueueListener | None = None
-"""Module-level reference to the daemon log listener for shutdown cleanup."""
-
-
-def _setup_daemon_logging(log_file: Path) -> None:
+def _setup_daemon_logging(log_file: Path) -> logging.handlers.QueueListener:
     """Configure non-blocking file-based logging for the daemon process.
 
     Uses ``QueueHandler`` + ``QueueListener`` so log records are enqueued
@@ -363,26 +356,20 @@ def _setup_daemon_logging(log_file: Path) -> None:
     This prevents synchronous file I/O from ever stalling the asyncio
     event loop — the root cause of the SIGALRM crash.
 
-    Idempotent — safe to call twice (e.g. once in the fork child for early
-    diagnostics, then again inside ``run_daemon``).  Skips if a
-    ``QueueHandler`` is already attached.
-
     Installs a ``SessionIdFilter`` on the ``QueueHandler`` so that every log
     record is tagged with ``session_id`` before enqueuing — including records
     from third-party loggers (Slack SDK, Claude Agent SDK) that propagate to
     the root logger without passing through root-level filters.  The filter
     must be on the QueueHandler (not the FileHandler) because it reads a
     contextvar only available in the calling thread/task.
+
+    Returns the ``QueueListener`` — the caller must call ``.stop()`` on
+    shutdown to flush remaining records.
     """
-    global _daemon_log_listener  # noqa: PLW0603
     from summon_claude.sessions.session import SessionIdFilter  # noqa: PLC0415
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
-
-    # Idempotency: skip if listener already running
-    if _daemon_log_listener is not None:
-        return
 
     root.setLevel(logging.DEBUG)
     # session_id is "[abc] " when inside a session task, "" at daemon level.
@@ -407,8 +394,8 @@ def _setup_daemon_logging(log_file: Path) -> None:
     qh.addFilter(SessionIdFilter())
     root.addHandler(qh)
 
-    _daemon_log_listener = logging.handlers.QueueListener(log_queue, fh, respect_handler_level=True)
-    _daemon_log_listener.start()
+    listener = logging.handlers.QueueListener(log_queue, fh, respect_handler_level=True)
+    listener.start()
 
     # Suppress noisy third-party DEBUG logging — these generate high volumes
     # of messages (pings, API calls) that are rarely useful for debugging
@@ -416,13 +403,7 @@ def _setup_daemon_logging(log_file: Path) -> None:
     for noisy_logger in ("slack_sdk", "slack_bolt", "aiohttp", "urllib3"):
         logging.getLogger(noisy_logger).setLevel(logging.INFO)
 
-
-def _stop_daemon_logging() -> None:
-    """Stop the background log listener, flushing remaining records."""
-    global _daemon_log_listener  # noqa: PLW0603
-    if _daemon_log_listener is not None:
-        _daemon_log_listener.stop()
-        _daemon_log_listener = None
+    return listener
 
 
 def run_daemon(config: SummonConfig) -> None:
@@ -451,14 +432,14 @@ def run_daemon(config: SummonConfig) -> None:
     pid_path.write_text(str(os.getpid()))
     pid_path.chmod(0o600)
 
-    _setup_daemon_logging(log_path)
+    log_listener = _setup_daemon_logging(log_path)
     logger.info("Daemon process started (pid=%d)", os.getpid())
 
     try:
         asyncio.run(daemon_main(config))
     finally:
         # Best-effort cleanup if asyncio.run() exits early (e.g., exception)
-        _stop_daemon_logging()
+        log_listener.stop()
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
         pid_path.unlink(missing_ok=True)
@@ -537,8 +518,9 @@ def start_daemon(config: SummonConfig) -> None:
 
     # Set up file logging early so exceptions during daemon startup are
     # captured in daemon.log instead of being silently swallowed.
+    # run_daemon() sets up its own listener, so stop this one first.
     log_path = _daemon_log()
-    _setup_daemon_logging(log_path)
+    early_listener = _setup_daemon_logging(log_path)
 
     try:
         import daemon  # noqa: PLC0415
@@ -553,6 +535,7 @@ def start_daemon(config: SummonConfig) -> None:
             detach_process=False,  # already forked + setsid above — just close fds
         )
         with ctx:
+            early_listener.stop()
             run_daemon(config)
     except Exception as exc:
         logger.critical("Daemon child failed: %s", exc, exc_info=True)

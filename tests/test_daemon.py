@@ -561,14 +561,15 @@ class TestSetupDaemonLogging:
         import logging
         import logging.handlers
 
-        from summon_claude.daemon import _setup_daemon_logging, _stop_daemon_logging
+        from summon_claude.daemon import _setup_daemon_logging
 
         log_file = tmp_path / "logs" / "daemon.log"
         root = logging.getLogger()
         initial_handler_count = len(root.handlers)
 
+        listener = None
         try:
-            _setup_daemon_logging(log_file)
+            listener = _setup_daemon_logging(log_file)
 
             assert log_file.parent.exists()
             # At least one new handler added (QueueHandler)
@@ -576,30 +577,8 @@ class TestSetupDaemonLogging:
             new_handlers = root.handlers[initial_handler_count:]
             assert any(isinstance(h, logging.handlers.QueueHandler) for h in new_handlers)
         finally:
-            _stop_daemon_logging()
-            for h in root.handlers[initial_handler_count:]:
-                root.removeHandler(h)
-                h.close()
-
-    def test_idempotent_does_not_duplicate_handler(self, tmp_path):
-        import logging
-
-        from summon_claude.daemon import _setup_daemon_logging, _stop_daemon_logging
-
-        log_file = tmp_path / "logs" / "daemon.log"
-        root = logging.getLogger()
-        initial_handler_count = len(root.handlers)
-
-        try:
-            _setup_daemon_logging(log_file)
-            count_after_first = len(root.handlers)
-
-            _setup_daemon_logging(log_file)
-            count_after_second = len(root.handlers)
-
-            assert count_after_second == count_after_first
-        finally:
-            _stop_daemon_logging()
+            if listener:
+                listener.stop()
             for h in root.handlers[initial_handler_count:]:
                 root.removeHandler(h)
                 h.close()

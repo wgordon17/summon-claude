@@ -3,64 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from summon_claude.cli import cli
-
-# ---------------------------------------------------------------------------
-# Helpers for mocking SessionRegistry as an async context manager
-# ---------------------------------------------------------------------------
-
-
-def _mock_registry(**overrides: object) -> AsyncMock:
-    """Build an AsyncMock that acts as SessionRegistry async context manager.
-
-    NOTE: Duplicated from test_cli.py — consider extracting to tests/helpers.py.
-    """
-    reg = AsyncMock()
-    reg.list_active = AsyncMock(return_value=overrides.get("active", []))
-    reg.list_all = AsyncMock(return_value=overrides.get("all", []))
-    reg.get_session = AsyncMock(return_value=overrides.get("session"))
-    # resolve_session returns (session, matches) tuple
-    _resolve = overrides.get("resolve", overrides.get("session"))
-    if _resolve is None:
-        reg.resolve_session = AsyncMock(return_value=(None, []))
-    elif isinstance(_resolve, list):
-        reg.resolve_session = AsyncMock(return_value=(None, _resolve))
-    else:
-        reg.resolve_session = AsyncMock(return_value=(_resolve, [_resolve]))
-    reg.list_stale = AsyncMock(return_value=overrides.get("stale", []))
-    reg.update_status = AsyncMock()
-    reg.log_event = AsyncMock()
-
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=reg)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-    return ctx
-
-
-_ACTIVE_SESSION = {
-    "session_id": "aaaa1111-2222-3333-4444-555566667777",
-    "status": "active",
-    "session_name": "my-proj",
-    "slack_channel_name": "summon-my-proj-0224",
-    "slack_channel_id": "C999",
-    "cwd": "/home/user/my-proj",
-    "pid": os.getpid(),
-    "model": "claude-sonnet-4-20250514",
-    "total_turns": 12,
-    "total_cost_usd": 0.1234,
-    "started_at": "2026-02-24T10:00:00+00:00",
-    "authenticated_at": "2026-02-24T10:01:00+00:00",
-    "last_activity_at": "2026-02-24T11:00:00+00:00",
-    "ended_at": None,
-    "claude_session_id": "claude-abc",
-}
-
+from tests.conftest import ACTIVE_SESSION as _ACTIVE_SESSION
+from tests.conftest import mock_registry as _mock_registry
 
 # ---------------------------------------------------------------------------
 # TestVersionFlag

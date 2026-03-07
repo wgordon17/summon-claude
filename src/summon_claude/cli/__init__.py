@@ -296,15 +296,18 @@ def cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None
     asyncio.run(_async_cmd_stop(ctx, session_id, stop_all))
 
 
-async def _resolve_session_or_exit(identifier: str) -> dict | None:
+async def _resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:
+    """Look up a session by ID prefix or channel name (async registry query)."""
+    async with SessionRegistry() as registry:
+        return await registry.resolve_session(identifier)
+
+
+def _resolve_session_or_exit(identifier: str) -> dict | None:
     """Resolve a session identifier, with interactive disambiguation.
 
     Returns the resolved session dict, or ``None`` if not found.
     """
-    session: dict | None = None
-    matches: list[dict] = []
-    async with SessionRegistry() as registry:
-        session, matches = await registry.resolve_session(identifier)
+    session, matches = asyncio.run(_resolve_session(identifier))
     if not session:
         if matches:
             session = _pick_session(identifier, matches)
@@ -337,7 +340,14 @@ async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: 
             for sid, found in results:
                 click.echo(f"Stop requested for {sid}: {'sent' if found else 'not found'}")
         else:
-            session = await _resolve_session_or_exit(session_id)  # type: ignore[arg-type]
+            session, matches = await _resolve_session(session_id)  # type: ignore[arg-type]
+            if not session:
+                if matches:
+                    session = _pick_session(session_id, matches)
+                else:
+                    click.echo(f"Session not found: {session_id}")
+                    ctx.exit(1)
+                    return
             if not session:
                 ctx.exit(1)
                 return
@@ -429,11 +439,7 @@ async def _async_session_list(ctx: click.Context, show_all: bool, output: str) -
 )
 def session_info(session_id: str, output: str) -> None:
     """Show detailed information for a specific session."""
-    asyncio.run(_async_session_info(session_id, output))
-
-
-async def _async_session_info(session_id: str, output: str) -> None:
-    session = await _resolve_session_or_exit(session_id)
+    session = _resolve_session_or_exit(session_id)
     if not session:
         return
     if output == "json":
@@ -466,7 +472,7 @@ def session_logs(session_id: str | None, tail: int) -> None:
     # Resolve partial ID or channel name to full session_id
     resolved_id = session_id
     if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", session_id):
-        session_record = asyncio.run(_resolve_session_or_exit(session_id))
+        session_record = _resolve_session_or_exit(session_id)
         if session_record is None:
             return
         resolved_id = session_record["session_id"]
@@ -508,7 +514,7 @@ async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -
                 active = await registry.list_active()
                 for session in active:
                     sid = session["session_id"]
-                    if sid not in daemon_sids and session not in stale:
+                    if sid not in daemon_sids and sid not in pid_stale_ids:
                         stale.append(session)
             except Exception as e:
                 logger.debug("Could not cross-reference daemon sessions: %s", e)
