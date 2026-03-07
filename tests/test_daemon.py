@@ -499,10 +499,11 @@ class TestValidateSocketPath:
 
 
 class TestSetupDaemonLogging:
-    def test_creates_file_handler(self, tmp_path):
+    def test_creates_queue_handler(self, tmp_path):
         import logging
+        import logging.handlers
 
-        from summon_claude.daemon import _setup_daemon_logging
+        from summon_claude.daemon import _setup_daemon_logging, _stop_daemon_logging
 
         log_file = tmp_path / "logs" / "daemon.log"
         root = logging.getLogger()
@@ -512,10 +513,12 @@ class TestSetupDaemonLogging:
             _setup_daemon_logging(log_file)
 
             assert log_file.parent.exists()
-            # At least one new handler added
+            # At least one new handler added (QueueHandler)
             assert len(root.handlers) > initial_handler_count
+            new_handlers = root.handlers[initial_handler_count:]
+            assert any(isinstance(h, logging.handlers.QueueHandler) for h in new_handlers)
         finally:
-            # Clean up: remove any handlers we added
+            _stop_daemon_logging()
             for h in root.handlers[initial_handler_count:]:
                 root.removeHandler(h)
                 h.close()
@@ -523,7 +526,7 @@ class TestSetupDaemonLogging:
     def test_idempotent_does_not_duplicate_handler(self, tmp_path):
         import logging
 
-        from summon_claude.daemon import _setup_daemon_logging
+        from summon_claude.daemon import _setup_daemon_logging, _stop_daemon_logging
 
         log_file = tmp_path / "logs" / "daemon.log"
         root = logging.getLogger()
@@ -538,6 +541,7 @@ class TestSetupDaemonLogging:
 
             assert count_after_second == count_after_first
         finally:
+            _stop_daemon_logging()
             for h in root.handlers[initial_handler_count:]:
                 root.removeHandler(h)
                 h.close()

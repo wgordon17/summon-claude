@@ -166,15 +166,14 @@ class TestPerSessionLogFile:
         )
 
         with patch("summon_claude.sessions.session.get_data_dir", return_value=tmp_path):
-            handler = session._install_session_log_handler()
+            handler_info = session._install_session_log_handler()
 
-        assert handler is not None
+        assert handler_info is not None
         log_file = tmp_path / "logs" / "log-test-session.log"
         assert log_file.exists()
 
         # Cleanup
-        logging.getLogger().removeHandler(handler)
-        handler.close()
+        SummonSession._remove_session_log_handler(handler_info)
 
     def test_handler_filters_by_session_id(self, tmp_path):
         """Only log records from the matching session task are written."""
@@ -187,9 +186,9 @@ class TestPerSessionLogFile:
         session = SummonSession(config=config, options=options, auth=auth, session_id="filter-test")
 
         with patch("summon_claude.sessions.session.get_data_dir", return_value=tmp_path):
-            handler = session._install_session_log_handler()
+            handler_info = session._install_session_log_handler()
 
-        assert handler is not None
+        assert handler_info is not None
         test_logger = logging.getLogger("summon_claude.test_filter")
         test_logger.setLevel(logging.DEBUG)
 
@@ -205,7 +204,10 @@ class TestPerSessionLogFile:
         _session_id_var.set("")
         test_logger.info("This should also NOT be captured")
 
-        handler.flush()
+        # Stop the listener to flush all queued records before reading the file
+        _session_id_var.set("")
+        SummonSession._remove_session_log_handler(handler_info)
+
         log_file = tmp_path / "logs" / "filter-test.log"
         content = log_file.read_text()
 
@@ -213,13 +215,8 @@ class TestPerSessionLogFile:
         assert "This should NOT be captured" not in content
         assert "This should also NOT be captured" not in content
 
-        # Cleanup
-        _session_id_var.set("")
-        logging.getLogger().removeHandler(handler)
-        handler.close()
-
     def test_remove_handler_cleans_up(self, tmp_path):
-        """_remove_session_log_handler removes the handler from root logger."""
+        """_remove_session_log_handler removes the QueueHandler from root logger."""
         from summon_claude.sessions.auth import SessionAuth
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
@@ -231,11 +228,13 @@ class TestPerSessionLogFile:
         )
 
         with patch("summon_claude.sessions.session.get_data_dir", return_value=tmp_path):
-            handler = session._install_session_log_handler()
+            handler_info = session._install_session_log_handler()
 
-        assert handler in logging.getLogger().handlers
-        SummonSession._remove_session_log_handler(handler)
-        assert handler not in logging.getLogger().handlers
+        assert handler_info is not None
+        qh, _listener = handler_info
+        assert qh in logging.getLogger().handlers
+        SummonSession._remove_session_log_handler(handler_info)
+        assert qh not in logging.getLogger().handlers
 
     def test_remove_none_handler_is_noop(self):
         """_remove_session_log_handler(None) does not raise."""
