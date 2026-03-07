@@ -281,6 +281,26 @@ class SessionRegistry:
                 stale.append(dict(row))
         return stale
 
+    async def mark_stale(self, session_id: str, reason: str) -> None:
+        """Mark a single session as errored with a reason and ended_at timestamp."""
+        await self.update_status(
+            session_id,
+            "errored",
+            error_message=reason,
+            ended_at=_now(),
+        )
+
+    async def cleanup_active(self, reason: str) -> list[dict]:
+        """Mark all active/pending_auth sessions as errored.
+
+        Returns the list of sessions that were cleaned up (empty if none).
+        Intended for daemon startup where no sessions should be active.
+        """
+        active = await self.list_active()
+        for session in active:
+            await self.mark_stale(session["session_id"], reason)
+        return active
+
     # --- Pending auth token methods ---
 
     async def store_pending_token(

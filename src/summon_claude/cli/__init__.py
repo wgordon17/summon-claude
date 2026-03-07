@@ -21,7 +21,7 @@ import pathlib
 import re
 import sys
 import threading
-from datetime import UTC, datetime
+from datetime import datetime
 
 import click
 from slack_sdk.web.async_client import AsyncWebClient
@@ -497,7 +497,6 @@ def session_cleanup(ctx: click.Context, archive: bool) -> None:
 async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -> None:
     async with SessionRegistry() as registry:
         stale = await registry.list_stale()
-        # Track which session IDs were found via PID check vs daemon cross-reference
         pid_stale_ids = {s["session_id"] for s in stale}
 
         # Cross-reference with daemon: sessions in SQLite as "active" but
@@ -545,12 +544,7 @@ async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -
                 except Exception as e:
                     logger.debug("Could not archive channel %s: %s", channel_id, e)
 
-            await registry.update_status(
-                session_id,
-                "errored",
-                error_message=reason,
-                ended_at=datetime.now(UTC).isoformat(),
-            )
+            await registry.mark_stale(session_id, reason)
 
         click.echo(f"Cleaned up {len(stale)} stale session(s).")
 

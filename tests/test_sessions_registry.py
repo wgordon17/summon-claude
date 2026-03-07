@@ -245,6 +245,49 @@ class TestResolveSession:
         assert matches == []
 
 
+class TestMarkStale:
+    async def test_marks_session_as_errored(self, registry):
+        await registry.register("sess-stale", 111, "/tmp")
+        await registry.update_status("sess-stale", "active")
+
+        await registry.mark_stale("sess-stale", "test reason")
+
+        s = await registry.get_session("sess-stale")
+        assert s["status"] == "errored"
+        assert s["error_message"] == "test reason"
+        assert s["ended_at"] is not None
+
+
+class TestCleanupActive:
+    async def test_marks_all_active_sessions(self, registry):
+        await registry.register("ca-1", 111, "/tmp")
+        await registry.update_status("ca-1", "active")
+        await registry.register("ca-2", 222, "/tmp")
+        # ca-2 stays as pending_auth — also caught
+
+        cleaned = await registry.cleanup_active("daemon restart")
+
+        assert len(cleaned) == 2
+        for s_id in ("ca-1", "ca-2"):
+            s = await registry.get_session(s_id)
+            assert s["status"] == "errored"
+            assert s["error_message"] == "daemon restart"
+
+    async def test_skips_completed_sessions(self, registry):
+        await registry.register("ca-done", 111, "/tmp")
+        await registry.update_status("ca-done", "completed")
+
+        cleaned = await registry.cleanup_active("daemon restart")
+
+        assert len(cleaned) == 0
+        s = await registry.get_session("ca-done")
+        assert s["status"] == "completed"
+
+    async def test_returns_empty_when_no_active(self, registry):
+        cleaned = await registry.cleanup_active("daemon restart")
+        assert cleaned == []
+
+
 class TestSQLitePragmas:
     """Test that SQLite pragmas are properly configured (BUG-015)."""
 

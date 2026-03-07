@@ -25,7 +25,6 @@ import signal
 import socket
 import struct
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -159,11 +158,8 @@ async def _cleanup_orphaned_sessions(web_client: AsyncWebClient) -> None:
     """
     try:
         async with SessionRegistry() as registry:
-            active = await registry.list_active()
-            if not active:
-                return
-            now = datetime.now(UTC).isoformat()
-            for session in active:
+            cleaned = await registry.cleanup_active("Orphaned by daemon restart")
+            for session in cleaned:
                 channel_id = session.get("slack_channel_id")
                 if channel_id:
                     try:
@@ -176,13 +172,8 @@ async def _cleanup_orphaned_sessions(web_client: AsyncWebClient) -> None:
                         )
                     except Exception as e:
                         logger.debug("Could not post disconnect to channel %s: %s", channel_id, e)
-                await registry.update_status(
-                    session["session_id"],
-                    "errored",
-                    error_message="Orphaned by daemon restart",
-                    ended_at=now,
-                )
-            logger.info("Cleaned up %d orphaned session(s) from previous daemon", len(active))
+            if cleaned:
+                logger.info("Cleaned up %d orphaned session(s) from previous daemon", len(cleaned))
     except Exception as e:
         logger.warning("Failed to clean up orphaned sessions: %s", e)
 
