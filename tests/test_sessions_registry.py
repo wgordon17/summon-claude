@@ -208,6 +208,86 @@ class TestPidAlive:
         assert _pid_alive(999999999) is False
 
 
+class TestResolveSession:
+    async def test_resolve_exact_id(self, registry):
+        await registry.register("sess-resolve-1", 111, "/tmp")
+        session, matches = await registry.resolve_session("sess-resolve-1")
+        assert session is not None
+        assert session["session_id"] == "sess-resolve-1"
+        assert len(matches) == 1
+
+    async def test_resolve_prefix(self, registry):
+        await registry.register("abcd1234-5678-9abc-def0-111111111111", 111, "/tmp")
+        session, matches = await registry.resolve_session("abcd1234")
+        assert session is not None
+        assert session["session_id"] == "abcd1234-5678-9abc-def0-111111111111"
+        assert len(matches) == 1
+
+    async def test_resolve_ambiguous_prefix_returns_matches(self, registry):
+        await registry.register("abcd1111-0000-0000-0000-000000000000", 111, "/tmp")
+        await registry.register("abcd2222-0000-0000-0000-000000000000", 222, "/tmp")
+        session, matches = await registry.resolve_session("abcd")
+        assert session is None
+        assert len(matches) == 2
+
+    async def test_resolve_channel_name(self, registry):
+        await registry.register("sess-chan-1", 111, "/tmp")
+        await registry.update_status(
+            "sess-chan-1", "active", slack_channel_name="summon-my-proj-0224"
+        )
+        session, matches = await registry.resolve_session("summon-my-proj-0224")
+        assert session is not None
+        assert session["session_id"] == "sess-chan-1"
+
+    async def test_resolve_nonexistent_returns_empty(self, registry):
+        session, matches = await registry.resolve_session("nonexistent")
+        assert session is None
+        assert matches == []
+
+
+class TestMarkStale:
+    async def test_marks_session_as_errored(self, registry):
+        await registry.register("sess-stale", 111, "/tmp")
+        await registry.update_status("sess-stale", "active")
+
+        await registry.mark_stale("sess-stale", "test reason")
+
+        s = await registry.get_session("sess-stale")
+        assert s["status"] == "errored"
+        assert s["error_message"] == "test reason"
+        assert s["ended_at"] is not None
+
+
+class TestCleanupActive:
+    async def test_marks_all_active_sessions(self, registry):
+        await registry.register("ca-1", 111, "/tmp")
+        await registry.update_status("ca-1", "active")
+        await registry.register("ca-2", 222, "/tmp")
+        # ca-2 stays as pending_auth — also caught
+
+        cleaned = await registry.cleanup_active("daemon restart")
+
+        assert len(cleaned) == 2
+        for s_id in ("ca-1", "ca-2"):
+            s = await registry.get_session(s_id)
+            assert s["status"] == "errored"
+            assert s["error_message"] == "daemon restart"
+
+    async def test_skips_completed_sessions(self, registry):
+        await registry.register("ca-done", 111, "/tmp")
+        await registry.update_status("ca-done", "completed")
+
+        cleaned = await registry.cleanup_active("daemon restart")
+
+        assert len(cleaned) == 0
+        s = await registry.get_session("ca-done")
+        assert s["status"] == "completed"
+
+    async def test_returns_empty_when_no_active(self, registry):
+        cleaned = await registry.cleanup_active("daemon restart")
+        assert cleaned == []
+
+
 class TestSQLitePragmas:
     """Test that SQLite pragmas are properly configured (BUG-015)."""
 

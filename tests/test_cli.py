@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,59 +14,9 @@ from summon_claude.cli import (
     _print_session_table,
     cli,
 )
-
-# ---------------------------------------------------------------------------
-# Helpers for mocking SessionRegistry as an async context manager
-# ---------------------------------------------------------------------------
-
-_ACTIVE_SESSION = {
-    "session_id": "aaaa1111-2222-3333-4444-555566667777",
-    "status": "active",
-    "session_name": "my-proj",
-    "slack_channel_name": "summon-my-proj-0224",
-    "slack_channel_id": "C999",
-    "cwd": "/home/user/my-proj",
-    "pid": os.getpid(),  # use our own PID so ownership checks pass
-    "model": "claude-sonnet-4-20250514",
-    "total_turns": 12,
-    "total_cost_usd": 0.1234,
-    "started_at": "2026-02-24T10:00:00+00:00",
-    "authenticated_at": "2026-02-24T10:01:00+00:00",
-    "last_activity_at": "2026-02-24T11:00:00+00:00",
-    "ended_at": None,
-    "claude_session_id": "claude-abc",
-}
-
-_COMPLETED_SESSION = {
-    "session_id": "bbbb1111-2222-3333-4444-555566667777",
-    "status": "completed",
-    "session_name": "old-proj",
-    "slack_channel_name": "summon-old-proj-0223",
-    "slack_channel_id": "C888",
-    "cwd": "/home/user/old-proj",
-    "pid": 99999,
-    "model": "claude-sonnet-4-20250514",
-    "total_turns": 5,
-    "total_cost_usd": 0.05,
-    "started_at": "2026-02-23T09:00:00+00:00",
-    "ended_at": "2026-02-23T10:00:00+00:00",
-}
-
-
-def _mock_registry(**overrides: object) -> AsyncMock:
-    """Build an AsyncMock that acts as SessionRegistry async context manager."""
-    reg = AsyncMock()
-    reg.list_active = AsyncMock(return_value=overrides.get("active", []))
-    reg.list_all = AsyncMock(return_value=overrides.get("all", []))
-    reg.get_session = AsyncMock(return_value=overrides.get("session"))
-    reg.list_stale = AsyncMock(return_value=overrides.get("stale", []))
-    reg.update_status = AsyncMock()
-    reg.log_event = AsyncMock()
-
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=reg)
-    ctx.__aexit__ = AsyncMock(return_value=False)
-    return ctx
+from tests.conftest import ACTIVE_SESSION as _ACTIVE_SESSION
+from tests.conftest import COMPLETED_SESSION as _COMPLETED_SESSION
+from tests.conftest import mock_registry as _mock_registry
 
 
 class TestCLICommands:
@@ -429,30 +378,60 @@ class TestSessionStop:
         assert "not running" in result.output
 
     def test_stop_session_found(self):
+        mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
         with (
             patch("summon_claude.cli.is_daemon_running", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.stop_session",
                 new=AsyncMock(return_value=True),
             ),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["stop", "aaaa1111-2222-3333-4444-555566667777"])
+            result = runner.invoke(cli, ["stop", "aaaa1111"])
         assert result.exit_code == 0
         assert "Stop requested" in result.output
 
-    def test_stop_session_not_found(self):
+    def test_stop_session_not_found_in_daemon(self):
+        mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
         with (
             patch("summon_claude.cli.is_daemon_running", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.stop_session",
                 new=AsyncMock(return_value=False),
             ),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["stop", "aaaa1111-2222-3333-4444-555566667777"])
+            result = runner.invoke(cli, ["stop", "aaaa1111"])
         assert result.exit_code == 0
-        assert "not found" in result.output
+        assert "not owned by running daemon" in result.output
+        assert "summon session cleanup" in result.output
+
+    def test_stop_session_not_found_in_registry(self):
+        mock_ctx = _mock_registry(resolve=None)
+        with (
+            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["stop", "nonexistent"])
+        assert "Session not found" in result.output
+
+    def test_stop_ambiguous_prefix_prompts(self):
+        mock_ctx = _mock_registry(resolve=[_ACTIVE_SESSION, _COMPLETED_SESSION])
+        with (
+            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch(
+                "summon_claude.cli.daemon_client.stop_session",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["stop", "ambig"], input="1\n")
+        assert "matches 2 sessions" in result.output
+        assert "Stop requested" in result.output
 
     def test_stop_no_args_shows_error(self):
         runner = CliRunner()
@@ -499,14 +478,32 @@ class TestSessionLogs:
         assert "log line 99" in result.output
         assert "log line 96" not in result.output
 
-    def test_logs_invalid_session_id_format(self, tmp_path):
+    def test_logs_resolves_partial_id(self, tmp_path):
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        with patch("summon_claude.cli.get_data_dir", return_value=tmp_path):
+        sid = "aaaa1111-2222-3333-4444-555566667777"
+        (log_dir / f"{sid}.log").write_text("resolved log line\n")
+        mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
+        with (
+            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["session", "logs", "not-a-uuid"])
-        assert result.exit_code != 0
-        assert "Invalid session ID format" in result.output
+            result = runner.invoke(cli, ["session", "logs", "aaaa1111", "-n", "1"])
+        assert result.exit_code == 0
+        assert "resolved log line" in result.output
+
+    def test_logs_not_found_by_name(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        mock_ctx = _mock_registry(resolve=None)
+        with (
+            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["session", "logs", "nonexistent"])
+        assert "Session not found" in result.output
 
     def test_logs_session_not_found(self, tmp_path):
         log_dir = tmp_path / "logs"

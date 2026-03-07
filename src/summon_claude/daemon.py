@@ -18,7 +18,9 @@ import asyncio
 import fcntl
 import json
 import logging
+import logging.handlers
 import os
+import queue
 import signal
 import socket
 import struct
@@ -29,9 +31,12 @@ from typing import TYPE_CHECKING
 from summon_claude.config import get_data_dir
 from summon_claude.event_dispatcher import EventDispatcher
 from summon_claude.sessions.manager import SessionManager
+from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.slack.bolt import BoltRouter
 
 if TYPE_CHECKING:
+    from slack_sdk.web.async_client import AsyncWebClient
+
     from summon_claude.config import SummonConfig
 
 logger = logging.getLogger(__name__)
@@ -144,6 +149,35 @@ class DaemonAlreadyRunningError(Exception):
 # ---------------------------------------------------------------------------
 
 
+async def _cleanup_orphaned_sessions(web_client: AsyncWebClient) -> None:
+    """Mark any 'active' or 'pending_auth' sessions as errored on daemon startup.
+
+    At daemon start, ``_sessions`` is empty — any session still marked active
+    in SQLite is left over from a previous daemon instance and should be closed.
+    Posts a disconnect notice to each orphaned session's Slack channel.
+    """
+    try:
+        async with SessionRegistry() as registry:
+            cleaned = await registry.cleanup_active("Orphaned by daemon restart")
+            for session in cleaned:
+                channel_id = session.get("slack_channel_id")
+                if channel_id:
+                    try:
+                        await web_client.chat_postMessage(
+                            channel=channel_id,
+                            text=(
+                                ":warning: *Session disconnected* (daemon restarted)\n"
+                                "Channel preserved — you can review the conversation history."
+                            ),
+                        )
+                    except Exception as e:
+                        logger.debug("Could not post disconnect to channel %s: %s", channel_id, e)
+            if cleaned:
+                logger.info("Cleaned up %d orphaned session(s) from previous daemon", len(cleaned))
+    except Exception as e:
+        logger.warning("Failed to clean up orphaned sessions: %s", e)
+
+
 async def daemon_main(config: SummonConfig) -> None:
     """Async daemon entry point.
 
@@ -165,6 +199,9 @@ async def daemon_main(config: SummonConfig) -> None:
 
     await bolt_router.start()
     logger.info("BoltRouter started")
+
+    # Mark any sessions left active from a previous daemon as errored
+    await _cleanup_orphaned_sessions(bolt_router.web_client)
 
     if bolt_router.bot_user_id is None:  # pragma: no cover — start() always sets this
         raise RuntimeError("BoltRouter.start() did not set bot_user_id")
@@ -311,30 +348,30 @@ def _disarm_sigalrm_watchdog() -> None:
         logger.debug("SIGALRM watchdog disarmed")
 
 
-def _setup_daemon_logging(log_file: Path) -> None:
-    """Configure file-based logging for the daemon process.
+def _setup_daemon_logging(log_file: Path) -> logging.handlers.QueueListener:
+    """Configure non-blocking file-based logging for the daemon process.
 
-    Idempotent — safe to call twice (e.g. once in the fork child for early
-    diagnostics, then again inside ``run_daemon``).  Skips if a
-    ``FileHandler`` pointing at *log_file* is already attached.
+    Uses ``QueueHandler`` + ``QueueListener`` so log records are enqueued
+    instantly (non-blocking) and written to disk in a background thread.
+    This prevents synchronous file I/O from ever stalling the asyncio
+    event loop — the root cause of the SIGALRM crash.
 
-    Installs a ``SessionIdFilter`` on the root logger so that every log
-    record emitted within a session task is tagged with ``session_id``.
-    The format includes ``%(session_id)s`` when non-empty.
+    Installs a ``SessionIdFilter`` on the ``QueueHandler`` so that every log
+    record is tagged with ``session_id`` before enqueuing — including records
+    from third-party loggers (Slack SDK, Claude Agent SDK) that propagate to
+    the root logger without passing through root-level filters.  The filter
+    must be on the QueueHandler (not the FileHandler) because it reads a
+    contextvar only available in the calling thread/task.
+
+    Returns the ``QueueListener`` — the caller must call ``.stop()`` on
+    shutdown to flush remaining records.
     """
     from summon_claude.sessions.session import SessionIdFilter  # noqa: PLC0415
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
 
-    # Idempotency: skip if already set up for this file
-    resolved = str(log_file.resolve())
-    for h in root.handlers:
-        if isinstance(h, logging.FileHandler) and h.baseFilename == resolved:
-            return
-
     root.setLevel(logging.DEBUG)
-    root.addFilter(SessionIdFilter())
     # session_id is "[abc] " when inside a session task, "" at daemon level.
     # Example daemon:  "12:00:00 INFO summon_claude.daemon: message text"
     # Example session: "12:00:00 INFO summon_claude.session: [abc123] message text"
@@ -345,7 +382,28 @@ def _setup_daemon_logging(log_file: Path) -> None:
     fh = logging.FileHandler(log_file)
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
-    root.addHandler(fh)
+
+    # Non-blocking: QueueHandler enqueues instantly; QueueListener writes
+    # to the FileHandler in a background thread, off the event loop.
+    log_queue: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+    qh = logging.handlers.QueueHandler(log_queue)
+    qh.setLevel(logging.DEBUG)
+    # SessionIdFilter must be on the QueueHandler (not the FileHandler)
+    # because it reads a contextvar that is only available in the calling
+    # thread/task — the QueueListener thread has its own context.
+    qh.addFilter(SessionIdFilter())
+    root.addHandler(qh)
+
+    listener = logging.handlers.QueueListener(log_queue, fh, respect_handler_level=True)
+    listener.start()
+
+    # Suppress noisy third-party DEBUG logging — these generate high volumes
+    # of messages (pings, API calls) that are rarely useful for debugging
+    # summon-claude itself.
+    for noisy_logger in ("slack_sdk", "slack_bolt", "aiohttp", "urllib3"):
+        logging.getLogger(noisy_logger).setLevel(logging.INFO)
+
+    return listener
 
 
 def run_daemon(config: SummonConfig) -> None:
@@ -374,13 +432,14 @@ def run_daemon(config: SummonConfig) -> None:
     pid_path.write_text(str(os.getpid()))
     pid_path.chmod(0o600)
 
-    _setup_daemon_logging(log_path)
+    log_listener = _setup_daemon_logging(log_path)
     logger.info("Daemon process started (pid=%d)", os.getpid())
 
     try:
         asyncio.run(daemon_main(config))
     finally:
         # Best-effort cleanup if asyncio.run() exits early (e.g., exception)
+        log_listener.stop()
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
         pid_path.unlink(missing_ok=True)
@@ -459,8 +518,9 @@ def start_daemon(config: SummonConfig) -> None:
 
     # Set up file logging early so exceptions during daemon startup are
     # captured in daemon.log instead of being silently swallowed.
+    # run_daemon() sets up its own listener, so stop this one first.
     log_path = _daemon_log()
-    _setup_daemon_logging(log_path)
+    early_listener = _setup_daemon_logging(log_path)
 
     try:
         import daemon  # noqa: PLC0415
@@ -475,6 +535,7 @@ def start_daemon(config: SummonConfig) -> None:
             detach_process=False,  # already forked + setsid above — just close fds
         )
         with ctx:
+            early_listener.stop()
             run_daemon(config)
     except Exception as exc:
         logger.critical("Daemon child failed: %s", exc, exc_info=True)

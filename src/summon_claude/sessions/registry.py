@@ -212,6 +212,41 @@ class SessionRegistry:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def resolve_session(self, identifier: str) -> tuple[dict | None, list[dict]]:
+        """Resolve a session by ID prefix or channel name.
+
+        Returns ``(session, matches)`` where *session* is the unique match
+        (or ``None``) and *matches* is the list of candidates when ambiguous.
+        """
+        # 1. Exact session_id match
+        exact = await self.get_session(identifier)
+        if exact:
+            return exact, [exact]
+
+        db = self._check_connected()
+
+        # 2. Prefix match on session_id
+        async with db.execute(
+            "SELECT * FROM sessions WHERE session_id LIKE ? ORDER BY started_at DESC",
+            (f"{identifier}%",),
+        ) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+            if len(rows) == 1:
+                return rows[0], rows
+            if len(rows) > 1:
+                return None, rows
+
+        # 3. Channel name match
+        async with db.execute(
+            "SELECT * FROM sessions WHERE slack_channel_name = ? ORDER BY started_at DESC LIMIT 1",
+            (identifier,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                d = dict(row)
+                return d, [d]
+            return None, []
+
     async def list_active(self) -> list[dict]:
         """List all sessions with status pending_auth or active."""
         db = self._check_connected()
@@ -245,6 +280,26 @@ class SessionRegistry:
             if not _pid_alive(pid):
                 stale.append(dict(row))
         return stale
+
+    async def mark_stale(self, session_id: str, reason: str) -> None:
+        """Mark a single session as errored with a reason and ended_at timestamp."""
+        await self.update_status(
+            session_id,
+            "errored",
+            error_message=reason,
+            ended_at=_now(),
+        )
+
+    async def cleanup_active(self, reason: str) -> list[dict]:
+        """Mark all active/pending_auth sessions as errored.
+
+        Returns the list of sessions that were cleaned up (empty if none).
+        Intended for daemon startup where no sessions should be active.
+        """
+        active = await self.list_active()
+        for session in active:
+            await self.mark_stale(session["session_id"], reason)
+        return active
 
     # --- Pending auth token methods ---
 

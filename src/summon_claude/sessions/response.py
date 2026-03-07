@@ -131,6 +131,7 @@ class _TurnState:
     has_seen_tool_use: bool = False
     text_after_tools: str = ""
     posted_conclusion: bool = False
+    posted_text_to_main: bool = False
     main_ts: str | None = None
     thread_ts: str | None = None
     buffer: str = ""
@@ -385,6 +386,7 @@ class ResponseStreamer:
 
     async def _flush_to_main(self, text: str) -> None:
         """Flush text to the main channel."""
+        self._turn.posted_text_to_main = True
         await self._flush_to_destination(
             text, self._turn.main_ts, self._router.post_to_main, "main_ts"
         )
@@ -428,8 +430,9 @@ class ResponseStreamer:
     async def _post_result_summary(self, result: ResultMessage) -> None:
         """Post session summary after Claude finishes a turn."""
         # Only post result.result if we didn't already post the same content
-        # via _flush_conclusion_to_main (which posts text_after_tools).
-        if result.result and not self._turn.posted_conclusion:
+        # via buffer flush (pre-tool text) or _flush_conclusion_to_main (post-tool text).
+        already_posted = self._turn.posted_conclusion or self._turn.posted_text_to_main
+        if result.result and not already_posted:
             await self._router.post_to_main(result.result)
 
         cost = result.total_cost_usd

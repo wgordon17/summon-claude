@@ -40,13 +40,13 @@ _AUTO_APPROVE_TOOLS = frozenset(
 _PERMISSION_TIMEOUT_S = 300  # 5 minutes
 
 
-async def _dismiss_ephemeral(response_url: str, replacement_text: str) -> None:
-    """Dismiss or replace an ephemeral Slack message via its response_url."""
+async def _dismiss_ephemeral(response_url: str) -> None:
+    """Delete an ephemeral Slack message via its response_url."""
     try:
         async with aiohttp.ClientSession() as http:
             await http.post(
                 response_url,
-                json={"replace_original": True, "text": replacement_text},
+                json={"delete_original": True},
             )
     except Exception as e:
         logger.debug("Failed to dismiss ephemeral via response_url: %s", e)
@@ -271,6 +271,13 @@ class PermissionHandler:
                 f"Permission required: {header_text[:100]}",
                 blocks=blocks,
             )
+            # Ping user in turn thread so they get a Slack notification
+            # (ephemeral messages don't trigger notifications)
+            if self._authenticated_user_id:
+                await _post_quietly(
+                    self._router,
+                    f"<@{self._authenticated_user_id}> Permission needed",
+                )
         except Exception as e:
             logger.error("Failed to post permission message: %s", e)
             # Auto-deny if we can't post
@@ -310,11 +317,11 @@ class PermissionHandler:
         self._batch.decisions[batch_id] = approved
 
         # Dismiss the ephemeral message via response_url (the only reliable way)
-        status_text = ":white_check_mark: Approved" if approved else ":x: Denied"
         if response_url:
-            await _dismiss_ephemeral(response_url, status_text)
+            await _dismiss_ephemeral(response_url)
 
         # Post a persistent confirmation to the turn thread
+        status_text = ":white_check_mark: Approved" if approved else ":x: Denied"
         try:
             await self._router.post_to_active_thread(f"{status_text} by user")
         except Exception as e:

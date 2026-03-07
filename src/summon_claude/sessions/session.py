@@ -9,10 +9,11 @@ import asyncio
 import contextlib
 import contextvars
 import logging
+import logging.handlers
 import os
+import queue
 import re
 import secrets
-import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -138,30 +139,32 @@ def _make_channel_name(prefix: str, session_name: str) -> str:
     return name[:_MAX_CHANNEL_NAME_LEN].lower()
 
 
-def _get_git_branch(cwd: str) -> str | None:
+async def _get_git_branch(cwd: str) -> str | None:
     """Return the current git branch for the given directory, or None if not in a repo.
 
+    Uses ``asyncio.create_subprocess_exec`` to avoid blocking the event loop.
     Uses GIT_CEILING_DIRECTORIES to prevent git from discovering
     repositories in parent directories above cwd.
     """
-    cwd_path = Path(cwd)
-    if not cwd_path.is_absolute() or not cwd_path.is_dir():
+    if not os.path.isabs(cwd) or not os.path.isdir(cwd):  # noqa: ASYNC240, PTH117, PTH112
         return None
-    resolved = str(cwd_path.resolve())
+    resolved = os.path.realpath(cwd)  # noqa: ASYNC240
     env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
     env["GIT_CEILING_DIRECTORIES"] = resolved
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
             cwd=resolved,
-            capture_output=True,
-            text=True,
-            timeout=3,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
-            check=False,
         )
-        if result.returncode == 0:
-            branch = result.stdout.strip()
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        if proc.returncode == 0:
+            branch = stdout.decode().strip()
             return branch if branch != "HEAD" else None
     except Exception as e:
         logger.debug("Git branch detection failed: %s", e)
@@ -210,7 +213,7 @@ async def _post_session_header(
     client: SlackClient, cwd: str, model: str | None, session_id: str
 ) -> None:
     """Post the initial session header block."""
-    git_branch = _get_git_branch(cwd)
+    git_branch = await _get_git_branch(cwd)
 
     safe_cwd = cwd.replace("`", "'")
     fields = [
@@ -334,6 +337,7 @@ class SummonSession:
         self._total_turns: int = 0
         self._last_context: ContextUsage | None = None
         self._last_model_seen: str | None = None
+        self._claude_session_id: str | None = None
 
         # Turn abort infrastructure
         self._current_turn_task: asyncio.Task | None = None
@@ -559,7 +563,7 @@ class SummonSession:
 
         await _post_session_header(client, self._cwd, self._model, self._session_id)
 
-        git_branch = _get_git_branch(self._cwd)
+        git_branch = await _get_git_branch(self._cwd)
         topic = _format_topic(
             model=self._model,
             cwd=self._cwd,
@@ -663,7 +667,7 @@ class SummonSession:
             f"Could not create channel after {self._CHANNEL_CREATE_RETRIES} attempts"
         ) from last_err
 
-    async def _run_message_loop(  # noqa: PLR0912, PLR0915
+    async def _run_message_loop(  # noqa: PLR0912
         self, rt: _SessionRuntime, router: ThreadRouter
     ) -> None:
         """Listen for Slack messages and forward them to Claude."""
@@ -688,36 +692,11 @@ class SummonSession:
 
         async with ClaudeSDKClient(options) as claude:
             try:
-                # Initialize from server info: session ID, command registry
+                # Initialize command registry from server info
                 self._command_registry = build_registry()
                 try:
                     server_info = await claude.get_server_info()
                     if server_info:
-                        claude_session_id = server_info.get("session_id", "")
-                        if claude_session_id:
-                            await rt.registry.update_status(
-                                self._session_id, "active", claude_session_id=claude_session_id
-                            )
-                            try:
-                                await rt.client.post(
-                                    f"Claude session: `{claude_session_id[:16]}...`",
-                                    blocks=[
-                                        {
-                                            "type": "context",
-                                            "elements": [
-                                                {
-                                                    "type": "mrkdwn",
-                                                    "text": (
-                                                        f":brain: Claude session ID:"
-                                                        f" `{claude_session_id[:16]}...`"
-                                                    ),
-                                                }
-                                            ],
-                                        }
-                                    ],
-                                )
-                            except Exception as e2:
-                                logger.debug("Failed to post Claude session ID: %s", e2)
                         commands = server_info.get("commands", [])
                         if commands:
                             self._command_registry.set_passthrough_commands(commands)
@@ -793,6 +772,34 @@ class SummonSession:
             if stream_result:
                 if stream_result.model:
                     self._model = stream_result.model
+                # Capture claude_session_id on the first turn (ResultMessage
+                # always includes it, unlike get_server_info which may not).
+                claude_sid = stream_result.result.session_id
+                if claude_sid and not self._claude_session_id:
+                    self._claude_session_id = claude_sid
+                    await rt.registry.update_status(
+                        self._session_id, "active", claude_session_id=claude_sid
+                    )
+                    logger.info("Captured Claude session ID: %s", claude_sid[:16])
+                    try:
+                        await rt.client.post(
+                            f"Claude session: `{claude_sid[:16]}...`",
+                            blocks=[
+                                {
+                                    "type": "context",
+                                    "elements": [
+                                        {
+                                            "type": "mrkdwn",
+                                            "text": (
+                                                f":brain: Claude session ID: `{claude_sid[:16]}...`"
+                                            ),
+                                        }
+                                    ],
+                                }
+                            ],
+                        )
+                    except Exception:
+                        logger.debug("Failed to post Claude session ID to Slack")
                 cost = stream_result.result.total_cost_usd or 0.0
                 self._total_cost += cost
                 await rt.registry.record_turn(self._session_id, cost)
@@ -803,7 +810,7 @@ class SummonSession:
                 if stream_result.model is not None:
                     self._last_model_seen = stream_result.model
                 try:
-                    git_branch = _get_git_branch(self._cwd)
+                    git_branch = await _get_git_branch(self._cwd)
                     topic = _format_topic(
                         model=self._last_model_seen or self._model,
                         cwd=self._cwd,
@@ -1065,14 +1072,19 @@ class SummonSession:
     # Per-session logging
     # ------------------------------------------------------------------
 
-    def _install_session_log_handler(self) -> logging.FileHandler | None:
+    def _install_session_log_handler(
+        self,
+    ) -> tuple[logging.Handler, logging.handlers.QueueListener] | None:
         """Create a per-session log file at ``~/.summon/logs/{session_id}.log``.
+
+        Uses ``QueueHandler`` + ``QueueListener`` so log writes happen in a
+        background thread, preventing synchronous file I/O from blocking the
+        asyncio event loop.
 
         Attaches a ``_SessionLogFilter`` so only records from this session's
         asyncio task (identified by ``_session_id_var``) are written.
 
-        Returns the handler (caller must pass it to ``_remove_session_log_handler``
-        on shutdown) or ``None`` if the handler could not be created.
+        Returns ``(queue_handler, listener)`` for cleanup, or ``None``.
         """
         try:
             log_dir = get_data_dir() / "logs"
@@ -1086,19 +1098,32 @@ class SummonSession:
                     datefmt="%H:%M:%S",
                 )
             )
-            fh.addFilter(_SessionLogFilter(self._session_id))
-            logging.getLogger().addHandler(fh)
-            return fh
+
+            log_queue: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+            qh = logging.handlers.QueueHandler(log_queue)
+            qh.setLevel(logging.DEBUG)
+            # Session filter must be on the QueueHandler (not the FileHandler)
+            # because it reads a contextvar only available in the calling task.
+            qh.addFilter(_SessionLogFilter(self._session_id))
+            logging.getLogger().addHandler(qh)
+
+            listener = logging.handlers.QueueListener(log_queue, fh, respect_handler_level=True)
+            listener.start()
+            return qh, listener
         except Exception as e:
             logger.debug("Failed to set up per-session log file: %s", e)
             return None
 
     @staticmethod
-    def _remove_session_log_handler(handler: logging.FileHandler | None) -> None:
-        """Remove and close the per-session log handler."""
-        if handler is not None:
-            logging.getLogger().removeHandler(handler)
-            handler.close()
+    def _remove_session_log_handler(
+        handler_info: tuple[logging.Handler, logging.handlers.QueueListener] | None,
+    ) -> None:
+        """Stop the listener and remove the per-session queue handler."""
+        if handler_info is not None:
+            qh, listener = handler_info
+            listener.stop()
+            logging.getLogger().removeHandler(qh)
+            qh.close()
 
     async def _process_incoming_event(
         self,

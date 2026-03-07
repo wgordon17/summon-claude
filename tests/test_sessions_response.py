@@ -276,6 +276,50 @@ class TestBUG029ResultMessageWithOutput:
         assert provider.post.call_count >= 1
 
 
+class TestTextOnlyResponseNoDuplicate:
+    """Text-only responses should NOT post result.result when buffer was already flushed."""
+
+    async def test_text_only_response_not_duplicated(self):
+        """When text is already flushed to main via buffer, result.result should be skipped."""
+        streamer, router, provider = make_streamer()
+        result_msg = make_result_message()
+        result_msg.result = "Hello!"
+        messages = [
+            make_assistant_message([make_text_block("Hello!")]),
+            result_msg,
+        ]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        # Collect all post_to_main text args (excluding blocks-only calls)
+        posted_texts = [
+            call.args[0] if call.args else call.kwargs.get("text", "")
+            for call in provider.post.call_args_list
+        ]
+        # "Hello!" should appear only once (from buffer flush), not twice
+        hello_count = sum(1 for t in posted_texts if "Hello!" in t)
+        assert hello_count == 1, (
+            f"Expected 'Hello!' posted once, got {hello_count}. Posts: {posted_texts}"
+        )
+
+    async def test_result_still_posted_when_no_text_blocks(self):
+        """ResultMessage.result should still be posted if no text was buffered."""
+        streamer, router, provider = make_streamer()
+        result_msg = make_result_message()
+        result_msg.result = "some output"
+        messages = [result_msg]
+
+        await streamer.stream_with_flush(agen(messages))
+
+        posted_texts = [
+            call.args[0] if call.args else call.kwargs.get("text", "")
+            for call in provider.post.call_args_list
+        ]
+        assert any("some output" in t for t in posted_texts), (
+            f"Expected 'some output' to be posted. Posts: {posted_texts}"
+        )
+
+
 class TestBUG028ResolvedModelTracking:
     """BUG-028: Test that streamer tracks resolved_model from AssistantMessage.
 
