@@ -310,11 +310,21 @@ async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: 
             for sid, found in results:
                 click.echo(f"Stop requested for {sid}: {'sent' if found else 'not found'}")
         else:
-            found = await daemon_client.stop_session(session_id)  # type: ignore[arg-type]
+            # Resolve partial ID or channel name to full session_id
+            resolved_session: dict | None = None
+            async with SessionRegistry() as registry:
+                resolved_session = await registry.resolve_session(session_id)  # type: ignore[arg-type]
+            if not resolved_session:
+                click.echo(f"Session not found: {session_id}")
+                ctx.exit(1)
+                return
+
+            resolved_id: str = resolved_session["session_id"]
+            found = await daemon_client.stop_session(resolved_id)
             if found:
-                click.echo(f"Stop requested for session {session_id}")
+                click.echo(f"Stop requested for session {resolved_id[:8]}")
             else:
-                click.echo(f"Session {session_id} not found in daemon")
+                click.echo(f"Session {resolved_id[:8]} not owned by running daemon")
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         ctx.exit(1)
@@ -398,7 +408,7 @@ def session_info(session_id: str, output: str) -> None:
 
 async def _async_session_info(session_id: str, output: str) -> None:
     async with SessionRegistry() as registry:
-        session = await registry.get_session(session_id)
+        session = await registry.resolve_session(session_id)
         if not session:
             click.echo(f"Session not found: {session_id}")
             return
@@ -459,6 +469,21 @@ def session_cleanup(ctx: click.Context, archive: bool) -> None:
 async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -> None:
     async with SessionRegistry() as registry:
         stale = await registry.list_stale()
+
+        # Cross-reference with daemon: sessions in SQLite as "active" but
+        # not tracked by the running daemon are also stale.
+        if is_daemon_running():
+            try:
+                daemon_sessions = await daemon_client.list_sessions()
+                daemon_sids = {s["session_id"] for s in daemon_sessions}
+                active = await registry.list_active()
+                for session in active:
+                    sid = session["session_id"]
+                    if sid not in daemon_sids and session not in stale:
+                        stale.append(session)
+            except Exception as e:
+                logger.debug("Could not cross-reference daemon sessions: %s", e)
+
         if not stale:
             _echo("No stale sessions found.", ctx)
             return
@@ -603,11 +628,15 @@ def _print_session_table(sessions: list[dict]) -> None:
     if not sessions:
         return
 
-    headers = ["STATUS", "NAME", "CHANNEL", "CWD"]
+    headers = ["ID", "STATUS", "NAME", "CHANNEL", "CWD"]
     rows: list[list[str]] = []
     for s in sessions:
+        session_id = s.get("session_id", "")
+        # Show first 8 chars of UUID — enough to be unique and passable to `stop`
+        short_id = session_id[:8] if session_id else "-"
         rows.append(
             [
+                short_id,
                 s.get("status", "?"),
                 s.get("session_name") or "-",
                 s.get("slack_channel_name") or "-",

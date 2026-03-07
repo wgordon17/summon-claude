@@ -212,6 +212,40 @@ class SessionRegistry:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def resolve_session(self, identifier: str) -> dict | None:
+        """Resolve a session by ID prefix or channel name.
+
+        Tries exact session_id match first, then prefix match on session_id,
+        then channel name match.  Returns ``None`` if no match or if the
+        identifier is ambiguous (multiple prefix matches).
+        """
+        # 1. Exact session_id match
+        exact = await self.get_session(identifier)
+        if exact:
+            return exact
+
+        db = self._check_connected()
+
+        # 2. Prefix match on session_id
+        async with db.execute(
+            "SELECT * FROM sessions WHERE session_id LIKE ? ORDER BY started_at DESC",
+            (f"{identifier}%",),
+        ) as cursor:
+            rows = list(await cursor.fetchall())
+            if len(rows) == 1:
+                return dict(rows[0])
+            if len(rows) > 1:
+                # Ambiguous — caller should show an error
+                return None
+
+        # 3. Channel name match
+        async with db.execute(
+            "SELECT * FROM sessions WHERE slack_channel_name = ? ORDER BY started_at DESC LIMIT 1",
+            (identifier,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
     async def list_active(self) -> list[dict]:
         """List all sessions with status pending_auth or active."""
         db = self._check_connected()

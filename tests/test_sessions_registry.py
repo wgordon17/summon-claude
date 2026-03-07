@@ -208,6 +208,39 @@ class TestPidAlive:
         assert _pid_alive(999999999) is False
 
 
+class TestResolveSession:
+    async def test_resolve_exact_id(self, registry):
+        await registry.register("sess-resolve-1", 111, "/tmp")
+        result = await registry.resolve_session("sess-resolve-1")
+        assert result is not None
+        assert result["session_id"] == "sess-resolve-1"
+
+    async def test_resolve_prefix(self, registry):
+        await registry.register("abcd1234-5678-9abc-def0-111111111111", 111, "/tmp")
+        result = await registry.resolve_session("abcd1234")
+        assert result is not None
+        assert result["session_id"] == "abcd1234-5678-9abc-def0-111111111111"
+
+    async def test_resolve_ambiguous_prefix_returns_none(self, registry):
+        await registry.register("abcd1111-0000-0000-0000-000000000000", 111, "/tmp")
+        await registry.register("abcd2222-0000-0000-0000-000000000000", 222, "/tmp")
+        result = await registry.resolve_session("abcd")
+        assert result is None
+
+    async def test_resolve_channel_name(self, registry):
+        await registry.register("sess-chan-1", 111, "/tmp")
+        await registry.update_status(
+            "sess-chan-1", "active", slack_channel_name="summon-my-proj-0224"
+        )
+        result = await registry.resolve_session("summon-my-proj-0224")
+        assert result is not None
+        assert result["session_id"] == "sess-chan-1"
+
+    async def test_resolve_nonexistent_returns_none(self, registry):
+        result = await registry.resolve_session("nonexistent")
+        assert result is None
+
+
 class TestSQLitePragmas:
     """Test that SQLite pragmas are properly configured (BUG-015)."""
 

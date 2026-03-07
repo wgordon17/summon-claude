@@ -60,6 +60,8 @@ def _mock_registry(**overrides: object) -> AsyncMock:
     reg.list_active = AsyncMock(return_value=overrides.get("active", []))
     reg.list_all = AsyncMock(return_value=overrides.get("all", []))
     reg.get_session = AsyncMock(return_value=overrides.get("session"))
+    # resolve_session defaults to same as get_session for backward compat
+    reg.resolve_session = AsyncMock(return_value=overrides.get("resolve", overrides.get("session")))
     reg.list_stale = AsyncMock(return_value=overrides.get("stale", []))
     reg.update_status = AsyncMock()
     reg.log_event = AsyncMock()
@@ -429,30 +431,44 @@ class TestSessionStop:
         assert "not running" in result.output
 
     def test_stop_session_found(self):
+        mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
         with (
             patch("summon_claude.cli.is_daemon_running", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.stop_session",
                 new=AsyncMock(return_value=True),
             ),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["stop", "aaaa1111-2222-3333-4444-555566667777"])
+            result = runner.invoke(cli, ["stop", "aaaa1111"])
         assert result.exit_code == 0
         assert "Stop requested" in result.output
 
-    def test_stop_session_not_found(self):
+    def test_stop_session_not_found_in_daemon(self):
+        mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
         with (
             patch("summon_claude.cli.is_daemon_running", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.stop_session",
                 new=AsyncMock(return_value=False),
             ),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["stop", "aaaa1111-2222-3333-4444-555566667777"])
+            result = runner.invoke(cli, ["stop", "aaaa1111"])
         assert result.exit_code == 0
-        assert "not found" in result.output
+        assert "not owned by running daemon" in result.output
+
+    def test_stop_session_not_found_in_registry(self):
+        mock_ctx = _mock_registry(resolve=None)
+        with (
+            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["stop", "nonexistent"])
+        assert "Session not found" in result.output
 
     def test_stop_no_args_shows_error(self):
         runner = CliRunner()
