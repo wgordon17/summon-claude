@@ -60,8 +60,15 @@ def _mock_registry(**overrides: object) -> AsyncMock:
     reg.list_active = AsyncMock(return_value=overrides.get("active", []))
     reg.list_all = AsyncMock(return_value=overrides.get("all", []))
     reg.get_session = AsyncMock(return_value=overrides.get("session"))
-    # resolve_session defaults to same as get_session for backward compat
-    reg.resolve_session = AsyncMock(return_value=overrides.get("resolve", overrides.get("session")))
+    # resolve_session returns (session, matches) tuple
+    _resolve = overrides.get("resolve", overrides.get("session"))
+    if _resolve is None:
+        reg.resolve_session = AsyncMock(return_value=(None, []))
+    elif isinstance(_resolve, list):
+        # Ambiguous: multiple matches, no unique session
+        reg.resolve_session = AsyncMock(return_value=(None, _resolve))
+    else:
+        reg.resolve_session = AsyncMock(return_value=(_resolve, [_resolve]))
     reg.list_stale = AsyncMock(return_value=overrides.get("stale", []))
     reg.update_status = AsyncMock()
     reg.log_event = AsyncMock()
@@ -459,6 +466,7 @@ class TestSessionStop:
             result = runner.invoke(cli, ["stop", "aaaa1111"])
         assert result.exit_code == 0
         assert "not owned by running daemon" in result.output
+        assert "summon session cleanup" in result.output
 
     def test_stop_session_not_found_in_registry(self):
         mock_ctx = _mock_registry(resolve=None)
@@ -469,6 +477,21 @@ class TestSessionStop:
             runner = CliRunner()
             result = runner.invoke(cli, ["stop", "nonexistent"])
         assert "Session not found" in result.output
+
+    def test_stop_ambiguous_prefix_prompts(self):
+        mock_ctx = _mock_registry(resolve=[_ACTIVE_SESSION, _COMPLETED_SESSION])
+        with (
+            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch(
+                "summon_claude.cli.daemon_client.stop_session",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["stop", "ambig"], input="1\n")
+        assert "matches 2 sessions" in result.output
+        assert "Stop requested" in result.output
 
     def test_stop_no_args_shows_error(self):
         runner = CliRunner()
@@ -515,14 +538,32 @@ class TestSessionLogs:
         assert "log line 99" in result.output
         assert "log line 96" not in result.output
 
-    def test_logs_invalid_session_id_format(self, tmp_path):
+    def test_logs_resolves_partial_id(self, tmp_path):
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        with patch("summon_claude.cli.get_data_dir", return_value=tmp_path):
+        sid = "aaaa1111-2222-3333-4444-555566667777"
+        (log_dir / f"{sid}.log").write_text("resolved log line\n")
+        mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
+        with (
+            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["session", "logs", "not-a-uuid"])
-        assert result.exit_code != 0
-        assert "Invalid session ID format" in result.output
+            result = runner.invoke(cli, ["session", "logs", "aaaa1111", "-n", "1"])
+        assert result.exit_code == 0
+        assert "resolved log line" in result.output
+
+    def test_logs_not_found_by_name(self, tmp_path):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        mock_ctx = _mock_registry(resolve=None)
+        with (
+            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["session", "logs", "nonexistent"])
+        assert "Session not found" in result.output
 
     def test_logs_session_not_found(self, tmp_path):
         log_dir = tmp_path / "logs"

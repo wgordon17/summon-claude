@@ -212,17 +212,16 @@ class SessionRegistry:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def resolve_session(self, identifier: str) -> dict | None:
+    async def resolve_session(self, identifier: str) -> tuple[dict | None, list[dict]]:
         """Resolve a session by ID prefix or channel name.
 
-        Tries exact session_id match first, then prefix match on session_id,
-        then channel name match.  Returns ``None`` if no match or if the
-        identifier is ambiguous (multiple prefix matches).
+        Returns ``(session, matches)`` where *session* is the unique match
+        (or ``None``) and *matches* is the list of candidates when ambiguous.
         """
         # 1. Exact session_id match
         exact = await self.get_session(identifier)
         if exact:
-            return exact
+            return exact, [exact]
 
         db = self._check_connected()
 
@@ -231,12 +230,11 @@ class SessionRegistry:
             "SELECT * FROM sessions WHERE session_id LIKE ? ORDER BY started_at DESC",
             (f"{identifier}%",),
         ) as cursor:
-            rows = list(await cursor.fetchall())
+            rows = [dict(r) for r in await cursor.fetchall()]
             if len(rows) == 1:
-                return dict(rows[0])
+                return rows[0], rows
             if len(rows) > 1:
-                # Ambiguous — caller should show an error
-                return None
+                return None, rows
 
         # 3. Channel name match
         async with db.execute(
@@ -244,7 +242,10 @@ class SessionRegistry:
             (identifier,),
         ) as cursor:
             row = await cursor.fetchone()
-            return dict(row) if row else None
+            if row:
+                d = dict(row)
+                return d, [d]
+            return None, []
 
     async def list_active(self) -> list[dict]:
         """List all sessions with status pending_auth or active."""

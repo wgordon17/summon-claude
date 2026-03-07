@@ -25,7 +25,14 @@ def _mock_registry(**overrides: object) -> AsyncMock:
     reg.list_active = AsyncMock(return_value=overrides.get("active", []))
     reg.list_all = AsyncMock(return_value=overrides.get("all", []))
     reg.get_session = AsyncMock(return_value=overrides.get("session"))
-    reg.resolve_session = AsyncMock(return_value=overrides.get("resolve", overrides.get("session")))
+    # resolve_session returns (session, matches) tuple
+    _resolve = overrides.get("resolve", overrides.get("session"))
+    if _resolve is None:
+        reg.resolve_session = AsyncMock(return_value=(None, []))
+    elif isinstance(_resolve, list):
+        reg.resolve_session = AsyncMock(return_value=(None, _resolve))
+    else:
+        reg.resolve_session = AsyncMock(return_value=(_resolve, [_resolve]))
     reg.list_stale = AsyncMock(return_value=overrides.get("stale", []))
     reg.update_status = AsyncMock()
     reg.log_event = AsyncMock()

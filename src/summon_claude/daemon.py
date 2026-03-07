@@ -25,15 +25,19 @@ import signal
 import socket
 import struct
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from summon_claude.config import get_data_dir
 from summon_claude.event_dispatcher import EventDispatcher
 from summon_claude.sessions.manager import SessionManager
+from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.slack.bolt import BoltRouter
 
 if TYPE_CHECKING:
+    from slack_sdk.web.async_client import AsyncWebClient
+
     from summon_claude.config import SummonConfig
 
 logger = logging.getLogger(__name__)
@@ -146,6 +150,43 @@ class DaemonAlreadyRunningError(Exception):
 # ---------------------------------------------------------------------------
 
 
+async def _cleanup_orphaned_sessions(web_client: AsyncWebClient) -> None:
+    """Mark any 'active' or 'pending_auth' sessions as errored on daemon startup.
+
+    At daemon start, ``_sessions`` is empty — any session still marked active
+    in SQLite is left over from a previous daemon instance and should be closed.
+    Posts a disconnect notice to each orphaned session's Slack channel.
+    """
+    try:
+        async with SessionRegistry() as registry:
+            active = await registry.list_active()
+            if not active:
+                return
+            now = datetime.now(UTC).isoformat()
+            for session in active:
+                channel_id = session.get("slack_channel_id")
+                if channel_id:
+                    try:
+                        await web_client.chat_postMessage(
+                            channel=channel_id,
+                            text=(
+                                ":warning: *Session disconnected* (daemon restarted)\n"
+                                "Channel preserved — you can review the conversation history."
+                            ),
+                        )
+                    except Exception as e:
+                        logger.debug("Could not post disconnect to channel %s: %s", channel_id, e)
+                await registry.update_status(
+                    session["session_id"],
+                    "errored",
+                    error_message="Orphaned by daemon restart",
+                    ended_at=now,
+                )
+            logger.info("Cleaned up %d orphaned session(s) from previous daemon", len(active))
+    except Exception as e:
+        logger.warning("Failed to clean up orphaned sessions: %s", e)
+
+
 async def daemon_main(config: SummonConfig) -> None:
     """Async daemon entry point.
 
@@ -167,6 +208,9 @@ async def daemon_main(config: SummonConfig) -> None:
 
     await bolt_router.start()
     logger.info("BoltRouter started")
+
+    # Mark any sessions left active from a previous daemon as errored
+    await _cleanup_orphaned_sessions(bolt_router.web_client)
 
     if bolt_router.bot_user_id is None:  # pragma: no cover — start() always sets this
         raise RuntimeError("BoltRouter.start() did not set bot_user_id")

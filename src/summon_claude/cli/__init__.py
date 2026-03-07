@@ -296,6 +296,33 @@ def cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None
     asyncio.run(_async_cmd_stop(ctx, session_id, stop_all))
 
 
+async def _resolve_session_or_exit(identifier: str) -> dict | None:
+    """Resolve a session identifier, with interactive disambiguation.
+
+    Returns the resolved session dict, or ``None`` if not found.
+    """
+    session: dict | None = None
+    matches: list[dict] = []
+    async with SessionRegistry() as registry:
+        session, matches = await registry.resolve_session(identifier)
+    if not session:
+        if matches:
+            session = _pick_session(identifier, matches)
+        else:
+            click.echo(f"Session not found: {identifier}")
+            return None
+    return session
+
+
+def _pick_session(identifier: str, matches: list[dict]) -> dict:
+    """Interactively disambiguate when a session identifier matches multiple sessions."""
+    click.echo(f"'{identifier}' matches {len(matches)} sessions:")
+    for i, m in enumerate(matches, 1):
+        click.echo(f"  {i}) {m['session_id'][:8]}  {m.get('session_name') or '-'}")
+    choice = click.prompt("Select session", type=click.IntRange(1, len(matches)))
+    return matches[choice - 1]
+
+
 async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
     if not is_daemon_running():
         click.echo("Daemon is not running.")
@@ -310,21 +337,20 @@ async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: 
             for sid, found in results:
                 click.echo(f"Stop requested for {sid}: {'sent' if found else 'not found'}")
         else:
-            # Resolve partial ID or channel name to full session_id
-            resolved_session: dict | None = None
-            async with SessionRegistry() as registry:
-                resolved_session = await registry.resolve_session(session_id)  # type: ignore[arg-type]
-            if not resolved_session:
-                click.echo(f"Session not found: {session_id}")
+            session = await _resolve_session_or_exit(session_id)  # type: ignore[arg-type]
+            if not session:
                 ctx.exit(1)
                 return
 
-            resolved_id: str = resolved_session["session_id"]
+            resolved_id: str = session["session_id"]
             found = await daemon_client.stop_session(resolved_id)
             if found:
                 click.echo(f"Stop requested for session {resolved_id[:8]}")
             else:
-                click.echo(f"Session {resolved_id[:8]} not owned by running daemon")
+                click.echo(
+                    f"Session {resolved_id[:8]} not owned by running daemon."
+                    " Run 'summon session cleanup' to clear stale sessions."
+                )
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         ctx.exit(1)
@@ -407,15 +433,13 @@ def session_info(session_id: str, output: str) -> None:
 
 
 async def _async_session_info(session_id: str, output: str) -> None:
-    async with SessionRegistry() as registry:
-        session = await registry.resolve_session(session_id)
-        if not session:
-            click.echo(f"Session not found: {session_id}")
-            return
-        if output == "json":
-            click.echo(_format_json(session))
-        else:
-            _print_session_detail(session)
+    session = await _resolve_session_or_exit(session_id)
+    if not session:
+        return
+    if output == "json":
+        click.echo(_format_json(session))
+    else:
+        _print_session_detail(session)
 
 
 @cmd_session.command("logs")
@@ -439,13 +463,17 @@ def session_logs(session_id: str | None, tail: int) -> None:
             click.echo(f"  {lf.stem}")
         return
 
+    # Resolve partial ID or channel name to full session_id
+    resolved_id = session_id
     if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", session_id):
-        click.echo("Error: Invalid session ID format", err=True)
-        raise SystemExit(1)
+        session_record = asyncio.run(_resolve_session_or_exit(session_id))
+        if session_record is None:
+            return
+        resolved_id = session_record["session_id"]
 
-    log_file = log_dir / f"{session_id}.log"
+    log_file = log_dir / f"{resolved_id}.log"
     if not log_file.exists():
-        click.echo(f"No log file found for session: {session_id}")
+        click.echo(f"No log file found for session: {resolved_id[:8]}")
         return
 
     lines = log_file.read_text().splitlines()
@@ -469,6 +497,8 @@ def session_cleanup(ctx: click.Context, archive: bool) -> None:
 async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -> None:
     async with SessionRegistry() as registry:
         stale = await registry.list_stale()
+        # Track which session IDs were found via PID check vs daemon cross-reference
+        pid_stale_ids = {s["session_id"] for s in stale}
 
         # Cross-reference with daemon: sessions in SQLite as "active" but
         # not tracked by the running daemon are also stale.
@@ -501,7 +531,11 @@ async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -
         for session in stale:
             session_id = session["session_id"]
             channel_id = session.get("slack_channel_id")
-            pid = session["pid"]
+
+            if session_id in pid_stale_ids:
+                reason = f"Owner process (pid {session['pid']}) no longer running"
+            else:
+                reason = "Not tracked by running daemon (orphaned)"
 
             # Archive the Slack channel only if --archive flag was passed
             if archive and slack_client and channel_id:
@@ -514,7 +548,7 @@ async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -
             await registry.update_status(
                 session_id,
                 "errored",
-                error_message=f"Process {pid} no longer running",
+                error_message=reason,
                 ended_at=datetime.now(UTC).isoformat(),
             )
 

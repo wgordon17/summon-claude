@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from summon_claude.daemon import MAX_MESSAGE_SIZE, recv_msg, send_msg
+from summon_claude.sessions.registry import SessionRegistry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -282,6 +283,7 @@ class TestDaemonMain:
                 "asyncio.start_unix_server",
                 return_value=mock_server,
             ),
+            patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
         ):
             # Trigger shutdown before daemon_main is even reached
             shutdown_event.set()
@@ -294,6 +296,62 @@ class TestDaemonMain:
         # Verify shutdown callback wiring — calling it should set the event
         mock_bolt.shutdown_callback()
         assert shutdown_event.is_set()
+
+
+class TestCleanupOrphanedSessions:
+    """Tests for _cleanup_orphaned_sessions at daemon startup."""
+
+    async def test_marks_active_sessions_as_errored(self, temp_db_path):
+        from summon_claude.daemon import _cleanup_orphaned_sessions
+
+        async with SessionRegistry(db_path=temp_db_path) as reg:
+            await reg.register("orphan-1", 9999, "/tmp", "old-session")
+            await reg.update_status("orphan-1", "active", slack_channel_id="C111")
+            await reg.register("orphan-2", 9999, "/tmp")
+            # orphan-2 stays as pending_auth (no channel)
+
+        mock_client = AsyncMock()
+        with patch(
+            "summon_claude.daemon.SessionRegistry",
+            lambda: SessionRegistry(db_path=temp_db_path),
+        ):
+            await _cleanup_orphaned_sessions(mock_client)
+
+        async with SessionRegistry(db_path=temp_db_path) as reg:
+            s1 = await reg.get_session("orphan-1")
+            assert s1["status"] == "errored"
+            assert "Orphaned by daemon restart" in s1["error_message"]
+            assert s1["ended_at"] is not None
+
+            s2 = await reg.get_session("orphan-2")
+            assert s2["status"] == "errored"
+
+        # Disconnect message posted to orphan-1's channel
+        mock_client.chat_postMessage.assert_called_once()
+        call_kwargs = mock_client.chat_postMessage.call_args[1]
+        assert call_kwargs["channel"] == "C111"
+        assert "daemon restarted" in call_kwargs["text"]
+
+    async def test_no_op_when_no_active_sessions(self, temp_db_path):
+        from summon_claude.daemon import _cleanup_orphaned_sessions
+
+        async with SessionRegistry(db_path=temp_db_path) as reg:
+            await reg.register("done-1", 9999, "/tmp")
+            await reg.update_status("done-1", "completed")
+
+        mock_client = AsyncMock()
+        with patch(
+            "summon_claude.daemon.SessionRegistry",
+            lambda: SessionRegistry(db_path=temp_db_path),
+        ):
+            await _cleanup_orphaned_sessions(mock_client)
+
+        async with SessionRegistry(db_path=temp_db_path) as reg:
+            s = await reg.get_session("done-1")
+            assert s["status"] == "completed"
+
+        # No messages posted
+        mock_client.chat_postMessage.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
