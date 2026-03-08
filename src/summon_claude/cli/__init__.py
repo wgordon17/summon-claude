@@ -29,6 +29,13 @@ from slack_sdk.web.async_client import AsyncWebClient
 from summon_claude import __version__
 from summon_claude.cli import daemon_client
 from summon_claude.cli.config import config_check, config_edit, config_path, config_set, config_show
+from summon_claude.cli.interactive import (
+    format_log_option,
+    format_session_option,
+    interactive_multi_select,
+    interactive_select,
+    is_interactive,
+)
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
 from summon_claude.daemon import is_daemon_running, start_daemon
 from summon_claude.sessions.registry import SessionRegistry
@@ -114,6 +121,7 @@ class AliasedGroup(click.Group):
     default=None,
     help="Override config file path",
 )
+@click.option("--no-interactive", is_flag=True, default=False, help="Disable interactive prompts")
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -121,6 +129,7 @@ def cli(
     quiet: bool,
     no_color: bool,
     config_path: str | None,
+    no_interactive: bool,
 ) -> None:
     """Bridge Claude Code sessions to Slack channels."""
     if verbose and quiet:
@@ -134,6 +143,7 @@ def cli(
     ctx.ensure_object(dict)
     ctx.obj["quiet"] = quiet
     ctx.obj["config_path"] = config_path
+    ctx.obj["no_interactive"] = no_interactive
 
 
 @cli.command("version")
@@ -290,9 +300,6 @@ async def _async_cmd_start(
 @click.pass_context
 def cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
     """Stop a session (or all sessions) via the daemon."""
-    if not session_id and not stop_all:
-        click.echo("Provide SESSION_ID or --all.", err=True)
-        ctx.exit(1)
     asyncio.run(_async_cmd_stop(ctx, session_id, stop_all))
 
 
@@ -302,7 +309,7 @@ async def _resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:
         return await registry.resolve_session(identifier)
 
 
-def _resolve_session_or_exit(identifier: str) -> dict | None:
+def _resolve_session_or_exit(identifier: str, ctx: click.Context) -> dict | None:
     """Resolve a session identifier, with interactive disambiguation.
 
     Returns the resolved session dict, or ``None`` if not found.
@@ -310,20 +317,33 @@ def _resolve_session_or_exit(identifier: str) -> dict | None:
     session, matches = asyncio.run(_resolve_session(identifier))
     if not session:
         if matches:
-            session = _pick_session(identifier, matches)
+            session = _pick_session(identifier, matches, ctx)
         else:
             click.echo(f"Session not found: {identifier}")
             return None
     return session
 
 
-def _pick_session(identifier: str, matches: list[dict]) -> dict:
+def _pick_session(identifier: str, matches: list[dict], ctx: click.Context) -> dict | None:
     """Interactively disambiguate when a session identifier matches multiple sessions."""
-    click.echo(f"'{identifier}' matches {len(matches)} sessions:")
-    for i, m in enumerate(matches, 1):
-        click.echo(f"  {i}) {m['session_id'][:8]}  {m.get('session_name') or '-'}")
-    choice = click.prompt("Select session", type=click.IntRange(1, len(matches)))
-    return matches[choice - 1]
+    options = [format_session_option(m) for m in matches]
+    result = interactive_select(options, f"'{identifier}' matches {len(matches)} sessions:", ctx)
+    if result is None:
+        click.echo("No session selected.")
+        return None
+    return matches[result[1]]
+
+
+async def _stop_and_report(resolved_id: str, *, suggest_cleanup: bool = False) -> None:
+    """Stop a session via the daemon and report the result."""
+    found = await daemon_client.stop_session(resolved_id)
+    if found:
+        click.echo(f"Stop requested for session {resolved_id[:8]}")
+    else:
+        msg = f"Session {resolved_id[:8]} not owned by running daemon."
+        if suggest_cleanup:
+            msg += " Run 'summon session cleanup' to clear stale sessions."
+        click.echo(msg)
 
 
 async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
@@ -332,6 +352,35 @@ async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: 
         return
 
     try:
+        if not session_id and not stop_all:
+            if not is_interactive(ctx):
+                click.echo("Provide SESSION_ID or --all.", err=True)
+                ctx.exit(1)
+                return
+            try:
+                active = await daemon_client.list_sessions()
+            except Exception as exc:
+                click.echo(f"Error: {exc}", err=True)
+                ctx.exit(1)
+                return
+            if not active:
+                click.echo("No active sessions.")
+                return
+            if len(active) == 1:
+                session = active[0]
+                resolved_id = session["session_id"]
+                label = session.get("session_name") or resolved_id[:8]
+                click.echo(f"Auto-selecting {label} ({resolved_id[:8]})")
+            else:
+                options = [format_session_option(s) for s in active]
+                result = interactive_select(options, "Select session to stop:", ctx)
+                if result is None:
+                    click.echo("No session selected.")
+                    return
+                resolved_id = active[result[1]]["session_id"]
+            await _stop_and_report(resolved_id)
+            return
+
         if stop_all:
             results = await daemon_client.stop_all_sessions()
             if not results:
@@ -343,7 +392,7 @@ async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: 
             session, matches = await _resolve_session(session_id)  # type: ignore[arg-type]
             if not session:
                 if matches:
-                    session = _pick_session(session_id, matches)
+                    session = _pick_session(session_id, matches, ctx)
                 else:
                     click.echo(f"Session not found: {session_id}")
                     ctx.exit(1)
@@ -352,15 +401,7 @@ async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: 
                 ctx.exit(1)
                 return
 
-            resolved_id: str = session["session_id"]
-            found = await daemon_client.stop_session(resolved_id)
-            if found:
-                click.echo(f"Stop requested for session {resolved_id[:8]}")
-            else:
-                click.echo(
-                    f"Session {resolved_id[:8]} not owned by running daemon."
-                    " Run 'summon session cleanup' to clear stale sessions."
-                )
+            await _stop_and_report(session["session_id"], suggest_cleanup=True)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         ctx.exit(1)
@@ -437,9 +478,10 @@ async def _async_session_list(ctx: click.Context, show_all: bool, output: str) -
     default="table",
     help="Output format",
 )
-def session_info(session_id: str, output: str) -> None:
+@click.pass_context
+def session_info(ctx: click.Context, session_id: str, output: str) -> None:
     """Show detailed information for a specific session."""
-    session = _resolve_session_or_exit(session_id)
+    session = _resolve_session_or_exit(session_id, ctx)
     if not session:
         return
     if output == "json":
@@ -451,7 +493,8 @@ def session_info(session_id: str, output: str) -> None:
 @cmd_session.command("logs")
 @click.argument("session_id", required=False, default=None)
 @click.option("--tail", "-n", default=50, help="Number of lines to show (default: 50)")
-def session_logs(session_id: str | None, tail: int) -> None:
+@click.pass_context
+def session_logs(ctx: click.Context, session_id: str | None, tail: int) -> None:
     """Show session logs. Pass SESSION_ID for a specific session, or list available logs."""
     log_dir = get_data_dir() / "logs"
     if not log_dir.exists():
@@ -459,20 +502,45 @@ def session_logs(session_id: str | None, tail: int) -> None:
         return
 
     if session_id is None:
-        # List available log files
         log_files = sorted(log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not log_files:
             click.echo("No log files found.")
             return
-        click.echo("Available session logs:")
-        for lf in log_files:
-            click.echo(f"  {lf.stem}")
+
+        if not is_interactive(ctx):
+            # Non-interactive: list and exit (preserve existing behavior)
+            click.echo("Available session logs:")
+            for lf in log_files:
+                click.echo(f"  {lf.stem}")
+            return
+
+        # Build picker: daemon.log first, then by mtime
+        ordered_paths: list[pathlib.Path] = []
+        daemon_log = log_dir / "daemon.log"
+        if daemon_log.exists():
+            ordered_paths.append(daemon_log)
+            log_files = [f for f in log_files if f.name != "daemon.log"]
+        ordered_paths.extend(log_files)
+
+        if len(ordered_paths) == 1:
+            log_file = ordered_paths[0]
+            click.echo(f"Auto-selecting {log_file.name}")
+        else:
+            options = [format_log_option(p) for p in ordered_paths]
+            result = interactive_select(options, "Select log file:", ctx)
+            if result is None:
+                click.echo("No log selected.")
+                return
+            log_file = ordered_paths[result[1]]
+        lines = log_file.read_text().splitlines()
+        for line in lines[-tail:]:
+            click.echo(line)
         return
 
     # Resolve partial ID or channel name to full session_id
     resolved_id = session_id
     if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", session_id):
-        session_record = _resolve_session_or_exit(session_id)
+        session_record = _resolve_session_or_exit(session_id, ctx)
         if session_record is None:
             return
         resolved_id = session_record["session_id"]
@@ -518,6 +586,33 @@ async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -
                         stale.append(session)
             except Exception as e:
                 logger.debug("Could not cross-reference daemon sessions: %s", e)
+
+        # Interactive: let user select which sessions to clean
+        if stale and is_interactive(ctx) and not archive:
+            options = []
+            for session in stale:
+                if session["session_id"] in pid_stale_ids:
+                    reason = f"pid {session.get('pid', '?')} dead"
+                else:
+                    reason = "orphaned"
+                options.append(format_session_option(session, annotation=reason))
+
+            try:
+                selected = interactive_multi_select(
+                    options,
+                    "Select sessions to clean up (space=toggle, enter=confirm):",
+                    ctx,
+                )
+            except KeyboardInterrupt:
+                click.echo("\nCleanup cancelled.")
+                return
+
+            if not selected:
+                click.echo("No sessions selected.")
+                return
+
+            selected_indices = {idx for _, idx in selected}
+            stale = [s for i, s in enumerate(stale) if i in selected_indices]
 
         if not stale:
             _echo("No stale sessions found.", ctx)

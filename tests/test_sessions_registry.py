@@ -244,6 +244,21 @@ class TestResolveSession:
         assert session is None
         assert matches == []
 
+    async def test_resolve_escapes_like_percent(self, registry):
+        """Percent in identifier must not act as LIKE wildcard."""
+        await registry.register("abcd1234-0000-0000-0000-000000000000", 111, "/tmp")
+        session, matches = await registry.resolve_session("ab%d")
+        assert session is None
+        assert matches == []
+
+    async def test_resolve_escapes_like_underscore(self, registry):
+        """Underscore in identifier must not act as single-char wildcard."""
+        await registry.register("abcd1234-0000-0000-0000-000000000000", 111, "/tmp")
+        # Without escaping, "ab_d" would match "abcd" via _ wildcard
+        session, matches = await registry.resolve_session("ab_d")
+        assert session is None
+        assert matches == []
+
 
 class TestMarkStale:
     async def test_marks_session_as_errored(self, registry):

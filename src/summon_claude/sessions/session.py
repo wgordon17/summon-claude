@@ -366,6 +366,11 @@ class SummonSession:
         """Slack channel ID for this session, set after channel creation."""
         return self._channel_id
 
+    @property
+    def name(self) -> str:
+        """Session name (from SessionOptions)."""
+        return self._name
+
     def request_shutdown(self) -> None:
         """Signal this session to shut down gracefully."""
         if not self._shutdown_event.is_set():

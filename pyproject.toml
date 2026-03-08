@@ -26,6 +26,7 @@ dependencies = [
     "python-daemon==3.1.2",
     "slack-bolt==1.27.0",
     "slack-sdk==3.40.1",
+    "pick==2.6.0",
 ]
 
 [project.urls]
@@ -103,7 +104,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # CLI: click.echo for output; slack handler unused args; cmd_start has many required statements
-"src/summon_claude/cli/__init__.py" = ["ARG001", "PLR0913", "PLR0915"]
+"src/summon_claude/cli/__init__.py" = ["ARG001", "PLR0911", "PLR0912", "PLR0913", "PLR0915"]
 # cli/config: config_check has many validation branches by design
 "src/summon_claude/cli/config.py" = ["PLR0912", "PLR0915"]
 # Manager: _dispatch_control match arms each return
