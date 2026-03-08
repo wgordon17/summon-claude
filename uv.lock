@@ -637,6 +637,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pick"
+version = "2.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "windows-curses", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b6/f9/450cc44b21190d99b86df3e59f7573d85f3ef2c4f7670ce4f65cb2def3b4/pick-2.6.0.tar.gz", hash = "sha256:f24434a845ae9265ebf7657fc224b9a203ac75aa576b568e061484a72e27be82", size = 6266, upload-time = "2026-02-28T13:47:06.31Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/93/704982e09f3481d2055cf8ef7372445dc8ea6c883daf60f0816deb9e362c/pick-2.6.0-py3-none-any.whl", hash = "sha256:2acd5cad09be96398fba3b8be89454929de7b05362e01c69d94a05801820871f", size = 7890, upload-time = "2026-02-28T13:47:05.311Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1171,6 +1183,7 @@ dependencies = [
     { name = "claude-agent-sdk" },
     { name = "click" },
     { name = "packaging" },
+    { name = "pick" },
     { name = "pydantic-settings" },
     { name = "python-daemon" },
     { name = "slack-bolt" },
@@ -1193,6 +1206,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = "==0.1.39" },
     { name = "click", specifier = "==8.3.1" },
     { name = "packaging", specifier = "==26.0" },
+    { name = "pick", specifier = "==2.6.0" },
     { name = "pydantic-settings", specifier = "==2.13.1" },
     { name = "python-daemon", specifier = "==3.1.2" },
     { name = "slack-bolt", specifier = "==1.27.0" },
@@ -1240,6 +1254,17 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/32/ce/eeb58ae4ac36fe09e3842eb02e0eb676bf2c53ae062b98f1b2531673efdd/uvicorn-0.41.0.tar.gz", hash = "sha256:09d11cf7008da33113824ee5a1c6422d89fbc2ff476540d69a34c87fab8b571a", size = 82633, upload-time = "2026-02-16T23:07:24.1Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/83/e4/d04a086285c20886c0daad0e026f250869201013d18f81d9ff5eada73a88/uvicorn-0.41.0-py3-none-any.whl", hash = "sha256:29e35b1d2c36a04b9e180d4007ede3bcb32a85fbdfd6c6aeb3f26839de088187", size = 68783, upload-time = "2026-02-16T23:07:22.357Z" },
+]
+
+[[package]]
+name = "windows-curses"
+version = "2.4.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f4/99/60f34e51514c82631aa5c6d21eab88ce1701562de9844608411e39462a46/windows_curses-2.4.1-cp312-cp312-win32.whl", hash = "sha256:bdbe7d58747408aef8a9128b2654acf6fbd11c821b91224b9a046faba8c6b6ca", size = 71489, upload-time = "2025-01-11T00:26:22.726Z" },
+    { url = "https://files.pythonhosted.org/packages/62/8f/d908bcab1954375b156a9300fa86ceccb110f39457cd6fd59c72777626ab/windows_curses-2.4.1-cp312-cp312-win_amd64.whl", hash = "sha256:5c9c2635faf171a229caca80e1dd760ab00db078e2a285ba2f667bbfcc31777c", size = 81777, upload-time = "2025-01-11T00:26:25.273Z" },
+    { url = "https://files.pythonhosted.org/packages/25/a0/e8d074f013117633f6b502ca123ecfc377fe0bd36818fe65e8935c91ca9c/windows_curses-2.4.1-cp313-cp313-win32.whl", hash = "sha256:05d1ca01e5199a435ccb6c8c2978df4a169cdff1ec99ab15f11ded9de8e5be26", size = 71390, upload-time = "2025-01-11T00:26:27.66Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/4b/2838a829b074a68c570d54ae0ae8539979657d3e619a4dc5a4b03eb69745/windows_curses-2.4.1-cp313-cp313-win_amd64.whl", hash = "sha256:8cf653f8928af19c103ae11cfed38124f418dcdd92643c4cd17239c0cec2f9da", size = 81636, upload-time = "2025-01-11T00:26:29.595Z" },
 ]
 
 [[package]]

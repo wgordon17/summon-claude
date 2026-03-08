@@ -79,6 +79,7 @@ def mock_registry(**overrides: object) -> AsyncMock:
     else:
         reg.resolve_session = AsyncMock(return_value=(_resolve, [_resolve]))
     reg.list_stale = AsyncMock(return_value=overrides.get("stale", []))
+    reg.mark_stale = AsyncMock()
     reg.update_status = AsyncMock()
     reg.log_event = AsyncMock()
 

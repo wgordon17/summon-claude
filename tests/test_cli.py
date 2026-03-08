@@ -433,11 +433,6 @@ class TestSessionStop:
         assert "matches 2 sessions" in result.output
         assert "Stop requested" in result.output
 
-    def test_stop_no_args_shows_error(self):
-        runner = CliRunner()
-        result = runner.invoke(cli, ["stop"])
-        assert result.exit_code != 0
-
 
 class TestSessionLogs:
     """Behavior tests for 'session logs'."""

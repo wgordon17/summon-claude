@@ -225,10 +225,11 @@ class SessionRegistry:
 
         db = self._check_connected()
 
-        # 2. Prefix match on session_id
+        # 2. Prefix match on session_id (escape LIKE metacharacters)
+        safe = identifier.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         async with db.execute(
-            "SELECT * FROM sessions WHERE session_id LIKE ? ORDER BY started_at DESC",
-            (f"{identifier}%",),
+            "SELECT * FROM sessions WHERE session_id LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
+            (f"{safe}%",),
         ) as cursor:
             rows = [dict(r) for r in await cursor.fetchall()]
             if len(rows) == 1:
