@@ -318,6 +318,8 @@ class TestPostSessionSummary:
         text = router.post_to_main.call_args[0][0]
         assert ":memo:" in text
         assert "Session accomplished X and Y." in text
+        # Header must use standard markdown bold (**), not Slack mrkdwn (*)
+        assert "**Session Summary**" in text
 
     async def test_strips_dangerous_mentions(self):
         """Should strip @channel, @here, @everyone, and user mentions."""
