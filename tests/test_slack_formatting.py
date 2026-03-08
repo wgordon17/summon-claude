@@ -51,7 +51,7 @@ class TestMarkdownToMrkdwn:
         result = markdown_to_mrkdwn(f"Hello {slack_element} world")
         assert slack_element in result
 
-    @pytest.mark.parametrize("text", ["", "   ", "\n\n"])
+    @pytest.mark.parametrize("text", ["", "   ", "\n\n", "\t", "  \t  "])
     def test_empty_and_whitespace(self, text: str) -> None:
         assert markdown_to_mrkdwn(text) == text
 

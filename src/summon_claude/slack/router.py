@@ -89,6 +89,7 @@ class ThreadRouter:
         """Update an existing message with mrkdwn conversion."""
         await self.client.update(ts, markdown_to_mrkdwn(text), blocks=blocks)
 
+    # upload_to_active_thread does not convert — file content is not markdown
     async def upload_to_active_thread(
         self,
         content: str,
@@ -115,6 +116,7 @@ class ThreadRouter:
             for key in keys[: len(keys) // 2]:
                 del self.subagent_threads[key]
 
+        # description is pre-converted; post via _post_raw to avoid double conversion
         ref = await self._post_raw(
             f"\U0001f916 Subagent: {markdown_to_mrkdwn(description)}",
         )

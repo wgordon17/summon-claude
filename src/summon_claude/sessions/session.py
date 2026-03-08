@@ -912,7 +912,7 @@ class SummonSession:
                 summary = re.sub(r"<!(?:channel|here|everyone)>", "", summary)
                 summary = re.sub(r"<@[A-Z0-9]+>", "", summary)
                 summary = summary[:3000]
-                await rt.client.post(
+                await rt.post_to_main(
                     f":memo: *Session Summary*\n{summary}",
                 )
         except Exception as e:
