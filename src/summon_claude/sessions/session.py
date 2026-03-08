@@ -758,7 +758,9 @@ class SummonSession:
                 # Post session summary while the client is still open
                 if self._total_turns > 0:
                     try:
-                        await asyncio.wait_for(self._post_session_summary(rt, claude), timeout=30.0)
+                        await asyncio.wait_for(
+                            self._post_session_summary(router, claude), timeout=30.0
+                        )
                     except TimeoutError:
                         logger.debug("Session summary timed out")
                     except Exception as e:
@@ -893,7 +895,7 @@ class SummonSession:
             except Exception as e:
                 logger.warning("Heartbeat failed: %s", e)
 
-    async def _post_session_summary(self, rt: _SessionRuntime, claude: ClaudeSDKClient) -> None:
+    async def _post_session_summary(self, router: ThreadRouter, claude: ClaudeSDKClient) -> None:
         """Generate and post a session summary via Claude."""
         try:
             await claude.query(
@@ -912,7 +914,7 @@ class SummonSession:
                 summary = re.sub(r"<!(?:channel|here|everyone)>", "", summary)
                 summary = re.sub(r"<@[A-Z0-9]+>", "", summary)
                 summary = summary[:3000]
-                await rt.post_to_main(
+                await router.post_to_main(
                     f":memo: *Session Summary*\n{summary}",
                 )
         except Exception as e:
@@ -1273,8 +1275,12 @@ class SummonSession:
                         thread_ts=thread_ts,
                     )
                     await rt.client.react(thread_ts, "no_entry_sign")
-                except Exception:  # noqa: S110
-                    pass
+                except Exception:
+                    logger.warning(
+                        "Failed to post unknown-command notice for !%s",
+                        match.raw_name,
+                        exc_info=True,
+                    )
                 return None
 
             if defn.block_reason:
@@ -1284,8 +1290,12 @@ class SummonSession:
                         thread_ts=thread_ts,
                     )
                     await rt.client.react(thread_ts, "no_entry_sign")
-                except Exception:  # noqa: S110
-                    pass
+                except Exception:
+                    logger.warning(
+                        "Failed to post blocked-command notice for !%s",
+                        match.raw_name,
+                        exc_info=True,
+                    )
                 return None
 
             # LOCAL or PASSTHROUGH — route through existing _dispatch_command
@@ -1367,8 +1377,8 @@ class SummonSession:
         if has_blocked and thread_ts:
             try:
                 await rt.client.react(thread_ts, "no_entry_sign")
-            except Exception:  # noqa: S110
-                pass
+            except Exception:
+                logger.warning("Failed to add blocked-command reaction", exc_info=True)
 
         # Post annotations as threaded reply
         if annotations:

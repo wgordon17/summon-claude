@@ -116,7 +116,7 @@ class ThreadRouter:
             for key in keys[: len(keys) // 2]:
                 del self.subagent_threads[key]
 
-        # description is pre-converted; post via _post_raw to avoid double conversion
+        # Convert description inline; post via _post_raw to avoid double conversion
         ref = await self._post_raw(
             f"\U0001f916 Subagent: {markdown_to_mrkdwn(description)}",
         )
