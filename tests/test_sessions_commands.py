@@ -124,42 +124,23 @@ class TestDispatch:
         assert result.text is not None
         assert result.suppress_queue is True
 
-    async def test_dispatch_alias_quit_to_end(self, make_context):
-        """!quit should resolve to !end handler."""
+    @pytest.mark.parametrize("alias", ["quit", "exit", "logout"])
+    async def test_dispatch_alias_to_end(self, alias, make_context):
+        """End-session aliases should resolve to !end handler."""
         context = make_context()
-        result = await dispatch("quit", [], context)
+        result = await dispatch(alias, [], context)
         assert result.metadata.get("shutdown") is True
         assert result.text is not None
         assert "Ending session" in result.text
 
-    async def test_dispatch_alias_exit_to_end(self, make_context):
-        """!exit should resolve to !end handler."""
+    @pytest.mark.parametrize("cmd", ["login", "insights", "context", "cost", "release-notes"])
+    async def test_dispatch_blocked_commands(self, cmd, make_context):
+        """Blocked commands should return block_reason text."""
         context = make_context()
-        result = await dispatch("exit", [], context)
-        assert result.metadata.get("shutdown") is True
-
-    async def test_dispatch_alias_logout_to_end(self, make_context):
-        """!logout should resolve to !end handler."""
-        context = make_context()
-        result = await dispatch("logout", [], context)
-        assert result.metadata.get("shutdown") is True
-
-    async def test_dispatch_blocked_login(self, make_context):
-        """!login should be blocked with error text."""
-        context = make_context()
-        result = await dispatch("login", [], context)
+        result = await dispatch(cmd, [], context)
         assert result.text is not None
         assert "not available" in result.text.lower()
         assert result.suppress_queue is True
-
-    async def test_dispatch_blocked_specific_commands(self, make_context):
-        """Specifically blocked commands should return block_reason text."""
-        context = make_context()
-        for cmd in ("insights", "context", "cost", "release-notes"):
-            result = await dispatch(cmd, [], context)
-            assert result.text is not None, f"!{cmd} should return error text"
-            assert "not available" in result.text.lower(), f"!{cmd} should mention not available"
-            assert result.suppress_queue is True, f"!{cmd} should suppress queue"
 
     async def test_dispatch_passthrough_command(self, make_context):
         """Passthrough command should return suppress_queue=False."""
@@ -175,13 +156,6 @@ class TestDispatch:
         assert result.text is not None
         assert "Unknown command" in result.text
         assert result.suppress_queue is True
-
-    async def test_dispatch_all_aliases(self, make_context):
-        """All remap aliases should produce the same result as their canonical."""
-        context = make_context()
-        for alias in ("quit", "exit", "logout"):
-            result = await dispatch(alias, [], context)
-            assert result.metadata.get("shutdown") is True, f"{alias} should trigger shutdown"
 
 
 # ------------------------------------------------------------------

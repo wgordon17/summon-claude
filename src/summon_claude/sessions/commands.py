@@ -417,14 +417,15 @@ def find_commands(text: str) -> list[CommandMatch]:
         # Consume args for LOCAL commands with max_args > 0
         if defn and defn.handler and defn.max_args is not None and defn.max_args > 0:
             remaining = text[cmd_end:]
-            for word in remaining.split():
+            for arg_m in re.finditer(r"\S+", remaining):
                 if len(consumed_args) >= defn.max_args:
                     break
+                word = arg_m.group()
                 # Stop at next command prefix
                 if len(word) > 1 and word[0] in "!/" and word[1].isalpha():
                     break
                 consumed_args.append(word)
-                cmd_end = text.index(word, cmd_end) + len(word)
+                cmd_end = m.end() + arg_m.end()
             if consumed_args:
                 consumed_ranges.append((m.end(), cmd_end))
 

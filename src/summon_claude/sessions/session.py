@@ -1289,7 +1289,7 @@ class SummonSession:
         modified_text = full_text
         has_blocked = False
 
-        # Process matches in reverse order to preserve positions when modifying text
+        # Process in reverse so earlier string positions stay valid as we modify text
         for match in reversed(matches):
             defn = COMMAND_ACTIONS.get(match.name)
 
