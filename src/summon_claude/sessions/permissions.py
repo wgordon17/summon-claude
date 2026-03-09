@@ -574,7 +574,7 @@ async def _post_quietly(router: ThreadRouter, text: str) -> None:
     try:
         await router.post_to_active_thread(text)
     except Exception as e:
-        logger.debug("Failed to post ask_user feedback: %s", e)
+        logger.warning("Failed to post ask_user feedback: %s", e)
 
 
 def _build_ask_user_blocks(request_id: str, questions: list[dict]) -> list[dict]:

@@ -197,7 +197,7 @@ class ResponseStreamer:
     async def update_turn_summary(self, summary: str) -> None:
         """Update the current turn's thread starter message with a summary."""
         if self._router.active_thread_ref:
-            await self._router.client.update(
+            await self._router.update(
                 self._router.active_thread_ref.ts,
                 f"\U0001f527 Turn {self._current_turn_number}: {summary}",
             )
@@ -373,7 +373,7 @@ class ResponseStreamer:
 
         if stored_ts:
             try:
-                await self._router.client.update(stored_ts, text)
+                await self._router.update(stored_ts, text)
             except Exception as e:
                 logger.warning("Failed to update message: %s — posting new", e)
                 ref = await post_fn(text)
@@ -466,7 +466,7 @@ class ResponseStreamer:
                     "white_check_mark",
                 )
             except Exception:
-                logger.debug("Reaction failed", exc_info=True)
+                logger.warning("Reaction failed", exc_info=True)
 
     def _make_tool_use_blocks(
         self,

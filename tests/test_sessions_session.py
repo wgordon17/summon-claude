@@ -285,6 +285,70 @@ class TestSlashCommandHandler:
             assert not session._authenticated_event.is_set()
 
 
+class TestPostSessionSummary:
+    """Tests for _post_session_summary — uses router.post_to_main, not rt."""
+
+    async def _make_mock_claude(self, summary_text: str):
+        """Create a mock ClaudeSDKClient that yields an AssistantMessage."""
+        from claude_agent_sdk import AssistantMessage, TextBlock
+
+        claude = AsyncMock()
+        claude.query = AsyncMock()
+
+        msg = AssistantMessage(content=[TextBlock(text=summary_text)], model="claude-opus-4-6")
+
+        async def fake_receive():
+            yield msg
+
+        claude.receive_response = fake_receive
+        return claude
+
+    async def test_posts_via_router_not_rt(self):
+        """_post_session_summary should call router.post_to_main, not rt."""
+        router = AsyncMock()
+        router.post_to_main = AsyncMock(
+            return_value=MessageRef(channel_id="C123", ts="1234567890.000000")
+        )
+        claude = await self._make_mock_claude("Session accomplished X and Y.")
+        session = make_session()
+
+        await session._post_session_summary(router, claude)
+
+        router.post_to_main.assert_called_once()
+        text = router.post_to_main.call_args[0][0]
+        assert ":memo:" in text
+        assert "Session accomplished X and Y." in text
+        # Header must use standard markdown bold (**), not Slack mrkdwn (*)
+        assert "**Session Summary**" in text
+
+    async def test_strips_dangerous_mentions(self):
+        """Should strip @channel, @here, @everyone, and user mentions."""
+        router = AsyncMock()
+        router.post_to_main = AsyncMock(
+            return_value=MessageRef(channel_id="C123", ts="1234567890.000000")
+        )
+        claude = await self._make_mock_claude("Done! <!channel> ping <!here> and <@U12345> helped.")
+        session = make_session()
+
+        await session._post_session_summary(router, claude)
+
+        text = router.post_to_main.call_args[0][0]
+        assert "<!channel>" not in text
+        assert "<!here>" not in text
+        assert "<@U12345>" not in text
+        assert "helped" in text
+
+    async def test_no_post_on_empty_summary(self):
+        """Should not post if Claude returns empty text."""
+        router = AsyncMock()
+        claude = await self._make_mock_claude("   ")
+        session = make_session()
+
+        await session._post_session_summary(router, claude)
+
+        router.post_to_main.assert_not_called()
+
+
 class TestSessionShutdownSummary:
     async def test_shutdown_posts_summary_message(self, tmp_path):
         """_shutdown should post turns/cost summary to channel."""

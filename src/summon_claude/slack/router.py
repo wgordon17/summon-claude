@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from summon_claude.slack.client import MessageRef, SlackClient
+from summon_claude.slack.formatting import markdown_to_mrkdwn
 
 _MAX_SUBAGENT_THREADS = 100
 
@@ -30,7 +31,19 @@ class ThreadRouter:
         self.active_thread_ts = ts
         self.active_thread_ref = ref
 
-    # --- Thread-aware posting (delegates to client) ---
+    # --- Raw posting (no conversion) ---
+
+    async def _post_raw(
+        self,
+        text: str,
+        *,
+        blocks: list[dict[str, Any]] | None = None,
+        thread_ts: str | None = None,
+    ) -> MessageRef:
+        """Post directly via the client without any text conversion."""
+        return await self.client.post(text, blocks=blocks, thread_ts=thread_ts)
+
+    # --- Thread-aware posting with mrkdwn conversion ---
 
     async def post_to_main(
         self,
@@ -39,15 +52,16 @@ class ThreadRouter:
         blocks: list[dict[str, Any]] | None = None,
     ) -> MessageRef:
         """Post directly to the main channel."""
-        return await self.client.post(text, blocks=blocks)
+        return await self._post_raw(markdown_to_mrkdwn(text), blocks=blocks)
 
     async def post_to_active_thread(
         self, text: str, *, blocks: list[dict[str, Any]] | None = None
     ) -> MessageRef:
         """Post to the current active thread; falls back to main if no active thread."""
+        converted = markdown_to_mrkdwn(text)
         if not self.active_thread_ts:
-            return await self.post_to_main(text, blocks=blocks)
-        return await self.client.post(text, blocks=blocks, thread_ts=self.active_thread_ts)
+            return await self._post_raw(converted, blocks=blocks)
+        return await self._post_raw(converted, blocks=blocks, thread_ts=self.active_thread_ts)
 
     async def post_to_subagent_thread(
         self,
@@ -57,11 +71,25 @@ class ThreadRouter:
         blocks: list[dict[str, Any]] | None = None,
     ) -> MessageRef:
         """Post to a subagent's dedicated thread."""
+        converted = markdown_to_mrkdwn(text)
         thread_ts = self.subagent_threads.get(tool_use_id)
         if not thread_ts:
-            return await self.post_to_active_thread(text, blocks=blocks)
-        return await self.client.post(text, blocks=blocks, thread_ts=thread_ts)
+            if not self.active_thread_ts:
+                return await self._post_raw(converted, blocks=blocks)
+            return await self._post_raw(converted, blocks=blocks, thread_ts=self.active_thread_ts)
+        return await self._post_raw(converted, blocks=blocks, thread_ts=thread_ts)
 
+    async def update(
+        self,
+        ts: str,
+        text: str,
+        *,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Update an existing message with mrkdwn conversion."""
+        await self.client.update(ts, markdown_to_mrkdwn(text), blocks=blocks)
+
+    # upload_to_active_thread does not convert — file content is not markdown
     async def upload_to_active_thread(
         self,
         content: str,
@@ -88,8 +116,9 @@ class ThreadRouter:
             for key in keys[: len(keys) // 2]:
                 del self.subagent_threads[key]
 
-        ref = await self.client.post(
-            f"\U0001f916 Subagent: {description}",
+        # Convert description inline; post via _post_raw to avoid double conversion
+        ref = await self._post_raw(
+            f"\U0001f916 Subagent: {markdown_to_mrkdwn(description)}",
         )
         self.subagent_threads[tool_use_id] = ref.ts
         return ref.ts

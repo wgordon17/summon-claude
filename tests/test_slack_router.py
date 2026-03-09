@@ -163,3 +163,65 @@ class TestThreadRouterUploadToActiveThread:
         assert call_kwargs["content"] == "content"
         assert call_kwargs["filename"] == "file.txt"
         assert call_kwargs["thread_ts"] == "1234567890.123456"
+
+
+class TestThreadRouterConversion:
+    async def test_post_to_main_converts_markdown(self):
+        client, web = make_mock_client()
+        router = ThreadRouter(client)
+        await router.post_to_main("**bold**")
+        call_kwargs = web.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "*bold*"
+
+    async def test_post_to_active_thread_converts_markdown(self):
+        client, web = make_mock_client()
+        router = ThreadRouter(client)
+        ref = MessageRef(channel_id="C123", ts="1234567890.123456")
+        router.set_active_thread("1234567890.123456", ref)
+        await router.post_to_active_thread("**bold**")
+        call_kwargs = web.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "*bold*"
+
+    async def test_update_converts_markdown(self):
+        client, web = make_mock_client()
+        router = ThreadRouter(client)
+        await router.update("1234567890.123456", "**bold**")
+        web.chat_update.assert_called_once()
+        call_kwargs = web.chat_update.call_args.kwargs
+        assert call_kwargs["text"] == "*bold*"
+
+    async def test_start_subagent_thread_converts_description(self):
+        client, web = make_mock_client()
+        router = ThreadRouter(client)
+        await router.start_subagent_thread("task_1", "**analyze** code")
+        call_kwargs = web.chat_postMessage.call_args.kwargs
+        assert "*analyze*" in call_kwargs["text"]
+        assert "**analyze**" not in call_kwargs["text"]
+
+    async def test_no_double_conversion_on_fallback(self):
+        """post_to_active_thread with no active thread should convert exactly once."""
+        client, web = make_mock_client()
+        router = ThreadRouter(client)
+        # No active thread — falls back to main channel
+        await router.post_to_active_thread("**bold**")
+        call_kwargs = web.chat_postMessage.call_args.kwargs
+        # *bold* is correct single conversion; _bold_ would indicate double conversion
+        assert call_kwargs["text"] == "*bold*"
+
+    async def test_no_double_conversion_subagent_to_active(self):
+        """post_to_subagent_thread with unknown id should convert exactly once."""
+        client, web = make_mock_client()
+        router = ThreadRouter(client)
+        ref = MessageRef(channel_id="C123", ts="1234567890.123456")
+        router.set_active_thread("1234567890.123456", ref)
+        await router.post_to_subagent_thread("unknown_id", "**bold**")
+        call_kwargs = web.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "*bold*"
+
+    async def test_no_double_conversion_subagent_to_main(self):
+        """post_to_subagent_thread with no active thread and unknown id converts once."""
+        client, web = make_mock_client()
+        router = ThreadRouter(client)
+        await router.post_to_subagent_thread("unknown_id", "**bold**")
+        call_kwargs = web.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "*bold*"

@@ -124,7 +124,10 @@ _SYSTEM_PROMPT = {
     "preset": "claude_code",
     "append": (
         "You are running via summon-claude, bridged to a Slack channel. "
-        "The user interacts through Slack messages. Format responses for Slack mrkdwn."
+        "The user interacts through Slack messages. "
+        "Use standard markdown formatting "
+        "(e.g. **bold**, *italic*, [text](url), ```code```). "
+        "Your output will be automatically converted for Slack display."
     ),
 }
 
@@ -755,11 +758,13 @@ class SummonSession:
                 # Post session summary while the client is still open
                 if self._total_turns > 0:
                     try:
-                        await asyncio.wait_for(self._post_session_summary(rt, claude), timeout=30.0)
+                        await asyncio.wait_for(
+                            self._post_session_summary(router, claude), timeout=30.0
+                        )
                     except TimeoutError:
-                        logger.debug("Session summary timed out")
+                        logger.warning("Session summary timed out")
                     except Exception as e:
-                        logger.debug("Session summary failed: %s", e)
+                        logger.warning("Session summary failed: %s", e)
                 self._claude = None
 
     async def _handle_user_message(  # noqa: PLR0915
@@ -810,7 +815,7 @@ class SummonSession:
                             ],
                         )
                     except Exception:
-                        logger.debug("Failed to post Claude session ID to Slack")
+                        logger.warning("Failed to post Claude session ID to Slack", exc_info=True)
                 cost = stream_result.result.total_cost_usd or 0.0
                 self._total_cost += cost
                 await rt.registry.record_turn(self._session_id, cost)
@@ -830,7 +835,7 @@ class SummonSession:
                     )
                     await rt.client.set_topic(topic)
                 except Exception:
-                    logger.debug("Post-turn topic update failed")
+                    logger.warning("Post-turn topic update failed", exc_info=True)
 
         self._current_turn_task = asyncio.create_task(_do_turn())
         abort_wait = asyncio.create_task(self._abort_event.wait())
@@ -890,7 +895,7 @@ class SummonSession:
             except Exception as e:
                 logger.warning("Heartbeat failed: %s", e)
 
-    async def _post_session_summary(self, rt: _SessionRuntime, claude: ClaudeSDKClient) -> None:
+    async def _post_session_summary(self, router: ThreadRouter, claude: ClaudeSDKClient) -> None:
         """Generate and post a session summary via Claude."""
         try:
             await claude.query(
@@ -909,11 +914,11 @@ class SummonSession:
                 summary = re.sub(r"<!(?:channel|here|everyone)>", "", summary)
                 summary = re.sub(r"<@[A-Z0-9]+>", "", summary)
                 summary = summary[:3000]
-                await rt.client.post(
-                    f":memo: *Session Summary*\n{summary}",
+                await router.post_to_main(
+                    f":memo: **Session Summary**\n{summary}",
                 )
         except Exception as e:
-            logger.debug("Failed to generate session summary: %s", e)
+            logger.warning("Failed to generate session summary: %s", e)
 
     async def _shutdown(self, rt: _SessionRuntime) -> None:
         """Gracefully shut down the session."""
@@ -1270,8 +1275,12 @@ class SummonSession:
                         thread_ts=thread_ts,
                     )
                     await rt.client.react(thread_ts, "no_entry_sign")
-                except Exception:  # noqa: S110
-                    pass
+                except Exception:
+                    logger.warning(
+                        "Failed to post unknown-command notice for !%s",
+                        match.raw_name,
+                        exc_info=True,
+                    )
                 return None
 
             if defn.block_reason:
@@ -1281,8 +1290,12 @@ class SummonSession:
                         thread_ts=thread_ts,
                     )
                     await rt.client.react(thread_ts, "no_entry_sign")
-                except Exception:  # noqa: S110
-                    pass
+                except Exception:
+                    logger.warning(
+                        "Failed to post blocked-command notice for !%s",
+                        match.raw_name,
+                        exc_info=True,
+                    )
                 return None
 
             # LOCAL or PASSTHROUGH — route through existing _dispatch_command
@@ -1364,8 +1377,8 @@ class SummonSession:
         if has_blocked and thread_ts:
             try:
                 await rt.client.react(thread_ts, "no_entry_sign")
-            except Exception:  # noqa: S110
-                pass
+            except Exception:
+                logger.warning("Failed to add blocked-command reaction", exc_info=True)
 
         # Post annotations as threaded reply
         if annotations:
