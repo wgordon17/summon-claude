@@ -630,6 +630,67 @@ class TestUpdateCheckIntegration:
         assert "Update available" not in result.output
 
 
+class TestMigrationNotification:
+    """Test schema migration notification in cmd_start."""
+
+    def test_start_shows_migration_notification(self, tmp_path):
+        """cmd_start should print migration notice when schema was behind."""
+        import asyncio
+
+        import aiosqlite
+
+        from summon_claude.sessions.registry import SessionRegistry
+
+        db_path = tmp_path / "registry.db"
+
+        # Create DB at version 1, then downgrade to 0
+        async def _setup():
+            async with SessionRegistry(db_path=db_path):
+                pass
+            async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
+                await raw_db.execute("UPDATE schema_version SET version = 0")
+
+        asyncio.run(_setup())
+
+        with _start_patches() as stack:
+            stack.enter_context(
+                patch(
+                    "summon_claude.sessions.registry._default_db_path",
+                    return_value=db_path,
+                )
+            )
+            runner = CliRunner()
+            result = runner.invoke(cli, ["start"])
+        assert "Database schema upgraded" in result.output
+        assert "v0" in result.output
+
+    def test_start_no_migration_notification_when_current(self, tmp_path):
+        """cmd_start should not print migration notice when schema is current."""
+        import asyncio
+
+        from summon_claude.sessions.registry import SessionRegistry
+
+        # Pre-create DB at current version
+        db_path = tmp_path / "registry.db"
+
+        async def _create():
+            async with SessionRegistry(db_path=db_path):
+                pass
+
+        asyncio.run(_create())
+
+        with _start_patches() as stack:
+            stack.enter_context(
+                patch(
+                    "summon_claude.sessions.registry._default_db_path",
+                    return_value=db_path,
+                )
+            )
+            runner = CliRunner()
+            result = runner.invoke(cli, ["start"])
+        assert "schema upgraded" not in result.output
+
+
 class TestCliDetection:
     """Tests for Claude CLI detection in CLI startup."""
 

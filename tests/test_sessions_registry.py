@@ -368,3 +368,57 @@ class TestSchemaVersioning:
                 assert version == 1
             migration_msgs = [r for r in caplog.records if "migration" in r.message.lower()]
             assert len(migration_msgs) == 1
+
+    async def test_migrated_from_reflects_previous_version(self, tmp_path):
+        """SessionRegistry.migrated_from should show the pre-migration version."""
+        import aiosqlite
+
+        db_path = tmp_path / "track.db"
+        # Fresh DB: migrated_from should be 0 (baseline)
+        async with SessionRegistry(db_path=db_path) as reg:
+            assert reg.migrated_from == 0
+
+        # Already current: migrated_from should be 1
+        async with SessionRegistry(db_path=db_path) as reg:
+            assert reg.migrated_from == 1
+
+        # Downgrade to 0, re-connect: migrated_from should be 0 again
+        async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
+            await raw_db.execute("UPDATE schema_version SET version = 0")
+        async with SessionRegistry(db_path=db_path) as reg:
+            assert reg.migrated_from == 0
+
+    async def test_migration_rollback_on_failure(self, tmp_path):
+        """If a migration raises, version should remain unchanged."""
+        from unittest.mock import patch
+
+        import aiosqlite
+
+        db_path = tmp_path / "rollback.db"
+        # Create DB at version 1
+        async with SessionRegistry(db_path=db_path):
+            pass
+
+        # Downgrade to 0
+        async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
+            await raw_db.execute("UPDATE schema_version SET version = 0")
+
+        # Inject a failing migration for 0→1
+        async def _failing_migration(db):
+            raise RuntimeError("migration failed")
+
+        failing_migrations = {0: _failing_migration}
+        with (
+            patch("summon_claude.sessions.registry._MIGRATIONS", failing_migrations),
+            pytest.raises(RuntimeError, match="migration failed"),
+        ):
+            async with SessionRegistry(db_path=db_path):
+                pass
+
+        # Version should still be 0 after rollback
+        async with (
+            aiosqlite.connect(str(db_path), isolation_level=None) as raw_db,
+            raw_db.execute("SELECT version FROM schema_version WHERE id = 1") as cursor,
+        ):
+            row = await cursor.fetchone()
+            assert row[0] == 0

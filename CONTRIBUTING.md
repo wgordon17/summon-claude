@@ -46,7 +46,7 @@ Project-specific scopes for summon-claude:
 - **permissions**: Permission handling and approval flow (`sessions/permissions.py`)
 - **mcp**: MCP server and tools (`slack/mcp.py`)
 - **registry**: Session storage and SQLite operations (`sessions/registry.py`)
-- **db**: Database maintenance CLI commands (`cli/` — `summon db` group)
+- **db**: Database maintenance CLI commands (`cli/` — `summon db` group: status, reset, vacuum, purge)
 - **plugin**: Claude Code plugin skill and manifest (`.claude-plugin/`)
 
 **Infrastructure Scopes:**

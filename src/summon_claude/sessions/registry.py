@@ -96,15 +96,16 @@ def _default_db_path() -> Path:
 
 async def _get_schema_version(db: aiosqlite.Connection) -> int:
     """Return the current schema version, or 0 if the version table is empty."""
-    async with db.execute(
-        "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
-    ) as cursor:
+    async with db.execute("SELECT version FROM schema_version WHERE id = 1") as cursor:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
 
-async def _run_migrations(db: aiosqlite.Connection) -> None:
-    """Apply any pending schema migrations and update the version row."""
+async def _run_migrations(db: aiosqlite.Connection) -> int:
+    """Apply any pending schema migrations and update the version row.
+
+    Returns the schema version that was in place before migration ran.
+    """
     # Use BEGIN IMMEDIATE to prevent concurrent migration races across processes.
     await db.execute("BEGIN IMMEDIATE")
     try:
@@ -112,7 +113,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
 
         if current >= CURRENT_SCHEMA_VERSION:
             await db.execute("COMMIT")
-            return
+            return current
 
         for version in range(current, CURRENT_SCHEMA_VERSION):
             migration = _MIGRATIONS.get(version)
@@ -126,6 +127,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             (CURRENT_SCHEMA_VERSION,),
         )
         await db.execute("COMMIT")
+        return current
     except Exception:
         await db.execute("ROLLBACK")
         raise
@@ -138,6 +140,7 @@ class SessionRegistry:
         self._db_path = db_path or _default_db_path()
         self._db: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
+        self.migrated_from: int | None = None
 
     async def __aenter__(self) -> SessionRegistry:
         await self._connect()
@@ -149,7 +152,7 @@ class SessionRegistry:
 
     async def _connect(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = await aiosqlite.connect(str(self._db_path))
+        self._db = await aiosqlite.connect(str(self._db_path), isolation_level=None)
         # Restrict DB file to owner-only access (0600)
         try:
             self._db_path.chmod(0o600)
@@ -166,7 +169,7 @@ class SessionRegistry:
         await self._db.execute(_CREATE_AUDIT_LOG)
         await self._db.execute(_CREATE_SCHEMA_VERSION)
         await self._db.commit()
-        await _run_migrations(self._db)
+        self.migrated_from = await _run_migrations(self._db)
 
     async def _close(self) -> None:
         if self._db:

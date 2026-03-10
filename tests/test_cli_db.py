@@ -12,13 +12,53 @@ from summon_claude.cli import cli
 from summon_claude.sessions.registry import SessionRegistry
 
 
-class TestDbMigrate:
-    def test_db_migrate_reports_version(self):
-        """'db migrate' should report the current schema version."""
+async def _create_db(db_path):
+    async with SessionRegistry(db_path=db_path):
+        pass
+
+
+class TestDbStatus:
+    def test_db_status_reports_current(self, tmp_path):
+        """'db status' should report schema version, integrity, and row counts."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["db", "migrate"])
+        db_path = tmp_path / "registry.db"
+
+        # Pre-create DB at current version
+        asyncio.run(_create_db(db_path))
+
+        with patch(
+            "summon_claude.sessions.registry._default_db_path",
+            return_value=db_path,
+        ):
+            result = runner.invoke(cli, ["db", "status"])
         assert result.exit_code == 0
         assert "Schema version: 1" in result.output
+        assert "Integrity:" in result.output
+        assert "Sessions:" in result.output
+
+    def test_db_status_reports_migration_applied(self, tmp_path):
+        """'db status' should report migration when schema was behind."""
+        import aiosqlite
+
+        runner = CliRunner()
+        db_path = tmp_path / "registry.db"
+
+        # Create DB at version 1, then manually downgrade to 0
+        async def _setup():
+            async with SessionRegistry(db_path=db_path):
+                pass
+            async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
+                await raw_db.execute("UPDATE schema_version SET version = 0")
+
+        asyncio.run(_setup())
+
+        with patch(
+            "summon_claude.sessions.registry._default_db_path",
+            return_value=db_path,
+        ):
+            result = runner.invoke(cli, ["db", "status"])
+        assert result.exit_code == 0
+        assert "Migrated schema from version 0" in result.output
 
 
 class TestDbReset:
@@ -27,12 +67,7 @@ class TestDbReset:
         runner = CliRunner()
         # Create an initial DB so reset has something to delete
         db_path = tmp_path / "registry.db"
-
-        async def _create_db():
-            async with SessionRegistry(db_path=db_path):
-                pass
-
-        asyncio.run(_create_db())
+        asyncio.run(_create_db(db_path))
         assert db_path.exists()
 
         with patch(
@@ -62,12 +97,7 @@ class TestDbVacuum:
         """'db vacuum' should report integrity status and size."""
         runner = CliRunner()
         db_path = tmp_path / "registry.db"
-
-        async def _create_db():
-            async with SessionRegistry(db_path=db_path):
-                pass
-
-        asyncio.run(_create_db())
+        asyncio.run(_create_db(db_path))
 
         with patch(
             "summon_claude.sessions.registry._default_db_path",
@@ -77,6 +107,18 @@ class TestDbVacuum:
         assert result.exit_code == 0
         assert "Integrity: ok" in result.output
         assert "Size:" in result.output
+
+    def test_db_vacuum_missing_db(self, tmp_path):
+        """'db vacuum' should fail gracefully when DB doesn't exist."""
+        runner = CliRunner()
+        db_path = tmp_path / "nonexistent.db"
+
+        with patch(
+            "summon_claude.sessions.registry._default_db_path",
+            return_value=db_path,
+        ):
+            result = runner.invoke(cli, ["db", "vacuum"])
+        assert "Database not found" in result.output
 
 
 class TestDbPurge:
@@ -109,6 +151,13 @@ class TestDbPurge:
         # At least 1 session should have been purged
         assert "Sessions:    1" in result.output
 
+    def test_db_purge_without_yes_aborts(self):
+        """'db purge' without --yes should prompt and abort if not confirmed."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["db", "purge"], input="n\n")
+        assert result.exit_code != 0
+        assert "Aborted" in result.output
+
     def test_db_purge_keeps_recent(self, tmp_path):
         """'db purge' should not delete recent sessions."""
         runner = CliRunner()
@@ -128,6 +177,56 @@ class TestDbPurge:
             result = runner.invoke(cli, ["db", "purge", "--older-than", "30", "--yes"])
         assert result.exit_code == 0
         assert "Sessions:    0" in result.output
+
+    def test_db_purge_deletes_old_audit_log(self, tmp_path):
+        """'db purge' should delete audit log entries older than the cutoff."""
+        runner = CliRunner()
+        db_path = tmp_path / "registry.db"
+        old_ts = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+
+        async def _seed():
+            async with SessionRegistry(db_path=db_path) as reg:
+                await reg.log_event("test_event", session_id="s1", details={"info": "old"})
+                # Backdate the audit log entry
+                await reg.db.execute(
+                    "UPDATE audit_log SET timestamp = ?",
+                    (old_ts,),
+                )
+                await reg.db.commit()
+
+        asyncio.run(_seed())
+
+        with patch(
+            "summon_claude.sessions.registry._default_db_path",
+            return_value=db_path,
+        ):
+            result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
+        assert result.exit_code == 0
+        assert "Audit log:   1" in result.output
+
+    def test_db_purge_deletes_expired_auth_tokens(self, tmp_path):
+        """'db purge' should delete expired auth tokens older than the cutoff."""
+        runner = CliRunner()
+        db_path = tmp_path / "registry.db"
+        old_expiry = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+
+        async def _seed():
+            async with SessionRegistry(db_path=db_path) as reg:
+                await reg.store_pending_token(
+                    short_code="OLDTOKEN",
+                    session_id="s1",
+                    expires_at=old_expiry,
+                )
+
+        asyncio.run(_seed())
+
+        with patch(
+            "summon_claude.sessions.registry._default_db_path",
+            return_value=db_path,
+        ):
+            result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
+        assert result.exit_code == 0
+        assert "Auth tokens: 1" in result.output
 
 
 class TestConfigCheckDbValidation:

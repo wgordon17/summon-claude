@@ -106,7 +106,11 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | `summon config set KEY VALUE` | Set a single config value |
 | `summon config path` | Print the config file path |
 | `summon config edit` | Open config file in `$EDITOR` |
-| `summon config check` | Validate config file (keys, token format, DB writability, Slack API connectivity) |
+| `summon config check` | Validate config file (keys, token format, DB writability, schema version, integrity, Slack API connectivity) |
+| `summon db status` | Show schema version, integrity, and row counts (migrations apply automatically on connect) |
+| `summon db reset --yes` | Delete and recreate the registry database |
+| `summon db vacuum` | Compact the database and check integrity |
+| `summon db purge [--older-than N] --yes` | Purge completed/errored sessions, audit logs, and expired tokens older than N days (default: 30) |
 
 > **Alias:** `summon s` is shorthand for `summon session` (e.g., `summon s list`).
 
@@ -254,7 +258,7 @@ Slack input flows through `BoltRouter` (a single shared Bolt app per daemon), wh
 | `sessions/auth.py` | 8-char hex short codes with 5-min TTL, brute-force protection (5 attempts) |
 | `sessions/commands.py` | `!`-prefixed command dispatch: local handlers, passthrough, blocking, aliasing |
 | `sessions/context.py` | Context window usage tracking |
-| `sessions/registry.py` | SQLite session registry with WAL mode, heartbeat, audit log |
+| `sessions/registry.py` | SQLite session registry with WAL mode, schema versioning, heartbeat, audit log |
 | `slack/bolt.py` | Slack Bolt app, rate limiter, health monitor, event routing |
 | `slack/client.py` | Channel-bound Slack output client (post, update, react, upload) |
 | `slack/router.py` | Thread-aware message routing (main channel, turn threads, subagent threads) |
