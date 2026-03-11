@@ -117,6 +117,19 @@ class TestUpdatableFields:
         )
 
 
+class TestValidStatuses:
+    def test_valid_statuses_matches_expected(self):
+        """Guard against accidental addition/removal of valid statuses."""
+        expected = {"pending_auth", "active", "completed", "errored"}
+        assert expected == SessionRegistry._VALID_STATUSES
+
+    async def test_update_status_rejects_invalid_status(self, registry):
+        """update_status raises ValueError on invalid status."""
+        await registry.register("sess-invalid", 111, "/tmp")
+        with pytest.raises(ValueError, match="Invalid status"):
+            await registry.update_status("sess-invalid", "bogus_status")
+
+
 class TestHeartbeat:
     async def test_heartbeat_updates_activity(self, registry):
         await registry.register("sess-hb", 111, "/tmp")
