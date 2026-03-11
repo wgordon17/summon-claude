@@ -5,7 +5,7 @@ from __future__ import annotations
 import click
 
 from summon_claude.cli import daemon_client
-from summon_claude.cli.helpers import pick_session, resolve_session, stop_and_report
+from summon_claude.cli.helpers import resolve_or_pick, stop_and_report
 from summon_claude.cli.interactive import format_session_option, interactive_select, is_interactive
 from summon_claude.daemon import is_daemon_running
 
@@ -53,16 +53,11 @@ async def async_stop(ctx: click.Context, session_id: str | None, stop_all: bool)
             for sid, found in results:
                 click.echo(f"Stop requested for {sid}: {'sent' if found else 'not found'}")
         else:
-            session, matches = await resolve_session(session_id)  # type: ignore[arg-type]
+            session = await resolve_or_pick(session_id, ctx)  # type: ignore[arg-type]
             if not session:
-                if matches:
-                    session = pick_session(session_id, matches, ctx)
-                else:
-                    click.echo(f"Session not found: {session_id}")
-                    ctx.exit(1)
-                    return
-            if session:
-                await stop_and_report(session["session_id"], suggest_cleanup=True)
+                ctx.exit(1)
+                return
+            await stop_and_report(session["session_id"], suggest_cleanup=True)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         ctx.exit(1)

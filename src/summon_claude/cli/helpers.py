@@ -9,10 +9,21 @@ from summon_claude.cli.interactive import format_session_option, interactive_sel
 from summon_claude.sessions.registry import SessionRegistry
 
 
-async def resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:
+async def resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:  # pyright: ignore[reportReturnType]
     """Look up a session by ID prefix or channel name (async registry query)."""
     async with SessionRegistry() as registry:
         return await registry.resolve_session(identifier)
+
+
+async def resolve_or_pick(identifier: str, ctx: click.Context) -> dict | None:
+    """Resolve a session with interactive disambiguation. Returns None if not found."""
+    session, matches = await resolve_session(identifier)
+    if not session:
+        if matches:
+            session = pick_session(identifier, matches, ctx)
+        else:
+            click.echo(f"Session not found: {identifier}")
+    return session
 
 
 def pick_session(identifier: str, matches: list[dict], ctx: click.Context) -> dict | None:

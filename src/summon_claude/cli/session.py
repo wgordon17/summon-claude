@@ -16,7 +16,7 @@ from summon_claude.cli.formatting import (
     print_session_detail,
     print_session_table,
 )
-from summon_claude.cli.helpers import pick_session, resolve_session
+from summon_claude.cli.helpers import resolve_or_pick
 from summon_claude.cli.interactive import (
     format_log_option,
     format_session_option,
@@ -63,13 +63,7 @@ async def async_session_list(ctx: click.Context, show_all: bool, output: str) ->
 
 async def session_info_impl(ctx: click.Context, session_id: str, output: str) -> None:
     """Resolve and show session detail."""
-    session, matches = await resolve_session(session_id)
-    if not session:
-        if matches:
-            session = pick_session(session_id, matches, ctx)
-        else:
-            click.echo(f"Session not found: {session_id}")
-            return
+    session = await resolve_or_pick(session_id, ctx)
     if not session:
         return
     if output == "json":
@@ -124,13 +118,7 @@ async def session_logs_impl(ctx: click.Context, session_id: str | None, tail: in
     # Resolve partial ID or channel name to full session_id
     resolved_id = session_id
     if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", session_id):
-        session_record, matches = await resolve_session(session_id)
-        if not session_record:
-            if matches:
-                session_record = pick_session(session_id, matches, ctx)
-            else:
-                click.echo(f"Session not found: {session_id}")
-                return
+        session_record = await resolve_or_pick(session_id, ctx)
         if not session_record:
             return
         resolved_id = session_record["session_id"]
