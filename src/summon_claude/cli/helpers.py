@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import click
 
 from summon_claude.cli import daemon_client
@@ -15,21 +13,6 @@ async def resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:
     """Look up a session by ID prefix or channel name (async registry query)."""
     async with SessionRegistry() as registry:
         return await registry.resolve_session(identifier)
-
-
-def resolve_session_or_exit(identifier: str, ctx: click.Context) -> dict | None:
-    """Resolve a session identifier, with interactive disambiguation.
-
-    Returns the resolved session dict, or ``None`` if not found.
-    """
-    session, matches = asyncio.run(resolve_session(identifier))
-    if not session:
-        if matches:
-            session = pick_session(identifier, matches, ctx)
-        else:
-            click.echo(f"Session not found: {identifier}")
-            return None
-    return session
 
 
 def pick_session(identifier: str, matches: list[dict], ctx: click.Context) -> dict | None:

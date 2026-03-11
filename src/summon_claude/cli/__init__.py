@@ -301,7 +301,7 @@ def session_list(ctx: click.Context, show_all: bool, output: str) -> None:
 @click.pass_context
 def session_info(ctx: click.Context, session_id: str, output: str) -> None:
     """Show detailed information for a specific session."""
-    session_info_impl(ctx, session_id, output)
+    asyncio.run(session_info_impl(ctx, session_id, output))
 
 
 @cmd_session.command("logs")
@@ -310,7 +310,7 @@ def session_info(ctx: click.Context, session_id: str, output: str) -> None:
 @click.pass_context
 def session_logs(ctx: click.Context, session_id: str | None, tail: int) -> None:
     """Show session logs. Pass SESSION_ID for a specific session, or list available logs."""
-    session_logs_impl(ctx, session_id, tail)
+    asyncio.run(session_logs_impl(ctx, session_id, tail))
 
 
 @cmd_session.command("cleanup")

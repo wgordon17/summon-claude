@@ -16,7 +16,7 @@ from summon_claude.cli.formatting import (
     print_session_detail,
     print_session_table,
 )
-from summon_claude.cli.helpers import resolve_session_or_exit
+from summon_claude.cli.helpers import pick_session, resolve_session
 from summon_claude.cli.interactive import (
     format_log_option,
     format_session_option,
@@ -61,9 +61,15 @@ async def async_session_list(ctx: click.Context, show_all: bool, output: str) ->
             print_session_table(sessions)
 
 
-def session_info_impl(ctx: click.Context, session_id: str, output: str) -> None:
+async def session_info_impl(ctx: click.Context, session_id: str, output: str) -> None:
     """Resolve and show session detail."""
-    session = resolve_session_or_exit(session_id, ctx)
+    session, matches = await resolve_session(session_id)
+    if not session:
+        if matches:
+            session = pick_session(session_id, matches, ctx)
+        else:
+            click.echo(f"Session not found: {session_id}")
+            return
     if not session:
         return
     if output == "json":
@@ -72,7 +78,7 @@ def session_info_impl(ctx: click.Context, session_id: str, output: str) -> None:
         print_session_detail(session)
 
 
-def session_logs_impl(ctx: click.Context, session_id: str | None, tail: int) -> None:
+async def session_logs_impl(ctx: click.Context, session_id: str | None, tail: int) -> None:
     """View logs with interactive picker."""
     log_dir = get_data_dir() / "logs"
     if not log_dir.exists():
@@ -118,8 +124,14 @@ def session_logs_impl(ctx: click.Context, session_id: str | None, tail: int) -> 
     # Resolve partial ID or channel name to full session_id
     resolved_id = session_id
     if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", session_id):
-        session_record = resolve_session_or_exit(session_id, ctx)
-        if session_record is None:
+        session_record, matches = await resolve_session(session_id)
+        if not session_record:
+            if matches:
+                session_record = pick_session(session_id, matches, ctx)
+            else:
+                click.echo(f"Session not found: {session_id}")
+                return
+        if not session_record:
             return
         resolved_id = session_record["session_id"]
 

@@ -61,11 +61,8 @@ async def async_stop(ctx: click.Context, session_id: str | None, stop_all: bool)
                     click.echo(f"Session not found: {session_id}")
                     ctx.exit(1)
                     return
-            if not session:
-                ctx.exit(1)
-                return
-
-            await stop_and_report(session["session_id"], suggest_cleanup=True)
+            if session:
+                await stop_and_report(session["session_id"], suggest_cleanup=True)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         ctx.exit(1)
