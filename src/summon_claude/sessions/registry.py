@@ -224,14 +224,8 @@ class SessionRegistry:
 
     _VALID_STATUSES: frozenset[str] = frozenset({"pending_auth", "active", "completed", "errored"})
 
-    async def update_status(self, session_id: str, status: str, **kwargs: Any) -> None:
-        """Update session status and any additional fields."""
-        if status not in self._VALID_STATUSES:
-            raise ValueError(
-                f"Invalid status {status!r}; must be one of {sorted(self._VALID_STATUSES)}"
-            )
-        db = self._check_connected()
-        allowed_fields = {
+    _UPDATABLE_FIELDS: frozenset[str] = frozenset(
+        {
             "slack_channel_id",
             "slack_channel_name",
             "claude_session_id",
@@ -240,9 +234,18 @@ class SessionRegistry:
             "error_message",
             "model",
         }
+    )
+
+    async def update_status(self, session_id: str, status: str, **kwargs: Any) -> None:
+        """Update session status and any additional fields."""
+        if status not in self._VALID_STATUSES:
+            raise ValueError(
+                f"Invalid status {status!r}; must be one of {sorted(self._VALID_STATUSES)}"
+            )
+        db = self._check_connected()
         updates: dict[str, Any] = {"status": status, "last_activity_at": _now()}
         for key, val in kwargs.items():
-            if key in allowed_fields:
+            if key in self._UPDATABLE_FIELDS:
                 updates[key] = val
             else:
                 logger.warning("update_status: ignoring unknown field %r", key)
