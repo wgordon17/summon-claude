@@ -89,6 +89,34 @@ class TestUpdateStatus:
         assert session["status"] == "active"
 
 
+class TestUpdatableFields:
+    def test_updatable_fields_matches_expected(self):
+        """Guard against accidental addition/removal of updatable fields."""
+        expected = {
+            "slack_channel_id",
+            "slack_channel_name",
+            "claude_session_id",
+            "authenticated_at",
+            "ended_at",
+            "error_message",
+            "model",
+        }
+        assert expected == SessionRegistry._UPDATABLE_FIELDS
+
+    def test_updatable_fields_are_valid_columns(self):
+        """Guard against _UPDATABLE_FIELDS containing names that aren't real columns."""
+        import re as _re
+
+        from summon_claude.sessions.registry import _CREATE_SESSIONS
+
+        columns = set(
+            _re.findall(r"^\s+(\w+)\s+(?:TEXT|INTEGER|REAL)", _CREATE_SESSIONS, _re.MULTILINE)
+        )
+        assert SessionRegistry._UPDATABLE_FIELDS.issubset(columns), (
+            f"Fields not in schema: {SessionRegistry._UPDATABLE_FIELDS - columns}"
+        )
+
+
 class TestHeartbeat:
     async def test_heartbeat_updates_activity(self, registry):
         await registry.register("sess-hb", 111, "/tmp")
