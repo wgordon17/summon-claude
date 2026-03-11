@@ -37,8 +37,6 @@ from summon_claude.cli.stop import async_stop
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
 from summon_claude.sessions import registry as _registry
 
-logger = logging.getLogger(__name__)
-
 _BANNER_WIDTH = 50
 
 

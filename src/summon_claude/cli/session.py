@@ -7,7 +7,6 @@ import pathlib
 import re
 
 import click
-from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.cli import daemon_client
 from summon_claude.cli.formatting import (
@@ -188,6 +187,8 @@ async def async_session_cleanup(ctx: click.Context, *, archive: bool = False) ->
         slack_client = None
         if archive:
             try:
+                from slack_sdk.web.async_client import AsyncWebClient  # noqa: PLC0415
+
                 config_path: str | None = ctx.obj.get("config_path") if ctx.obj else None
                 config = SummonConfig.from_file(config_path)
                 slack_client = AsyncWebClient(token=config.slack_bot_token)
