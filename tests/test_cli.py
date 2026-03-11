@@ -8,12 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from click.testing import CliRunner
 
 from summon_claude.cli import (
-    _format_ts,
     _print_auth_banner,
-    _print_session_detail,
-    _print_session_table,
     cli,
 )
+from summon_claude.cli.formatting import format_ts, print_session_detail, print_session_table
 from tests.conftest import ACTIVE_SESSION as _ACTIVE_SESSION
 from tests.conftest import COMPLETED_SESSION as _COMPLETED_SESSION
 from tests.conftest import mock_registry as _mock_registry
@@ -173,7 +171,7 @@ class TestPrintAuthBanner:
 class TestPrintSessionTable:
     def test_empty_list(self, capsys):
         sessions = []
-        _print_session_table(sessions)
+        print_session_table(sessions)
         captured = capsys.readouterr()
         assert captured.out == ""
 
@@ -187,7 +185,7 @@ class TestPrintSessionTable:
                 "cwd": "/tmp",
             }
         ]
-        _print_session_table(sessions)
+        print_session_table(sessions)
         captured = capsys.readouterr()
         assert "STATUS" in captured.out
         assert "active" in captured.out
@@ -204,7 +202,7 @@ class TestPrintSessionTable:
                 "cwd": "/home",
             }
         ]
-        _print_session_table(sessions)
+        print_session_table(sessions)
         captured = capsys.readouterr()
         assert "pending_auth" in captured.out
 
@@ -223,7 +221,7 @@ class TestPrintSessionDetail:
             "total_turns": 3,
             "total_cost_usd": 0.05,
         }
-        _print_session_detail(session)
+        print_session_detail(session)
         captured = capsys.readouterr()
         assert "sess-123" in captured.out
         assert "active" in captured.out
@@ -236,27 +234,27 @@ class TestPrintSessionDetail:
             "cwd": "/tmp",
             "error_message": "Connection failed",
         }
-        _print_session_detail(session)
+        print_session_detail(session)
         captured = capsys.readouterr()
         assert "Connection failed" in captured.out
 
 
 class TestFormatTs:
     def test_valid_iso_timestamp(self):
-        result = _format_ts("2025-02-22T10:30:45+00:00")
+        result = format_ts("2025-02-22T10:30:45+00:00")
         assert isinstance(result, str)
         assert "2025" in result or "10:30" in result
 
     def test_none_returns_dash(self):
-        result = _format_ts(None)
+        result = format_ts(None)
         assert result == "-"
 
     def test_empty_string_returns_dash(self):
-        result = _format_ts("")
+        result = format_ts("")
         assert result == "-"
 
     def test_invalid_format_returns_as_is(self):
-        result = _format_ts("not-a-timestamp")
+        result = format_ts("not-a-timestamp")
         assert result == "not-a-timestamp"
 
 
@@ -270,7 +268,7 @@ class TestSessionList:
 
     def test_list_shows_active_sessions(self):
         mock_ctx = _mock_registry(active=[_ACTIVE_SESSION])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "list"])
         assert result.exit_code == 0
@@ -279,7 +277,7 @@ class TestSessionList:
 
     def test_list_no_active_sessions(self):
         mock_ctx = _mock_registry(active=[])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "list"])
         assert result.exit_code == 0
@@ -287,7 +285,7 @@ class TestSessionList:
 
     def test_list_all_shows_completed(self):
         mock_ctx = _mock_registry(all=[_ACTIVE_SESSION, _COMPLETED_SESSION])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "list", "--all"])
         assert result.exit_code == 0
@@ -297,7 +295,7 @@ class TestSessionList:
 
     def test_list_all_empty(self):
         mock_ctx = _mock_registry(all=[])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "list", "--all"])
         assert result.exit_code == 0
@@ -305,7 +303,7 @@ class TestSessionList:
 
     def test_list_all_via_short_flag(self):
         mock_ctx = _mock_registry(all=[_ACTIVE_SESSION])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "list", "-a"])
         assert result.exit_code == 0
@@ -313,7 +311,7 @@ class TestSessionList:
 
     def test_list_via_s_alias(self):
         mock_ctx = _mock_registry(active=[_ACTIVE_SESSION])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["s", "list"])
         assert result.exit_code == 0
@@ -321,7 +319,7 @@ class TestSessionList:
 
     def test_list_shows_table_headers(self):
         mock_ctx = _mock_registry(active=[_ACTIVE_SESSION])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "list"])
         assert "STATUS" in result.output
@@ -334,7 +332,7 @@ class TestSessionInfo:
 
     def test_info_shows_session_detail(self):
         mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "info", "aaaa1111-2222-3333-4444-555566667777"])
         assert result.exit_code == 0
@@ -345,7 +343,7 @@ class TestSessionInfo:
 
     def test_info_not_found(self):
         mock_ctx = _mock_registry(session=None)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "info", "nonexistent-id"])
         assert result.exit_code == 0
@@ -354,14 +352,14 @@ class TestSessionInfo:
     def test_info_shows_error_message(self):
         errored = {**_COMPLETED_SESSION, "status": "errored", "error_message": "Process 123 died"}
         mock_ctx = _mock_registry(session=errored)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "info", "bbbb1111-2222-3333-4444-555566667777"])
         assert "Process 123 died" in result.output
 
     def test_info_shows_cost(self):
         mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "info", "aaaa1111-2222-3333-4444-555566667777"])
         assert "$0.1234" in result.output
@@ -371,7 +369,7 @@ class TestSessionStop:
     """Behavior tests for top-level 'stop' command."""
 
     def test_stop_daemon_not_running(self):
-        with patch("summon_claude.cli.is_daemon_running", return_value=False):
+        with patch("summon_claude.cli.stop.is_daemon_running", return_value=False):
             runner = CliRunner()
             result = runner.invoke(cli, ["stop", "some-session-id"])
         assert result.exit_code == 0
@@ -380,12 +378,12 @@ class TestSessionStop:
     def test_stop_session_found(self):
         mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.stop_session",
                 new=AsyncMock(return_value=True),
             ),
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["stop", "aaaa1111"])
@@ -395,12 +393,12 @@ class TestSessionStop:
     def test_stop_session_not_found_in_daemon(self):
         mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.stop_session",
                 new=AsyncMock(return_value=False),
             ),
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["stop", "aaaa1111"])
@@ -411,8 +409,8 @@ class TestSessionStop:
     def test_stop_session_not_found_in_registry(self):
         mock_ctx = _mock_registry(resolve=None)
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["stop", "nonexistent"])
@@ -421,12 +419,12 @@ class TestSessionStop:
     def test_stop_ambiguous_prefix_prompts(self):
         mock_ctx = _mock_registry(resolve=[_ACTIVE_SESSION, _COMPLETED_SESSION])
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.stop_session",
                 new=AsyncMock(return_value=True),
             ),
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["stop", "ambig"], input="1\n")
@@ -439,7 +437,7 @@ class TestSessionLogs:
 
     def test_logs_no_log_dir(self, tmp_path):
         missing_dir = tmp_path / "nonexistent"
-        with patch("summon_claude.cli.get_data_dir", return_value=missing_dir):
+        with patch("summon_claude.cli.session.get_data_dir", return_value=missing_dir):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs"])
         assert result.exit_code == 0
@@ -450,7 +448,7 @@ class TestSessionLogs:
         log_dir.mkdir()
         (log_dir / "aaaa1111-2222-3333-4444-555566667777.log").write_text("line1\n")
         (log_dir / "bbbb1111-2222-3333-4444-555566667777.log").write_text("line2\n")
-        with patch("summon_claude.cli.get_data_dir", return_value=tmp_path):
+        with patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs"])
         assert result.exit_code == 0
@@ -464,7 +462,7 @@ class TestSessionLogs:
         sid = "aaaa1111-2222-3333-4444-555566667777"
         log_content = "\n".join(f"log line {i}" for i in range(100))
         (log_dir / f"{sid}.log").write_text(log_content)
-        with patch("summon_claude.cli.get_data_dir", return_value=tmp_path):
+        with patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs", sid, "-n", "3"])
         assert result.exit_code == 0
@@ -480,8 +478,8 @@ class TestSessionLogs:
         (log_dir / f"{sid}.log").write_text("resolved log line\n")
         mock_ctx = _mock_registry(resolve=_ACTIVE_SESSION)
         with (
-            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs", "aaaa1111", "-n", "1"])
@@ -493,8 +491,8 @@ class TestSessionLogs:
         log_dir.mkdir()
         mock_ctx = _mock_registry(resolve=None)
         with (
-            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs", "nonexistent"])
@@ -503,7 +501,7 @@ class TestSessionLogs:
     def test_logs_session_not_found(self, tmp_path):
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
-        with patch("summon_claude.cli.get_data_dir", return_value=tmp_path):
+        with patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs", "aaaa1111-2222-3333-4444-555566667777"])
         assert result.exit_code == 0
@@ -515,7 +513,7 @@ class TestSessionCleanup:
 
     def test_cleanup_no_stale(self):
         mock_ctx = _mock_registry(stale=[])
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "cleanup"])
         assert result.exit_code == 0
@@ -525,8 +523,8 @@ class TestSessionCleanup:
         stale = [{**_ACTIVE_SESSION, "status": "active"}]
         mock_ctx = _mock_registry(stale=stale)
         with (
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
-            patch("summon_claude.cli.SummonConfig", side_effect=Exception("no config")),
+            patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.session.SummonConfig", side_effect=Exception("no config")),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "cleanup"])
@@ -559,7 +557,7 @@ def _start_patches(update_info=None):
         patch("summon_claude.cli.SummonConfig.from_file", return_value=_mock_config())
     )
     # Patch daemon interaction so tests don't try to fork/connect.
-    stack.enter_context(patch("summon_claude.cli.start_daemon", return_value=None))
+    stack.enter_context(patch("summon_claude.cli.start.start_daemon", return_value=None))
     stack.enter_context(
         patch(
             "summon_claude.cli.daemon_client.create_session",

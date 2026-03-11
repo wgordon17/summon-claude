@@ -386,7 +386,7 @@ class TestSessionLogsInteractive:
         log_dir = tmp_path / "logs"
         log_dir.mkdir()
         (log_dir / "aaaa1111-2222-3333-4444-555566667777.log").write_text("line1\n")
-        with patch("summon_claude.cli.get_data_dir", return_value=tmp_path):
+        with patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs"])
         assert result.exit_code == 0
@@ -398,7 +398,7 @@ class TestSessionLogsInteractive:
         log_dir.mkdir()
         (log_dir / "daemon.log").write_text("daemon line\n")
         (log_dir / "aaaa1111-2222-3333-4444-555566667777.log").write_text("session line\n")
-        with patch("summon_claude.cli.get_data_dir", return_value=tmp_path):
+        with patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs"])
         assert "daemon" in result.output
@@ -411,8 +411,8 @@ class TestSessionLogsInteractive:
         log_file = log_dir / "aaaa1111-2222-3333-4444-555566667777.log"
         log_file.write_text("log line 1\nlog line 2\n")
         with (
-            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
-            patch("summon_claude.cli.is_interactive", return_value=True),
+            patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.session.is_interactive", return_value=True),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "logs"])
@@ -435,10 +435,10 @@ class TestSessionLogsInteractive:
         os.utime(file_b, (2000, 2000))
         # Sorted by mtime desc: [B, A]. Picking index 1 → file A.
         with (
-            patch("summon_claude.cli.get_data_dir", return_value=tmp_path),
-            patch("summon_claude.cli.is_interactive", return_value=True),
+            patch("summon_claude.cli.session.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.cli.session.is_interactive", return_value=True),
             patch(
-                "summon_claude.cli.interactive_select",
+                "summon_claude.cli.session.interactive_select",
                 return_value=("aaaa1111", 1),
             ),
         ):
@@ -469,7 +469,7 @@ class TestStopNoArgsInteractive:
         CliRunner is non-TTY, so is_interactive() returns False before
         list_sessions is ever called.
         """
-        with patch("summon_claude.cli.is_daemon_running", return_value=True):
+        with patch("summon_claude.cli.stop.is_daemon_running", return_value=True):
             runner = CliRunner()
             result = runner.invoke(cli, ["stop"])
         assert result.exit_code != 0
@@ -478,8 +478,8 @@ class TestStopNoArgsInteractive:
     def test_stop_no_args_interactive_no_active_sessions(self):
         """Interactive mode, no active sessions → 'No active sessions.'."""
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
-            patch("summon_claude.cli.is_interactive", return_value=True),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.stop.is_interactive", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.list_sessions",
                 new=AsyncMock(return_value=[]),
@@ -493,8 +493,8 @@ class TestStopNoArgsInteractive:
     def test_stop_no_args_interactive_single_session_auto_selects(self):
         """Interactive mode, one active session → auto-selects and stops."""
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
-            patch("summon_claude.cli.is_interactive", return_value=True),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.stop.is_interactive", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.list_sessions",
                 new=AsyncMock(return_value=[_ACTIVE_SESSION]),
@@ -514,14 +514,14 @@ class TestStopNoArgsInteractive:
         """Interactive mode, multiple sessions → picker selects one."""
         second = {**_ACTIVE_SESSION, "session_id": "cccc3333-4444-5555-6666-777788889999"}
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
-            patch("summon_claude.cli.is_interactive", return_value=True),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.stop.is_interactive", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.list_sessions",
                 new=AsyncMock(return_value=[_ACTIVE_SESSION, second]),
             ),
             patch(
-                "summon_claude.cli.interactive_select",
+                "summon_claude.cli.stop.interactive_select",
                 return_value=("cccc3333", 1),
             ),
             patch(
@@ -537,13 +537,13 @@ class TestStopNoArgsInteractive:
     def test_stop_no_args_interactive_picker_cancelled(self):
         """Interactive mode, picker cancelled → 'No session selected.'."""
         with (
-            patch("summon_claude.cli.is_daemon_running", return_value=True),
-            patch("summon_claude.cli.is_interactive", return_value=True),
+            patch("summon_claude.cli.stop.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.stop.is_interactive", return_value=True),
             patch(
                 "summon_claude.cli.daemon_client.list_sessions",
                 new=AsyncMock(return_value=[_ACTIVE_SESSION, _ACTIVE_SESSION]),
             ),
-            patch("summon_claude.cli.interactive_select", return_value=None),
+            patch("summon_claude.cli.stop.interactive_select", return_value=None),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["stop"])
@@ -564,8 +564,8 @@ class TestCleanupInteractive:
         stale = [{**_ACTIVE_SESSION, "status": "active"}]
         mock_ctx = _mock_registry(stale=stale)
         with (
-            patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx),
-            patch("summon_claude.cli.SummonConfig", side_effect=Exception("no config")),
+            patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.cli.session.SummonConfig", side_effect=Exception("no config")),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["session", "cleanup"])
