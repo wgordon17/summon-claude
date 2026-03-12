@@ -221,6 +221,22 @@ class TestParseFrontmatter:
         text = "---\n---\n# Body"
         assert _parse_frontmatter(text) == {}
 
+    def test_block_scalar_folded(self):
+        text = "---\nname: my-skill\ndescription: >-\n  First line\n  second line\n---\n"
+        fm = _parse_frontmatter(text)
+        assert fm["name"] == "my-skill"
+        assert fm["description"] == "First line second line"
+
+    def test_block_scalar_literal(self):
+        text = "---\nname: my-skill\ndescription: |\n  Line one\n  Line two\n---\n"
+        fm = _parse_frontmatter(text)
+        assert fm["description"] == "Line one Line two"
+
+    def test_list_value_captured(self):
+        text = "---\nname: test\nallowed-tools: [Bash, Read, Write]\n---\n"
+        fm = _parse_frontmatter(text)
+        assert fm["allowed-tools"] == "[Bash, Read, Write]"
+
 
 # ------------------------------------------------------------------
 # Plugin skill discovery

@@ -111,7 +111,6 @@ def discover_installed_plugins() -> list[dict]:
 # ------------------------------------------------------------------
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---", re.DOTALL)
-_FM_FIELD_RE = re.compile(r"^([a-zA-Z_-]+)\s*:\s*(.+)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -124,11 +123,39 @@ class PluginSkill:
 
 
 def _parse_frontmatter(text: str) -> dict[str, str]:
-    """Extract YAML-like key: value pairs from ``---`` frontmatter."""
+    """Extract YAML-like key: value pairs from ``---`` frontmatter.
+
+    Handles simple ``key: value`` pairs plus YAML block scalars (``|``, ``>``,
+    ``|-``, ``>-``) where continuation lines are indented.
+    """
     m = _FRONTMATTER_RE.match(text)
     if not m:
         return {}
-    return {k.strip(): v.strip().strip("\"'") for k, v in _FM_FIELD_RE.findall(m.group(1))}
+
+    result: dict[str, str] = {}
+    current_key: str | None = None
+    current_lines: list[str] = []
+
+    for line in m.group(1).splitlines():
+        # New key: value (non-indented line with colon)
+        if line and not line[0].isspace() and ":" in line:
+            # Flush previous key
+            if current_key is not None:
+                result[current_key] = " ".join(current_lines)
+            key, _, val = line.partition(":")
+            current_key = key.strip()
+            val = val.strip().strip("\"'")
+            # Block scalar indicator — value is on continuation lines
+            current_lines = [] if val in ("|", ">", "|-", ">-") else [val] if val else []
+        elif current_key is not None and line and line[0].isspace():
+            # Continuation line for block scalar
+            current_lines.append(line.strip())
+
+    # Flush last key
+    if current_key is not None:
+        result[current_key] = " ".join(current_lines)
+
+    return result
 
 
 def discover_plugin_skills() -> list[PluginSkill]:
