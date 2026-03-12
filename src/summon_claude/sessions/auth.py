@@ -80,7 +80,7 @@ async def verify_short_code(registry: SessionRegistry, code: str) -> SessionAuth
     # Iterate ALL entries unconditionally — no early exit — to prevent
     # timing side-channels from revealing which entry matched.
     match = None
-    found_expired = False
+    expired_entry: dict | None = None
     found_locked = False
     for entry in all_pending:
         codes_equal = hmac.compare_digest(entry["short_code"].encode(), code.encode())
@@ -91,15 +91,13 @@ async def verify_short_code(registry: SessionRegistry, code: str) -> SessionAuth
                 else:
                     found_locked = True
             else:
-                found_expired = True
+                expired_entry = entry
             # Do NOT break — always iterate all entries for constant-time behavior
 
     if not match:
-        if found_expired:
-            # Accepted timing risk: expired tokens hit delete while unknown codes hit
-            # record_failed_auth_attempt. Expired tokens are already useless since
-            # atomic_consume_pending_token enforces expiry independently.
-            await registry.delete_pending_token(code)
+        if expired_entry is not None:
+            # Clean up the expired token using the stored key (not user input)
+            await registry.delete_pending_token(expired_entry["short_code"])
         elif not found_locked:
             # Only record a failure if the code is unknown; locked tokens are already
             # at max attempts and incrementing further would be incorrect.
