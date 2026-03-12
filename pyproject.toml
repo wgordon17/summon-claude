@@ -112,8 +112,8 @@ ignore = [
 "src/summon_claude/cli/session.py" = ["PLR0911", "PLR0912", "PLR0915"]
 # cli/config: config_check has many validation branches by design
 "src/summon_claude/cli/config.py" = ["PLR0912", "PLR0915"]
-# Manager: _dispatch_control match arms each return
-"src/summon_claude/sessions/manager.py" = ["PLR0911"]
+# Manager: _dispatch_control match arms each return; manager accesses session internals
+"src/summon_claude/sessions/manager.py" = ["PLR0911", "SLF001"]
 # Auth: generate_spawn_token has many parameters by design
 "src/summon_claude/sessions/auth.py" = ["PLR0913"]
 # Session: asserts in private methods; slack handler signatures

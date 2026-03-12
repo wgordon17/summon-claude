@@ -312,8 +312,8 @@ class SummonSession:
         self,
         config: SummonConfig,
         options: SessionOptions,
-        auth: SessionAuth,
-        session_id: str,
+        auth: SessionAuth | None = None,
+        session_id: str = "",
         web_client: AsyncWebClient | None = None,
         dispatcher: EventDispatcher | None = None,
         bot_user_id: str | None = None,
@@ -345,6 +345,7 @@ class SummonSession:
         self._shutdown_event = asyncio.Event()
         self._authenticated_event = asyncio.Event()
         self._authenticated_user_id: str | None = None
+        self._parent_session_id: str | None = None
         # Tracks whether _shutdown() completed successfully
         self._shutdown_completed: bool = False
 
@@ -426,6 +427,8 @@ class SummonSession:
                 cwd=self._cwd,
                 name=self._name,
                 model=self._model,
+                parent_session_id=self._parent_session_id,
+                authenticated_user_id=self._authenticated_user_id,
             )
             await registry.log_event(
                 "session_created",
