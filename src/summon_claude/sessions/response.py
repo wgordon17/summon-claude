@@ -190,9 +190,9 @@ class ResponseStreamer:
         self._router.set_active_thread(ref.ts, ref)
         return ref.ts
 
-    def finalize_turn(self) -> str:
+    def finalize_turn(self, context: ContextUsage | None = None) -> str:
         """Build a concise summary string for the turn starter message."""
-        return self._generate_turn_summary()
+        return self._generate_turn_summary(context)
 
     async def update_turn_summary(self, summary: str) -> None:
         """Update the current turn's thread starter message with a summary."""
@@ -202,7 +202,7 @@ class ResponseStreamer:
                 f"\U0001f527 Turn {self._current_turn_number}: {summary}",
             )
 
-    def _generate_turn_summary(self) -> str:
+    def _generate_turn_summary(self, context: ContextUsage | None = None) -> str:
         """Build a concise summary string for the turn starter message."""
         parts: list[str] = []
         if self._turn.tool_call_count:
@@ -213,6 +213,10 @@ class ResponseStreamer:
             if len(self._turn.files_touched) > 3:
                 short_names.append(f"+{len(self._turn.files_touched) - 3} more")
             parts.append(", ".join(short_names))
+        if context is not None:
+            ctx_k = context.input_tokens // 1000
+            win_k = context.context_window // 1000
+            parts.append(f"{ctx_k}k/{win_k}k ({context.percentage:.0f}%)")
         return " \u00b7 ".join(parts) if parts else "Processing..."
 
     def record_tool_call(self, tool_input: dict[str, Any]) -> None:

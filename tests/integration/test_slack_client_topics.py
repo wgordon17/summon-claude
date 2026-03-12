@@ -22,7 +22,6 @@ class TestTopicManagement:
             model="claude-sonnet-4-20250514",
             cwd="/tmp/test",
             git_branch="main",
-            context=None,
         )
         await slack_client.set_topic(topic)
         info = await slack_harness.client.conversations_info(channel=test_channel)
