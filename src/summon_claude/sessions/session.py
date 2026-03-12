@@ -20,6 +20,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock
+from slack_sdk.http_retry.builtin_async_handlers import (
+    AsyncRateLimitErrorRetryHandler,
+    AsyncServerErrorRetryHandler,
+)
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.config import SummonConfig, discover_installed_plugins, get_data_dir
@@ -538,7 +542,10 @@ class SummonSession:
             web_client = self._web_client
             bot_user_id = self._bot_user_id
         else:
-            web_client = AsyncWebClient(token=self._config.slack_bot_token)
+            web_client = AsyncWebClient(
+                token=self._config.slack_bot_token,
+                retry_handlers=[AsyncRateLimitErrorRetryHandler(), AsyncServerErrorRetryHandler()],
+            )
             bot_user_id = (await web_client.auth_test())["user_id"]
 
         # --- Pre-SlackClient: channel lifecycle via raw web_client ---
@@ -689,7 +696,11 @@ class SummonSession:
         self, rt: _SessionRuntime, router: ThreadRouter
     ) -> None:
         """Listen for Slack messages and forward them to Claude."""
-        slack_mcp = create_summon_mcp_server(rt.client)
+        slack_mcp = create_summon_mcp_server(
+            rt.client,
+            allowed_channels=lambda: {rt.client.channel_id},
+            cwd=self._cwd,
+        )
 
         options = ClaudeAgentOptions(
             cwd=self._cwd,

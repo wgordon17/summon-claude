@@ -31,6 +31,10 @@ from typing import TYPE_CHECKING
 
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
+from slack_sdk.http_retry.builtin_async_handlers import (
+    AsyncRateLimitErrorRetryHandler,
+    AsyncServerErrorRetryHandler,
+)
 from slack_sdk.web.async_client import AsyncWebClient
 
 if TYPE_CHECKING:
@@ -173,7 +177,10 @@ class BoltRouter:
         self._rate_limiter = _RateLimiter()
 
         # Shared web client — stays alive across reconnects
-        self.web_client = AsyncWebClient(token=config.slack_bot_token)
+        self.web_client = AsyncWebClient(
+            token=config.slack_bot_token,
+            retry_handlers=[AsyncRateLimitErrorRetryHandler(), AsyncServerErrorRetryHandler()],
+        )
 
         # Set by start()
         self._app: AsyncApp | None = None

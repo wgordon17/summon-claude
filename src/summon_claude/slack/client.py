@@ -22,6 +22,14 @@ class MessageRef:
     ts: str
 
 
+@dataclass(frozen=True, slots=True)
+class HistoryResult:
+    """Result from Slack conversations.history or conversations.replies."""
+
+    messages: list[dict[str, Any]]
+    has_more: bool
+
+
 def sanitize_for_mrkdwn(text: str, max_len: int = 100) -> str:
     """Remove mrkdwn-significant characters and newlines to prevent injection."""
     sanitized = text.replace("\n", " ").replace("\r", " ").replace("`", "'").replace("*", "")
@@ -122,3 +130,81 @@ class SlackClient:
     async def set_topic(self, topic: str) -> None:
         """Set the channel topic."""
         await self._web.conversations_setTopic(channel=self.channel_id, topic=topic)
+
+    async def fetch_history(
+        self,
+        *,
+        channel: str | None = None,
+        limit: int = 50,
+        oldest: str | None = None,
+    ) -> HistoryResult:
+        """Fetch channel message history (top-level messages only)."""
+        kwargs: dict[str, Any] = {
+            "channel": channel or self.channel_id,
+            "limit": limit,
+        }
+        if oldest is not None:
+            kwargs["oldest"] = oldest
+        response = await self._web.conversations_history(**kwargs)
+        return HistoryResult(
+            messages=response.get("messages", []),
+            has_more=response.get("has_more", False),
+        )
+
+    async def fetch_thread_replies(
+        self,
+        thread_ts: str,
+        *,
+        channel: str | None = None,
+        limit: int = 50,
+    ) -> HistoryResult:
+        """Fetch replies in a thread. First message is the parent."""
+        response = await self._web.conversations_replies(
+            channel=channel or self.channel_id,
+            ts=thread_ts,
+            limit=limit,
+        )
+        return HistoryResult(
+            messages=response.get("messages", []),
+            has_more=response.get("has_more", False),
+        )
+
+    async def fetch_context(
+        self,
+        message_ts: str,
+        *,
+        channel: str | None = None,
+        surrounding: int = 5,
+    ) -> dict[str, Any]:
+        """Fetch messages surrounding a specific timestamp."""
+        ch = channel or self.channel_id
+        # Slack inclusive=True on latest → includes the target message itself.
+        # Slack oldest defaults to inclusive=False → excludes target from "after".
+        # Dedup via by_ts handles any edge-case overlap.
+        before_resp = await self._web.conversations_history(
+            channel=ch,
+            latest=message_ts,
+            limit=surrounding,
+            inclusive=True,
+        )
+        after_resp = await self._web.conversations_history(
+            channel=ch,
+            oldest=message_ts,
+            limit=surrounding,
+        )
+        # Merge and dedupe by ts
+        by_ts: dict[str, dict[str, Any]] = {}
+        for msg in before_resp.get("messages", []):
+            by_ts[msg["ts"]] = msg
+        for msg in after_resp.get("messages", []):
+            by_ts[msg["ts"]] = msg
+        messages = sorted(by_ts.values(), key=lambda m: m["ts"])
+
+        # Check if target has thread replies
+        thread = None
+        target = by_ts.get(message_ts)
+        if target and target.get("reply_count", 0) > 0:
+            thread_result = await self.fetch_thread_replies(message_ts, channel=ch, limit=200)
+            thread = thread_result.messages
+
+        return {"messages": messages, "thread": thread, "target_ts": message_ts}
