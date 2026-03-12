@@ -699,6 +699,39 @@ class TestCreateSessionWithSpawnToken:
         # Cleanup
         await mgr.shutdown()
 
+    async def test_cwd_enforced_from_spawn_token(self):
+        """The session must use the spawn token's cwd, not the caller's."""
+        config = make_config()
+        web_client = MagicMock()
+        web_client.auth_test = AsyncMock(return_value={"user_id": "BBOT"})
+        dispatcher = MagicMock()
+        dispatcher.register = MagicMock()
+        dispatcher.unregister = MagicMock()
+        mgr = SessionManager(config, web_client, "BBOT", dispatcher)
+
+        spawn_auth = MagicMock()
+        spawn_auth.target_user_id = "U123"
+        spawn_auth.parent_session_id = None
+        spawn_auth.parent_channel_id = None
+        spawn_auth.cwd = "/authorized/project"
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=spawn_auth,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            # Caller passes a DIFFERENT cwd — spawn token must override it
+            attacker_options = make_options(cwd="/attacker/path")
+            session_id = await mgr.create_session_with_spawn_token(attacker_options, "valid-token")
+        session = mgr._sessions[session_id]
+        assert session._cwd == "/authorized/project"
+        await mgr.shutdown()
+
     async def test_invalid_spawn_token_raises(self):
         config = make_config()
         web_client = MagicMock()
