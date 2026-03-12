@@ -53,6 +53,13 @@ def tools(mock_client) -> dict:
     return {t.name: t for t in create_summon_mcp_tools(mock_client)}
 
 
+@pytest.fixture
+def reading_tools(mock_client) -> dict:
+    return {
+        t.name: t for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123"})
+    }
+
+
 class TestUploadFile:
     async def test_happy_path(self, tools, mock_client):
         result = await tools["slack_upload_file"].handler(
@@ -301,3 +308,206 @@ class TestFetchContext:
         )
         result = await mock_client.fetch_context("2.0")
         assert result["thread"] is None
+
+
+class TestReadHistoryTool:
+    async def test_happy_path_summary(self, reading_tools, mock_client):
+        result = await reading_tools["slack_read_history"].handler({"limit": 10})
+        assert not result.get("is_error")
+        text = result["content"][0]["text"]
+        assert "[3.0]" in text
+
+    async def test_happy_path_raw(self, reading_tools, mock_client):
+        result = await reading_tools["slack_read_history"].handler({"format": "raw"})
+        import json
+
+        parsed = json.loads(result["content"][0]["text"])
+        assert isinstance(parsed, list)
+
+    async def test_limit_clamped_high(self, reading_tools, mock_client):
+        await reading_tools["slack_read_history"].handler({"limit": 999})
+        call_kwargs = mock_client._web.conversations_history.call_args.kwargs
+        assert call_kwargs["limit"] == 200
+
+    async def test_channel_enforcement_rejects(self, reading_tools):
+        result = await reading_tools["slack_read_history"].handler({"channel": "C_FORBIDDEN"})
+        assert result["is_error"] is True
+        assert "denied" in result["content"][0]["text"].lower()
+        assert "C_FORBIDDEN" not in result["content"][0]["text"]
+
+    async def test_default_channel(self, reading_tools, mock_client):
+        await reading_tools["slack_read_history"].handler({})
+        call_kwargs = mock_client._web.conversations_history.call_args.kwargs
+        assert call_kwargs["channel"] == "C123"
+
+
+class TestFetchThreadTool:
+    async def test_happy_path(self, reading_tools, mock_client):
+        result = await reading_tools["slack_fetch_thread"].handler({"parent_ts": "2.0"})
+        assert not result.get("is_error")
+
+    async def test_invalid_parent_ts(self, reading_tools):
+        result = await reading_tools["slack_fetch_thread"].handler({"parent_ts": "invalid"})
+        assert result["is_error"] is True
+
+    async def test_channel_enforcement(self, reading_tools):
+        result = await reading_tools["slack_fetch_thread"].handler(
+            {"parent_ts": "2.0", "channel": "C_FORBIDDEN"}
+        )
+        assert result["is_error"] is True
+
+
+class TestGetContextTool:
+    async def test_with_url(self, reading_tools, mock_client):
+        mock_client._web.conversations_history = AsyncMock(
+            side_effect=[
+                {"messages": [{"ts": "1234567890.123456", "user": "U1", "text": "hi"}]},
+                {"messages": []},
+            ]
+        )
+        result = await reading_tools["slack_get_context"].handler(
+            {"url": "https://test.slack.com/archives/C123/p1234567890123456"}
+        )
+        assert not result.get("is_error")
+
+    async def test_threaded_url(self, reading_tools, mock_client):
+        result = await reading_tools["slack_get_context"].handler(
+            {
+                "url": "https://test.slack.com/archives/C123/p1234567890123456"
+                "?thread_ts=1234567890.000000&cid=C123"
+            }
+        )
+        assert not result.get("is_error")
+        mock_client._web.conversations_replies.assert_called()
+
+    async def test_with_channel_and_ts(self, reading_tools, mock_client):
+        mock_client._web.conversations_history = AsyncMock(
+            side_effect=[
+                {"messages": [{"ts": "2.0", "user": "U1", "text": "target"}]},
+                {"messages": []},
+            ]
+        )
+        result = await reading_tools["slack_get_context"].handler(
+            {"channel": "C123", "message_ts": "2.0"}
+        )
+        assert not result.get("is_error")
+
+    async def test_invalid_url(self, reading_tools):
+        result = await reading_tools["slack_get_context"].handler(
+            {"url": "https://not-slack.com/foo"}
+        )
+        assert result["is_error"] is True
+
+    async def test_channel_enforcement_on_url(self, reading_tools):
+        result = await reading_tools["slack_get_context"].handler(
+            {"url": "https://test.slack.com/archives/C_FORBIDDEN/p1234567890123456"}
+        )
+        assert result["is_error"] is True
+
+
+class TestChannelEnforcement:
+    async def test_custom_allowed_channels(self, mock_client):
+        custom_tools = {
+            t.name: t
+            for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123", "C456"})
+        }
+        result = await custom_tools["slack_read_history"].handler({"channel": "C456"})
+        assert not result.get("is_error")
+
+    async def test_default_is_session_channel(self, mock_client):
+        default_tools = {t.name: t for t in create_summon_mcp_tools(mock_client)}
+        result = await default_tools["slack_read_history"].handler({"channel": "C123"})
+        assert not result.get("is_error")
+
+    async def test_denied_does_not_leak_id(self, mock_client):
+        tools = {
+            t.name: t
+            for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123"})
+        }
+        result = await tools["slack_read_history"].handler({"channel": "C_SECRET"})
+        assert result["is_error"] is True
+        assert "C_SECRET" not in result["content"][0]["text"]
+
+
+class TestMessageFormatting:
+    def test_summary_format(self):
+        from summon_claude.slack.mcp import _format_messages
+
+        msgs = [{"ts": "1.0", "user": "U1", "text": "hello"}]
+        result = _format_messages(msgs, "summary")
+        assert "[1.0]" in result[0]["text"]
+        assert "<U1>" in result[0]["text"]
+
+    def test_raw_format(self):
+        import json
+
+        from summon_claude.slack.mcp import _format_messages
+
+        msgs = [{"ts": "1.0", "text": "hello"}]
+        result = _format_messages(msgs, "raw")
+        parsed = json.loads(result[0]["text"])
+        assert isinstance(parsed, list)
+
+    def test_empty_messages(self):
+        from summon_claude.slack.mcp import _format_messages
+
+        result = _format_messages([], "summary")
+        assert "No messages found" in result[0]["text"]
+
+    def test_unknown_format_defaults_to_summary(self):
+        from summon_claude.slack.mcp import _format_messages
+
+        msgs = [{"ts": "1.0", "user": "U1", "text": "hi"}]
+        result = _format_messages(msgs, "detailed")
+        assert "[1.0]" in result[0]["text"]
+
+    def test_noise_filtered_in_summary(self):
+        from summon_claude.slack.mcp import _format_messages
+
+        msgs = [
+            {"ts": "1.0", "user": "U1", "text": "real message"},
+            {"ts": "2.0", "subtype": "channel_join", "text": "joined"},
+        ]
+        result = _format_messages(msgs, "summary")
+        assert "joined" not in result[0]["text"]
+        assert "real message" in result[0]["text"]
+
+    def test_noise_preserved_in_raw(self):
+        from summon_claude.slack.mcp import _format_messages
+
+        msgs = [{"ts": "1.0", "subtype": "channel_join", "text": "joined"}]
+        result = _format_messages(msgs, "raw")
+        assert "channel_join" in result[0]["text"]
+
+    def test_has_more_pagination_note(self):
+        from summon_claude.slack.mcp import _format_messages
+
+        msgs = [{"ts": "1.0", "user": "U1", "text": "hi"}]
+        result = _format_messages(msgs, "summary", has_more=True)
+        assert "more messages available" in result[0]["text"]
+
+    def test_no_pagination_note_when_false(self):
+        from summon_claude.slack.mcp import _format_messages
+
+        msgs = [{"ts": "1.0", "user": "U1", "text": "hi"}]
+        result = _format_messages(msgs, "summary", has_more=False)
+        assert "more messages available" not in result[0]["text"]
+
+    def test_raw_truncation(self):
+        from summon_claude.slack.mcp import _RAW_MAX_BYTES, _format_messages
+
+        msgs = [{"ts": "1.0", "text": "x" * (_RAW_MAX_BYTES + 1000)}]
+        result = _format_messages(msgs, "raw")
+        assert "truncated" in result[0]["text"]
+
+
+class TestBackwardCompatibility:
+    def test_existing_tools_with_allowed_channels_none(self, mock_client):
+        tools = create_summon_mcp_tools(mock_client)
+        names = {t.name for t in tools}
+        assert "slack_upload_file" in names
+        assert "slack_create_thread" in names
+
+    def test_total_tool_count(self, mock_client):
+        tools = create_summon_mcp_tools(mock_client)
+        assert len(tools) == 7
