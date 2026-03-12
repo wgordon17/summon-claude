@@ -114,12 +114,14 @@ ignore = [
 "src/summon_claude/cli/config.py" = ["PLR0912", "PLR0915"]
 # Manager: _dispatch_control match arms each return
 "src/summon_claude/sessions/manager.py" = ["PLR0911"]
+# Auth: generate_spawn_token has many parameters by design
+"src/summon_claude/sessions/auth.py" = ["PLR0913"]
 # Session: asserts in private methods; slack handler signatures
 "src/summon_claude/sessions/session.py" = ["S101", "SIM105", "ARG001", "ARG002", "PLR0913", "RET504"]
 # Permissions: action_id is part of public API signature (reserved for future routing)
 "src/summon_claude/sessions/permissions.py" = ["ARG002"]
-# Registry: dynamic SET clause is safe (column names from allowlist); SIM105
-"src/summon_claude/sessions/registry.py" = ["S608", "SIM105"]
+# Registry: dynamic SET clause is safe (column names from allowlist); SIM105; PLR0913 for register/store
+"src/summon_claude/sessions/registry.py" = ["S608", "SIM105", "PLR0913"]
 # Update checker: urlopen with hardcoded PyPI URL is safe; print-like output via click.echo
 "src/summon_claude/cli/update_check.py" = ["S310"]
 # Tests: asserts, magic values, hardcoded tokens, subprocess calls, random, deferred imports, asyncio tasks

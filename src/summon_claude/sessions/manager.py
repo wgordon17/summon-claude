@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 import time
@@ -27,7 +28,13 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 # recv_msg/send_msg imported lazily in handle_client to avoid circular import
 # (daemon.py imports SessionManager; SessionManager uses IPC from daemon.py)
-from summon_claude.sessions.auth import SessionAuth, generate_session_token, verify_short_code
+from summon_claude.sessions.auth import (
+    SessionAuth,
+    SpawnAuth,
+    generate_session_token,
+    verify_short_code,
+    verify_spawn_token,
+)
 from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.sessions.session import _SECRET_PATTERN, SessionOptions, SummonSession
 
@@ -127,6 +134,71 @@ class SessionManager:
         if auth is None:  # pragma: no cover — SessionRegistry never suppresses
             raise RuntimeError("Auth generation failed silently")
         return auth
+
+    @staticmethod
+    async def _verify_and_log_spawn_token(spawn_token: str, session_id: str) -> SpawnAuth | None:
+        """Verify a spawn token and log the result (success or rejection)."""
+        async with SessionRegistry() as registry:
+            spawn_auth = await verify_spawn_token(registry, spawn_token)
+            if spawn_auth is None:
+                await registry.log_event(
+                    "spawn_token_rejected",
+                    session_id=session_id,
+                )
+                return None
+            await registry.log_event(
+                "spawn_token_consumed",
+                session_id=session_id,
+                user_id=spawn_auth.target_user_id,
+                details={
+                    "parent_session_id": spawn_auth.parent_session_id,
+                    "spawn_source": spawn_auth.spawn_source,
+                    "cwd": spawn_auth.cwd,
+                },
+            )
+            return spawn_auth
+
+    async def create_session_with_spawn_token(
+        self, options: SessionOptions, spawn_token: str
+    ) -> str:
+        """Create a pre-authenticated session using a spawn token."""
+        session_id = str(uuid.uuid4())
+        spawn_auth = await self._verify_and_log_spawn_token(spawn_token, session_id)
+
+        if spawn_auth is None:
+            raise ValueError("Invalid or expired spawn token")
+
+        # Cancel grace timer only after successful verification — prevents
+        # invalid tokens from keeping the daemon alive indefinitely.
+        if self._grace_timer is not None:
+            self._grace_timer.cancel()
+            self._grace_timer = None
+
+        # Enforce the authorized working directory from the spawn token
+        options = dataclasses.replace(options, cwd=spawn_auth.cwd)
+
+        session = SummonSession(
+            config=self._config,
+            options=options,
+            auth=None,
+            session_id=session_id,
+            web_client=self._web_client,
+            dispatcher=self._dispatcher,
+            bot_user_id=self._bot_user_id,
+            parent_session_id=spawn_auth.parent_session_id,
+            parent_channel_id=spawn_auth.parent_channel_id,
+        )
+        session.authenticate(spawn_auth.target_user_id)
+
+        self._sessions[session_id] = session
+        task = asyncio.create_task(
+            self._supervised_session(session, session_id),
+            name=f"session-{session_id}",
+        )
+        task.add_done_callback(partial(self._on_task_done, session_id=session_id))
+        self._tasks[session_id] = task
+        logger.info("SessionManager: created spawned session %s", session_id)
+        return session_id
 
     def stop_session(self, session_id: str) -> bool:
         """Signal a specific session to shut down.  Returns ``True`` if found."""
@@ -297,6 +369,18 @@ class SessionManager:
                         for sid, s in self._sessions.items()
                     ],
                 }
+
+            case "create_session_with_spawn_token":
+                try:
+                    options = SessionOptions(**msg["options"])
+                    spawn_token = msg["spawn_token"]
+                except (TypeError, KeyError) as e:
+                    return {"type": "error", "message": f"Invalid request: {e}"}
+                try:
+                    session_id = await self.create_session_with_spawn_token(options, spawn_token)
+                except ValueError as e:
+                    return {"type": "error", "message": str(e)}
+                return {"type": "session_created_spawned", "session_id": session_id}
 
             case _:
                 return {"type": "error", "message": f"Unknown command: {msg.get('type')}"}

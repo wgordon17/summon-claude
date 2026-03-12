@@ -69,6 +69,23 @@ async def create_session(options: SessionOptions) -> str:
     return short_code
 
 
+async def create_session_with_spawn_token(options: SessionOptions, spawn_token: str) -> str:
+    """Send a create_session_with_spawn_token request to the daemon.
+
+    Returns the session_id of the spawned session.
+    """
+    response = await _request(
+        {
+            "type": "create_session_with_spawn_token",
+            "options": dataclasses.asdict(options),
+            "spawn_token": spawn_token,
+        }
+    )
+    if response.get("type") != "session_created_spawned":
+        raise DaemonError(f"Unexpected daemon response: {response}")
+    return response["session_id"]
+
+
 async def stop_session(session_id: str) -> bool:
     """Send a ``stop_session`` request to the daemon.
 

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.auth import SessionAuth
@@ -89,6 +92,25 @@ def make_rt(
         client=client,
         permission_handler=AsyncMock(),
     )
+
+
+class TestSummonSessionConstructorGuards:
+    """Guard tests pinning SummonSession.__init__ parameter contracts."""
+
+    def test_session_id_is_required(self):
+        """session_id must be a required keyword arg — no empty-string default."""
+        sig = inspect.signature(SummonSession.__init__)
+        param = sig.parameters["session_id"]
+        assert param.default is inspect.Parameter.empty, (
+            "session_id must not have a default value — "
+            "an empty string would silently create invalid DB rows"
+        )
+        assert param.kind == inspect.Parameter.KEYWORD_ONLY
+
+    def test_constructor_rejects_missing_session_id(self):
+        """Constructing SummonSession without session_id must raise TypeError."""
+        with pytest.raises(TypeError, match="session_id"):
+            SummonSession(config=make_config(), options=make_options())
 
 
 class TestGenerateSessionToken:

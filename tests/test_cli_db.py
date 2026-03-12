@@ -32,7 +32,7 @@ class TestDbStatus:
         ):
             result = runner.invoke(cli, ["db", "status"])
         assert result.exit_code == 0
-        assert "Schema version: 1" in result.output
+        assert "Schema version: 2" in result.output
         assert "Integrity:" in result.output
         assert "Sessions:" in result.output
 
@@ -149,7 +149,7 @@ class TestDbPurge:
         assert result.exit_code == 0
         assert "Sessions:" in result.output
         # At least 1 session should have been purged
-        assert "Sessions:    1" in result.output
+        assert "Sessions:     1" in result.output
 
     def test_db_purge_without_yes_aborts(self):
         """'db purge' without --yes should prompt and abort if not confirmed."""
@@ -176,7 +176,7 @@ class TestDbPurge:
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "30", "--yes"])
         assert result.exit_code == 0
-        assert "Sessions:    0" in result.output
+        assert "Sessions:     0" in result.output
 
     def test_db_purge_deletes_old_audit_log(self, tmp_path):
         """'db purge' should delete audit log entries older than the cutoff."""
@@ -202,7 +202,7 @@ class TestDbPurge:
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
         assert result.exit_code == 0
-        assert "Audit log:   1" in result.output
+        assert "Audit log:    1" in result.output
 
     def test_db_purge_deletes_expired_auth_tokens(self, tmp_path):
         """'db purge' should delete expired auth tokens older than the cutoff."""
@@ -226,7 +226,32 @@ class TestDbPurge:
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
         assert result.exit_code == 0
-        assert "Auth tokens: 1" in result.output
+        assert "Auth tokens:  1" in result.output
+
+    def test_db_purge_deletes_expired_spawn_tokens(self, tmp_path):
+        """'db purge' should delete expired spawn tokens older than the cutoff."""
+        runner = CliRunner()
+        db_path = tmp_path / "registry.db"
+        old_expiry = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+
+        async def _seed():
+            async with SessionRegistry(db_path=db_path) as reg:
+                await reg.store_spawn_token(
+                    token="oldspawn1",
+                    target_user_id="U999",
+                    cwd="/tmp",
+                    expires_at=old_expiry,
+                )
+
+        asyncio.run(_seed())
+
+        with patch(
+            "summon_claude.sessions.registry._default_db_path",
+            return_value=db_path,
+        ):
+            result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
+        assert result.exit_code == 0
+        assert "Spawn tokens: 1" in result.output
 
 
 class TestConfigCheckDbValidation:
@@ -247,7 +272,7 @@ class TestConfigCheckDbValidation:
             patch("summon_claude.cli.config.get_data_dir", return_value=tmp_path),
         ):
             result = runner.invoke(cli, ["config", "check"])
-        assert "[PASS] Schema version 1 (current)" in result.output
+        assert "[PASS] Schema version 2 (current)" in result.output
 
     def test_config_check_reports_integrity(self, tmp_path):
         """'config check' should report database integrity OK."""

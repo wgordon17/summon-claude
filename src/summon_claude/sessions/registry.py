@@ -34,7 +34,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_activity_at TEXT,
     total_cost_usd REAL DEFAULT 0.0,
     total_turns INTEGER DEFAULT 0,
-    error_message TEXT
+    error_message TEXT,
+    parent_session_id TEXT,
+    authenticated_user_id TEXT
 )
 """
 
@@ -59,6 +61,19 @@ CREATE TABLE IF NOT EXISTS audit_log (
 )
 """
 
+_CREATE_SPAWN_TOKENS = """
+CREATE TABLE IF NOT EXISTS spawn_tokens (
+    token TEXT PRIMARY KEY,
+    parent_session_id TEXT,
+    parent_channel_id TEXT,
+    target_user_id TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    spawn_source TEXT NOT NULL DEFAULT 'session',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+)
+"""
+
 _CREATE_SCHEMA_VERSION = """
 CREATE TABLE IF NOT EXISTS schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -66,12 +81,25 @@ CREATE TABLE IF NOT EXISTS schema_version (
 )
 """
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
+
+
+async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
+    """Add parent_session_id and authenticated_user_id to sessions table."""
+    for col in ("parent_session_id TEXT", "authenticated_user_id TEXT"):
+        try:
+            await db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+        except Exception as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+            logger.debug("Column %s already exists, skipping", col)
+
 
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the existing DDL already produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
     0: None,  # baseline — no-op
+    1: _migrate_1_to_2,
 }
 
 _MAX_FAILED_ATTEMPTS = 5
@@ -167,6 +195,7 @@ class SessionRegistry:
         await self._db.execute(_CREATE_SESSIONS)
         await self._db.execute(_CREATE_PENDING_AUTH_TOKENS)
         await self._db.execute(_CREATE_AUDIT_LOG)
+        await self._db.execute(_CREATE_SPAWN_TOKENS)
         await self._db.execute(_CREATE_SCHEMA_VERSION)
         await self._db.commit()
 
@@ -207,6 +236,8 @@ class SessionRegistry:
         cwd: str,
         name: str | None = None,
         model: str | None = None,
+        parent_session_id: str | None = None,
+        authenticated_user_id: str | None = None,
     ) -> None:
         """Insert a new session with status pending_auth."""
         db = self._check_connected()
@@ -215,10 +246,21 @@ class SessionRegistry:
                 """
                 INSERT INTO sessions
                     (session_id, pid, status, session_name, cwd, model,
-                     started_at, last_activity_at)
-                VALUES (?, ?, 'pending_auth', ?, ?, ?, ?, ?)
+                     started_at, last_activity_at,
+                     parent_session_id, authenticated_user_id)
+                VALUES (?, ?, 'pending_auth', ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, pid, name, cwd, model, _now(), _now()),
+                (
+                    session_id,
+                    pid,
+                    name,
+                    cwd,
+                    model,
+                    _now(),
+                    _now(),
+                    parent_session_id,
+                    authenticated_user_id,
+                ),
             )
             await db.commit()
 
@@ -230,6 +272,7 @@ class SessionRegistry:
             "slack_channel_name",
             "claude_session_id",
             "authenticated_at",
+            "authenticated_user_id",
             "ended_at",
             "error_message",
             "model",
@@ -463,6 +506,63 @@ class SessionRegistry:
                 (short_code,),
             )
             await db.commit()
+
+    # --- Spawn token methods ---
+
+    async def store_spawn_token(
+        self,
+        token: str,
+        target_user_id: str,
+        cwd: str,
+        expires_at: str,
+        spawn_source: str = "session",
+        parent_session_id: str | None = None,
+        parent_channel_id: str | None = None,
+    ) -> None:
+        """Store a spawn token for pre-authenticated session creation."""
+        db = self._check_connected()
+        async with self._lock:
+            await db.execute(
+                """
+                INSERT INTO spawn_tokens
+                    (token, parent_session_id, parent_channel_id, target_user_id,
+                     cwd, spawn_source, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token,
+                    parent_session_id,
+                    parent_channel_id,
+                    target_user_id,
+                    cwd,
+                    spawn_source,
+                    _now(),
+                    expires_at,
+                ),
+            )
+            await db.commit()
+
+    async def get_all_spawn_tokens(self) -> list[dict]:
+        """Retrieve all spawn tokens for constant-time comparison."""
+        db = self._check_connected()
+        async with db.execute("SELECT * FROM spawn_tokens") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def consume_spawn_token(self, token: str, now_iso: str) -> dict | None:
+        """Atomically delete and return a non-expired spawn token."""
+        db = self._check_connected()
+        async with self._lock:
+            async with db.execute(
+                """DELETE FROM spawn_tokens
+                   WHERE token = ?
+                     AND expires_at > ?
+                   RETURNING *""",
+                (token, now_iso),
+            ) as cursor:
+                row = await cursor.fetchone()
+            await db.commit()
+            return dict(row) if row else None
 
     # --- Audit log methods ---
 

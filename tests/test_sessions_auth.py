@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
+
+import pytest
 
 from summon_claude.sessions.auth import (
     SessionAuth,
+    SpawnAuth,
     generate_session_token,
+    generate_spawn_token,
     verify_short_code,
+    verify_spawn_token,
 )
 
 
@@ -118,3 +125,82 @@ class TestVerifyShortCode:
         entry_after = await registry._get_pending_token(auth.short_code)
         assert entry_after is not None
         assert entry_after["failed_attempts"] == _MAX_FAILED_ATTEMPTS
+
+
+class TestGenerateSpawnToken:
+    async def test_generates_valid_token(self, registry):
+        result = await generate_spawn_token(registry, "U123", "/tmp")
+        assert isinstance(result, SpawnAuth)
+        assert len(result.token) == 32
+        assert result.target_user_id == "U123"
+        assert result.cwd == "/tmp"
+        assert result.spawn_source == "session"
+
+    async def test_cli_source(self, registry):
+        result = await generate_spawn_token(registry, "U123", "/tmp", spawn_source="cli")
+        assert result.spawn_source == "cli"
+        assert result.parent_session_id is None
+        assert result.parent_channel_id is None
+
+
+class TestVerifySpawnToken:
+    async def test_valid_roundtrip(self, registry):
+        auth = await generate_spawn_token(registry, "U123", "/tmp")
+        result = await verify_spawn_token(registry, auth.token)
+        assert result is not None
+        assert result.target_user_id == "U123"
+
+    async def test_roundtrip_preserves_parent_fields(self, registry):
+        auth = await generate_spawn_token(
+            registry,
+            "U123",
+            "/tmp",
+            parent_session_id="parent-sess-1",
+            parent_channel_id="C_PARENT",
+        )
+        result = await verify_spawn_token(registry, auth.token)
+        assert result is not None
+        assert result.parent_session_id == "parent-sess-1"
+        assert result.parent_channel_id == "C_PARENT"
+        assert result.target_user_id == "U123"
+        assert result.cwd == "/tmp"
+        assert result.spawn_source == "session"
+
+    async def test_invalid_token(self, registry):
+        result = await verify_spawn_token(registry, "nonexistent")
+        assert result is None
+
+    async def test_expired_token(self, registry):
+        # Generate token with very short TTL
+        with patch("summon_claude.sessions.auth._SPAWN_TOKEN_TTL_SECONDS", 0):
+            auth = await generate_spawn_token(registry, "U123", "/tmp")
+        # Wait briefly for it to expire
+        await asyncio.sleep(0.1)
+        result = await verify_spawn_token(registry, auth.token)
+        assert result is None
+
+
+class TestGenerateSpawnTokenValidation:
+    async def test_rejects_empty_target_user_id(self, registry):
+        with pytest.raises(ValueError, match="target_user_id"):
+            await generate_spawn_token(registry, "", "/tmp")
+
+    async def test_rejects_whitespace_target_user_id(self, registry):
+        with pytest.raises(ValueError, match="target_user_id"):
+            await generate_spawn_token(registry, "   ", "/tmp")
+
+    async def test_rejects_empty_cwd(self, registry):
+        with pytest.raises(ValueError, match="cwd"):
+            await generate_spawn_token(registry, "U123", "")
+
+    async def test_rejects_relative_cwd(self, registry):
+        with pytest.raises(ValueError, match="cwd"):
+            await generate_spawn_token(registry, "U123", "relative/path")
+
+    async def test_rejects_empty_spawn_source(self, registry):
+        with pytest.raises(ValueError, match="spawn_source"):
+            await generate_spawn_token(registry, "U123", "/tmp", spawn_source="")
+
+    async def test_rejects_whitespace_spawn_source(self, registry):
+        with pytest.raises(ValueError, match="spawn_source"):
+            await generate_spawn_token(registry, "U123", "/tmp", spawn_source="   ")

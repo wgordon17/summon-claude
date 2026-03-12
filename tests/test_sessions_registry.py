@@ -97,6 +97,7 @@ class TestUpdatableFields:
             "slack_channel_name",
             "claude_session_id",
             "authenticated_at",
+            "authenticated_user_id",
             "ended_at",
             "error_message",
             "model",
@@ -396,16 +397,16 @@ class TestMigrationStructure:
 class TestSchemaVersioning:
     """Tests for schema versioning and migrations."""
 
-    async def test_fresh_db_gets_schema_version_1(self, tmp_path):
-        """A fresh database should have schema_version = 1 after connection."""
-        from summon_claude.sessions.registry import _get_schema_version
+    async def test_fresh_db_gets_current_schema_version(self, tmp_path):
+        """A fresh database should have CURRENT_SCHEMA_VERSION after connection."""
+        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, _get_schema_version
 
         db_path = tmp_path / "fresh.db"
         async with SessionRegistry(db_path=db_path) as reg:
             version = await _get_schema_version(reg.db)
-            assert version == 1
+            assert version == CURRENT_SCHEMA_VERSION
 
-    async def test_existing_db_at_version_1_is_noop(self, tmp_path, caplog):
+    async def test_existing_db_at_current_version_is_noop(self, tmp_path, caplog):
         """Connecting to an already-migrated DB should not log migration messages."""
         db_path = tmp_path / "existing.db"
         # First connection: creates and migrates
@@ -424,10 +425,10 @@ class TestSchemaVersioning:
         """If schema_version is behind, migration should run and update version."""
         import aiosqlite
 
-        from summon_claude.sessions.registry import _get_schema_version
+        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, _get_schema_version
 
         db_path = tmp_path / "behind.db"
-        # First connection: creates DB at version 1
+        # First connection: creates DB at current version
         async with SessionRegistry(db_path=db_path):
             pass
 
@@ -436,14 +437,14 @@ class TestSchemaVersioning:
             await raw_db.execute("UPDATE schema_version SET version = 0")
             await raw_db.commit()
 
-        # Re-connect: migration should run 0 -> 1
+        # Re-connect: migrations should run 0 -> CURRENT
         with caplog.at_level(logging.INFO, logger="summon_claude.sessions.registry"):
             caplog.clear()
             async with SessionRegistry(db_path=db_path) as reg:
                 version = await _get_schema_version(reg.db)
-                assert version == 1
+                assert version == CURRENT_SCHEMA_VERSION
             migration_msgs = [r for r in caplog.records if "migration" in r.message.lower()]
-            assert len(migration_msgs) == 1
+            assert len(migration_msgs) == CURRENT_SCHEMA_VERSION
 
     async def test_migrated_from_reflects_previous_version(self, tmp_path):
         """SessionRegistry.migrated_from should show the pre-migration version."""
@@ -472,34 +473,38 @@ class TestSchemaVersioning:
 
         import aiosqlite
 
+        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION
+
         db_path = tmp_path / "rollback.db"
-        # Create DB at version 1
+        # Create DB at current version
         async with SessionRegistry(db_path=db_path):
             pass
 
-        # Downgrade to 0
+        # Downgrade to CURRENT-1 so only one migration step is needed
+        target = CURRENT_SCHEMA_VERSION - 1
         async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
-            await raw_db.execute("UPDATE schema_version SET version = 0")
+            await raw_db.execute("UPDATE schema_version SET version = ?", (target,))
 
-        # Inject a failing migration for 0→1
+        # Inject a failing migration for target→target+1
         async def _failing_migration(db):
             raise RuntimeError("migration failed")
 
-        failing_migrations = {0: _failing_migration}
+        failing_migrations = {target: _failing_migration}
         with (
             patch("summon_claude.sessions.registry._MIGRATIONS", failing_migrations),
+            patch("summon_claude.sessions.registry.CURRENT_SCHEMA_VERSION", target + 1),
             pytest.raises(RuntimeError, match="migration failed"),
         ):
             async with SessionRegistry(db_path=db_path):
                 pass
 
-        # Version should still be 0 after rollback
+        # Version should still be target after rollback
         async with (
             aiosqlite.connect(str(db_path), isolation_level=None) as raw_db,
             raw_db.execute("SELECT version FROM schema_version WHERE id = 1") as cursor,
         ):
             row = await cursor.fetchone()
-            assert row[0] == 0
+            assert row[0] == target
 
     async def test_fresh_and_migrated_schemas_match(self, tmp_path):
         """A fresh DB and one built via migrations should have identical schemas."""
@@ -552,13 +557,14 @@ class TestSchemaVersioning:
             assert "sessions" in tables
             assert "audit_log" in tables
             assert "pending_auth_tokens" in tables
+            assert "spawn_tokens" in tables
             assert "schema_version" in tables
 
     async def test_migration_preserves_existing_data(self, tmp_path):
         """Migrations must not destroy existing rows."""
         import aiosqlite
 
-        from summon_claude.sessions.registry import _get_schema_version
+        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, _get_schema_version
 
         db_path = tmp_path / "data.db"
 
@@ -576,7 +582,7 @@ class TestSchemaVersioning:
         # Re-open — migration runs over existing data
         async with SessionRegistry(db_path=db_path) as reg:
             version = await _get_schema_version(reg.db)
-            assert version == 1
+            assert version == CURRENT_SCHEMA_VERSION
 
             # Verify data survived
             session = await reg.get_session("data-sess")
@@ -591,7 +597,11 @@ class TestSchemaVersioning:
         """Running migration twice on the same DB must not error."""
         import aiosqlite
 
-        from summon_claude.sessions.registry import _get_schema_version, _run_migrations
+        from summon_claude.sessions.registry import (
+            CURRENT_SCHEMA_VERSION,
+            _get_schema_version,
+            _run_migrations,
+        )
 
         db_path = tmp_path / "idempotent.db"
         async with SessionRegistry(db_path=db_path):
@@ -603,4 +613,80 @@ class TestSchemaVersioning:
                 await raw_db.execute("UPDATE schema_version SET version = 0")
                 await _run_migrations(raw_db)
                 version = await _get_schema_version(raw_db)
-                assert version == 1
+                assert version == CURRENT_SCHEMA_VERSION
+
+
+class TestSpawnTokens:
+    async def test_store_and_consume_spawn_token(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        expires = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+        await registry.store_spawn_token(
+            token="abc123",
+            target_user_id="U999",
+            cwd="/tmp",
+            expires_at=expires,
+            spawn_source="session",
+            parent_session_id="parent-1",
+            parent_channel_id="C111",
+        )
+        row = await registry.consume_spawn_token("abc123", datetime.now(UTC).isoformat())
+        assert row is not None
+        assert row["token"] == "abc123"
+        assert row["target_user_id"] == "U999"
+        assert row["parent_session_id"] == "parent-1"
+
+    async def test_consume_spawn_token_expired(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        expired = (datetime.now(UTC) - timedelta(seconds=10)).isoformat()
+        await registry.store_spawn_token(
+            token="expired1",
+            target_user_id="U999",
+            cwd="/tmp",
+            expires_at=expired,
+        )
+        row = await registry.consume_spawn_token("expired1", datetime.now(UTC).isoformat())
+        assert row is None
+
+    async def test_consume_spawn_token_already_consumed(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        expires = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+        await registry.store_spawn_token(
+            token="once1",
+            target_user_id="U999",
+            cwd="/tmp",
+            expires_at=expires,
+        )
+        first = await registry.consume_spawn_token("once1", datetime.now(UTC).isoformat())
+        second = await registry.consume_spawn_token("once1", datetime.now(UTC).isoformat())
+        assert first is not None
+        assert second is None
+
+    async def test_store_spawn_token_nullable_parent(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        expires = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+        await registry.store_spawn_token(
+            token="cli1",
+            target_user_id="U999",
+            cwd="/tmp",
+            expires_at=expires,
+            spawn_source="cli",
+        )
+        row = await registry.consume_spawn_token("cli1", datetime.now(UTC).isoformat())
+        assert row is not None
+        assert row["parent_session_id"] is None
+        assert row["parent_channel_id"] is None
+        assert row["spawn_source"] == "cli"
+
+    async def test_register_with_parent_session_id(self, registry):
+        await registry.register("sess-parent", 1234, "/tmp", parent_session_id="parent-sess")
+        session = await registry.get_session("sess-parent")
+        assert session["parent_session_id"] == "parent-sess"
+
+    async def test_register_with_authenticated_user_id(self, registry):
+        await registry.register("sess-uid", 1234, "/tmp", authenticated_user_id="U123")
+        session = await registry.get_session("sess-uid")
+        assert session["authenticated_user_id"] == "U123"

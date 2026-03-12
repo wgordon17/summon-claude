@@ -312,11 +312,14 @@ class SummonSession:
         self,
         config: SummonConfig,
         options: SessionOptions,
-        auth: SessionAuth,
+        *,
         session_id: str,
+        auth: SessionAuth | None = None,
         web_client: AsyncWebClient | None = None,
         dispatcher: EventDispatcher | None = None,
         bot_user_id: str | None = None,
+        parent_session_id: str | None = None,
+        parent_channel_id: str | None = None,
     ) -> None:
         self._config = config
         self._session_id = session_id
@@ -345,6 +348,8 @@ class SummonSession:
         self._shutdown_event = asyncio.Event()
         self._authenticated_event = asyncio.Event()
         self._authenticated_user_id: str | None = None
+        self._parent_session_id: str | None = parent_session_id
+        self._parent_channel_id: str | None = parent_channel_id
         # Tracks whether _shutdown() completed successfully
         self._shutdown_completed: bool = False
 
@@ -426,6 +431,8 @@ class SummonSession:
                 cwd=self._cwd,
                 name=self._name,
                 model=self._model,
+                parent_session_id=self._parent_session_id,
+                authenticated_user_id=self._authenticated_user_id,
             )
             await registry.log_event(
                 "session_created",
@@ -575,6 +582,7 @@ class SummonSession:
             slack_channel_id=channel_id,
             slack_channel_name=channel_name,
             authenticated_at=datetime.now(UTC).isoformat(),
+            authenticated_user_id=self._authenticated_user_id,
         )
         await registry.log_event(
             "session_active",

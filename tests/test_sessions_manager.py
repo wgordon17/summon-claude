@@ -654,3 +654,276 @@ class TestControlAPI:
         writer.wait_closed = AsyncMock()
 
         await manager.handle_client(reader, writer)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Tests: create_session_with_spawn_token
+# ---------------------------------------------------------------------------
+
+
+class TestCreateSessionWithSpawnToken:
+    async def test_valid_spawn_token_creates_session(self):
+        """create_session_with_spawn_token creates a pre-authenticated session."""
+        config = make_config()
+        web_client = MagicMock()
+        web_client.auth_test = AsyncMock(return_value={"user_id": "BBOT"})
+        dispatcher = MagicMock()
+        dispatcher.register = MagicMock()
+        dispatcher.unregister = MagicMock()
+        mgr = SessionManager(config, web_client, "BBOT", dispatcher)
+
+        # Mock the spawn token verification
+        spawn_auth = MagicMock()
+        spawn_auth.target_user_id = "U123"
+        spawn_auth.parent_session_id = "parent-sess"
+        spawn_auth.parent_channel_id = "C_PARENT"
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=spawn_auth,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            session_id = await mgr.create_session_with_spawn_token(make_options(), "valid-token")
+        assert session_id is not None
+        assert session_id in mgr._sessions
+        # Session should be pre-authenticated
+        session = mgr._sessions[session_id]
+        assert session._authenticated_event.is_set()
+        assert session._parent_session_id == "parent-sess"
+        assert session._parent_channel_id == "C_PARENT"
+        # Cleanup
+        await mgr.shutdown()
+
+    async def test_cwd_enforced_from_spawn_token(self):
+        """The session must use the spawn token's cwd, not the caller's."""
+        config = make_config()
+        web_client = MagicMock()
+        web_client.auth_test = AsyncMock(return_value={"user_id": "BBOT"})
+        dispatcher = MagicMock()
+        dispatcher.register = MagicMock()
+        dispatcher.unregister = MagicMock()
+        mgr = SessionManager(config, web_client, "BBOT", dispatcher)
+
+        spawn_auth = MagicMock()
+        spawn_auth.target_user_id = "U123"
+        spawn_auth.parent_session_id = None
+        spawn_auth.parent_channel_id = None
+        spawn_auth.cwd = "/authorized/project"
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=spawn_auth,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            # Caller passes a DIFFERENT cwd — spawn token must override it
+            attacker_options = make_options(cwd="/attacker/path")
+            session_id = await mgr.create_session_with_spawn_token(attacker_options, "valid-token")
+        session = mgr._sessions[session_id]
+        assert session._cwd == "/authorized/project"
+        await mgr.shutdown()
+
+    async def test_invalid_spawn_token_raises(self):
+        config = make_config()
+        web_client = MagicMock()
+        dispatcher = MagicMock()
+        mgr = SessionManager(config, web_client, "BBOT", dispatcher)
+
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            with pytest.raises(ValueError, match="Invalid or expired"):
+                await mgr.create_session_with_spawn_token(make_options(), "bad-token")
+
+    async def test_invalid_spawn_token_does_not_cancel_grace_timer(self):
+        """An invalid spawn token must not cancel the daemon grace timer."""
+        config = make_config()
+        web_client = MagicMock()
+        dispatcher = MagicMock()
+        mgr = SessionManager(config, web_client, "BBOT", dispatcher)
+        fake_timer = MagicMock()
+        mgr._grace_timer = fake_timer
+
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            with pytest.raises(ValueError, match="Invalid or expired"):
+                await mgr.create_session_with_spawn_token(make_options(), "bad-token")
+
+        # Grace timer must NOT have been cancelled
+        fake_timer.cancel.assert_not_called()
+        assert mgr._grace_timer is fake_timer
+
+    async def test_rejected_token_logs_audit_event(self):
+        """Failed spawn token verification must log a spawn_token_rejected audit event."""
+        config = make_config()
+        web_client = MagicMock()
+        dispatcher = MagicMock()
+        mgr = SessionManager(config, web_client, "BBOT", dispatcher)
+
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            with pytest.raises(ValueError, match="Invalid or expired"):
+                await mgr.create_session_with_spawn_token(make_options(), "bad-token")
+
+            # Audit log must record the rejection
+            mock_reg.log_event.assert_awaited_once()
+            call_args = mock_reg.log_event.call_args
+            assert call_args[0][0] == "spawn_token_rejected"
+            assert call_args[1]["session_id"] is not None
+
+    async def test_successful_token_logs_consumed_audit_event(self):
+        """Successful spawn token must log spawn_token_consumed with parent details."""
+        config = make_config()
+        web_client = MagicMock()
+        web_client.auth_test = AsyncMock(return_value={"user_id": "BBOT"})
+        dispatcher = MagicMock()
+        dispatcher.register = MagicMock()
+        dispatcher.unregister = MagicMock()
+        mgr = SessionManager(config, web_client, "BBOT", dispatcher)
+
+        spawn_auth = MagicMock()
+        spawn_auth.target_user_id = "U123"
+        spawn_auth.parent_session_id = "parent-sess"
+        spawn_auth.parent_channel_id = "C_PARENT"
+        spawn_auth.cwd = "/tmp"
+        spawn_auth.spawn_source = "session"
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=spawn_auth,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            await mgr.create_session_with_spawn_token(make_options(), "valid-token")
+
+            # Audit log must record the consumption with full details
+            mock_reg.log_event.assert_awaited_once()
+            call_args = mock_reg.log_event.call_args
+            assert call_args[0][0] == "spawn_token_consumed"
+            assert call_args[1]["user_id"] == "U123"
+            details = call_args[1]["details"]
+            assert details["parent_session_id"] == "parent-sess"
+            assert details["spawn_source"] == "session"
+            assert details["cwd"] == "/tmp"
+        await mgr.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Tests: _dispatch_control — create_session_with_spawn_token
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchSpawnToken:
+    async def test_dispatch_spawn_missing_token_key(self):
+        """Missing spawn_token key returns an error."""
+        manager, _, _ = _make_manager()
+        response = await manager._dispatch_control(
+            {"type": "create_session_with_spawn_token", "options": {"cwd": "/tmp", "name": "t"}}
+        )
+        assert response["type"] == "error"
+        assert "Invalid request" in response["message"]
+
+    async def test_dispatch_spawn_missing_options(self):
+        """Missing options key returns an error."""
+        manager, _, _ = _make_manager()
+        response = await manager._dispatch_control(
+            {"type": "create_session_with_spawn_token", "spawn_token": "tok"}
+        )
+        assert response["type"] == "error"
+        assert "Invalid request" in response["message"]
+
+    async def test_dispatch_spawn_invalid_token(self):
+        """Invalid spawn token returns an error via ValueError."""
+        manager, _, _ = _make_manager()
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            response = await manager._dispatch_control(
+                {
+                    "type": "create_session_with_spawn_token",
+                    "options": {"cwd": "/tmp", "name": "t"},
+                    "spawn_token": "bad-token",
+                }
+            )
+        assert response["type"] == "error"
+        assert "Invalid or expired" in response["message"]
+
+    async def test_dispatch_spawn_success(self):
+        """Valid spawn token dispatch creates session and returns session_id."""
+        manager, _, _ = _make_manager()
+        stub = _StubSession()
+        _patch_session(manager, stub)
+
+        spawn_auth = MagicMock()
+        spawn_auth.target_user_id = "U123"
+        spawn_auth.parent_session_id = "parent-sess"
+        spawn_auth.parent_channel_id = "C_PARENT"
+        spawn_auth.cwd = "/tmp"
+        with (
+            patch(
+                "summon_claude.sessions.manager.verify_spawn_token",
+                new_callable=AsyncMock,
+                return_value=spawn_auth,
+            ),
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            response = await manager._dispatch_control(
+                {
+                    "type": "create_session_with_spawn_token",
+                    "options": {"cwd": "/tmp", "name": "t"},
+                    "spawn_token": "valid-token",
+                }
+            )
+        assert response["type"] == "session_created_spawned"
+        assert "session_id" in response
+        await manager.shutdown()
