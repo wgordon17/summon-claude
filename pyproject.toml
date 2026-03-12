@@ -114,6 +114,8 @@ ignore = [
 "src/summon_claude/cli/config.py" = ["PLR0912", "PLR0915"]
 # Manager: _dispatch_control match arms each return
 "src/summon_claude/sessions/manager.py" = ["PLR0911"]
+# Auth: generate_spawn_token has many parameters by design
+"src/summon_claude/sessions/auth.py" = ["PLR0913"]
 # Session: asserts in private methods; slack handler signatures
 "src/summon_claude/sessions/session.py" = ["S101", "SIM105", "ARG001", "ARG002", "PLR0913", "RET504"]
 # Permissions: action_id is part of public API signature (reserved for future routing)

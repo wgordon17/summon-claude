@@ -13,6 +13,7 @@ from summon_claude.sessions.registry import _MAX_FAILED_ATTEMPTS, SessionRegistr
 logger = logging.getLogger(__name__)
 
 _TOKEN_TTL_MINUTES = 5
+_SPAWN_TOKEN_TTL_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,19 @@ class SessionAuth:
 
     short_code: str
     session_id: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class SpawnAuth:
+    """Spawn token for machine-to-machine session creation."""
+
+    token: str
+    parent_session_id: str | None
+    parent_channel_id: str | None
+    target_user_id: str
+    cwd: str
+    spawn_source: str
     expires_at: datetime
 
 
@@ -106,4 +120,53 @@ async def verify_short_code(registry: SessionRegistry, code: str) -> SessionAuth
         short_code=code,
         session_id=consumed["session_id"],
         expires_at=expires_at,
+    )
+
+
+async def generate_spawn_token(
+    registry: SessionRegistry,
+    target_user_id: str,
+    cwd: str,
+    spawn_source: str = "session",
+    parent_session_id: str | None = None,
+    parent_channel_id: str | None = None,
+) -> SpawnAuth:
+    """Generate a spawn token for pre-authenticated session creation."""
+    token = secrets.token_hex(16)  # 32-char hex, 128-bit entropy
+    expires_at = datetime.now(UTC) + timedelta(seconds=_SPAWN_TOKEN_TTL_SECONDS)
+    await registry.store_spawn_token(
+        token=token,
+        target_user_id=target_user_id,
+        cwd=cwd,
+        expires_at=expires_at.isoformat(),
+        spawn_source=spawn_source,
+        parent_session_id=parent_session_id,
+        parent_channel_id=parent_channel_id,
+    )
+    logger.debug("Generated spawn token for user %s", target_user_id)
+    return SpawnAuth(
+        token=token,
+        parent_session_id=parent_session_id,
+        parent_channel_id=parent_channel_id,
+        target_user_id=target_user_id,
+        cwd=cwd,
+        spawn_source=spawn_source,
+        expires_at=expires_at,
+    )
+
+
+async def verify_spawn_token(registry: SessionRegistry, token: str) -> SpawnAuth | None:
+    """Verify and consume a spawn token. Returns SpawnAuth or None if invalid/expired."""
+    now = datetime.now(UTC)
+    row = await registry.consume_spawn_token(token, now.isoformat())
+    if row is None:
+        return None
+    return SpawnAuth(
+        token=row["token"],
+        parent_session_id=row["parent_session_id"],
+        parent_channel_id=row["parent_channel_id"],
+        target_user_id=row["target_user_id"],
+        cwd=row["cwd"],
+        spawn_source=row["spawn_source"],
+        expires_at=datetime.fromisoformat(row["expires_at"]),
     )
