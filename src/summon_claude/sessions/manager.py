@@ -144,31 +144,12 @@ class SessionManager:
             self._grace_timer = None
 
         spawn_auth: SpawnAuth | None = None
+        session_id = str(uuid.uuid4())
         async with SessionRegistry() as registry:
             spawn_auth = await verify_spawn_token(registry, spawn_token)
-
-        if spawn_auth is None:
-            raise ValueError("Invalid or expired spawn token")
-
-        # Enforce the authorized working directory from the spawn token
-        options = dataclasses.replace(options, cwd=spawn_auth.cwd)
-
-        session_id = str(uuid.uuid4())
-        session = SummonSession(
-            config=self._config,
-            options=options,
-            auth=None,
-            session_id=session_id,
-            web_client=self._web_client,
-            dispatcher=self._dispatcher,
-            bot_user_id=self._bot_user_id,
-            parent_session_id=spawn_auth.parent_session_id,
-        )
-        session.authenticate(spawn_auth.target_user_id)
-
-        # Audit log: record spawn token consumption
-        async with SessionRegistry() as reg:
-            await reg.log_event(
+            if spawn_auth is None:
+                raise ValueError("Invalid or expired spawn token")
+            await registry.log_event(
                 "spawn_token_consumed",
                 session_id=session_id,
                 user_id=spawn_auth.target_user_id,
@@ -178,6 +159,22 @@ class SessionManager:
                     "cwd": spawn_auth.cwd,
                 },
             )
+
+        # Enforce the authorized working directory from the spawn token
+        options = dataclasses.replace(options, cwd=spawn_auth.cwd)
+
+        session = SummonSession(
+            config=self._config,
+            options=options,
+            auth=None,
+            session_id=session_id,
+            web_client=self._web_client,
+            dispatcher=self._dispatcher,
+            bot_user_id=self._bot_user_id,
+            parent_session_id=spawn_auth.parent_session_id,
+            parent_channel_id=spawn_auth.parent_channel_id,
+        )
+        session.authenticate(spawn_auth.target_user_id)
 
         self._sessions[session_id] = session
         task = asyncio.create_task(

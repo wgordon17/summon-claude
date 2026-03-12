@@ -148,6 +148,22 @@ class TestVerifySpawnToken:
         assert result is not None
         assert result.target_user_id == "U123"
 
+    async def test_roundtrip_preserves_parent_fields(self, registry):
+        auth = await generate_spawn_token(
+            registry,
+            "U123",
+            "/tmp",
+            parent_session_id="parent-sess-1",
+            parent_channel_id="C_PARENT",
+        )
+        result = await verify_spawn_token(registry, auth.token)
+        assert result is not None
+        assert result.parent_session_id == "parent-sess-1"
+        assert result.parent_channel_id == "C_PARENT"
+        assert result.target_user_id == "U123"
+        assert result.cwd == "/tmp"
+        assert result.spawn_source == "session"
+
     async def test_invalid_token(self, registry):
         result = await verify_spawn_token(registry, "nonexistent")
         assert result is None

@@ -21,6 +21,7 @@ async def async_db_status(ctx: click.Context) -> None:
     integrity = "unknown"
     sessions_count = 0
     audit_count = 0
+    spawn_count = 0
     async with SessionRegistry() as reg:
         previous = reg.migrated_from
         db = reg.db
@@ -34,13 +35,16 @@ async def async_db_status(ctx: click.Context) -> None:
         async with db.execute("SELECT COUNT(*) FROM audit_log") as cur:
             row = await cur.fetchone()
             audit_count = row[0] if row else 0
+        async with db.execute("SELECT COUNT(*) FROM spawn_tokens") as cur:
+            row = await cur.fetchone()
+            spawn_count = row[0] if row else 0
 
     if previous is not None and previous < CURRENT_SCHEMA_VERSION:
         echo(f"Migrated schema from version {previous} → {version}", ctx)
     else:
         echo(f"Schema version: {version} (current)", ctx)
     echo(f"Integrity: {integrity}", ctx)
-    echo(f"Sessions: {sessions_count}, Audit log: {audit_count}", ctx)
+    echo(f"Sessions: {sessions_count}, Audit log: {audit_count}, Spawn tokens: {spawn_count}", ctx)
 
 
 async def async_db_reset(db_path: pathlib.Path, ctx: click.Context) -> None:

@@ -676,6 +676,7 @@ class TestCreateSessionWithSpawnToken:
         spawn_auth = MagicMock()
         spawn_auth.target_user_id = "U123"
         spawn_auth.parent_session_id = "parent-sess"
+        spawn_auth.parent_channel_id = "C_PARENT"
         with (
             patch(
                 "summon_claude.sessions.manager.verify_spawn_token",
@@ -693,6 +694,8 @@ class TestCreateSessionWithSpawnToken:
         # Session should be pre-authenticated
         session = mgr._sessions[session_id]
         assert session._authenticated_event.is_set()
+        assert session._parent_session_id == "parent-sess"
+        assert session._parent_channel_id == "C_PARENT"
         # Cleanup
         await mgr.shutdown()
 

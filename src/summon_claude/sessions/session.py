@@ -318,6 +318,7 @@ class SummonSession:
         dispatcher: EventDispatcher | None = None,
         bot_user_id: str | None = None,
         parent_session_id: str | None = None,
+        parent_channel_id: str | None = None,
     ) -> None:
         self._config = config
         self._session_id = session_id
@@ -347,6 +348,7 @@ class SummonSession:
         self._authenticated_event = asyncio.Event()
         self._authenticated_user_id: str | None = None
         self._parent_session_id: str | None = parent_session_id
+        self._parent_channel_id: str | None = parent_channel_id
         # Tracks whether _shutdown() completed successfully
         self._shutdown_completed: bool = False
 
