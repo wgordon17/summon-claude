@@ -7,8 +7,7 @@
 # Naming conventions:
 # - Top-level click commands: cmd_X
 # - Group subcommands: group_subcommand (+ _cmd suffix for import shadowing)
-# - Async helpers mirroring a click command: _async_<click_function_name>
-# - Utility helpers: verb-noun descriptive names (e.g., _ensure_daemon)
+# - Async helpers: extracted to cli/<module>.py
 
 from __future__ import annotations
 
@@ -18,35 +17,25 @@ import json
 import logging
 import os
 import pathlib
-import re
 import sys
 import threading
-from datetime import UTC, datetime, timedelta
 
 import click
-from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude import __version__
-from summon_claude.cli import daemon_client
 from summon_claude.cli.config import config_check, config_edit, config_path, config_set, config_show
-from summon_claude.cli.interactive import (
-    format_log_option,
-    format_session_option,
-    interactive_multi_select,
-    interactive_select,
-    is_interactive,
+from summon_claude.cli.db import async_db_purge, async_db_reset, async_db_status, async_db_vacuum
+from summon_claude.cli.formatting import echo
+from summon_claude.cli.session import (
+    async_session_cleanup,
+    async_session_list,
+    session_info_impl,
+    session_logs_impl,
 )
+from summon_claude.cli.start import async_start
+from summon_claude.cli.stop import async_stop
 from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
-from summon_claude.daemon import is_daemon_running, start_daemon
 from summon_claude.sessions import registry as _registry
-from summon_claude.sessions.registry import (
-    CURRENT_SCHEMA_VERSION,
-    SessionRegistry,
-    _get_schema_version,
-)
-from summon_claude.sessions.session import SessionOptions
-
-logger = logging.getLogger(__name__)
 
 _BANNER_WIDTH = 50
 
@@ -81,15 +70,6 @@ def _setup_logging(verbose: bool = False) -> None:
 
     if not verbose:
         logging.getLogger("asyncio").setLevel(logging.WARNING)
-
-
-def _echo(msg: str, ctx: click.Context, err: bool = False) -> None:
-    if err or not ctx.obj.get("quiet"):
-        click.echo(msg, err=err)
-
-
-def _format_json(data: list[dict] | dict) -> str:
-    return json.dumps(data, indent=2, default=str)
 
 
 class AliasedGroup(click.Group):
@@ -243,56 +223,17 @@ def cmd_start(
     resolved_name = name or pathlib.Path(resolved_cwd).name
 
     try:
-        asyncio.run(_async_cmd_start(config, resolved_cwd, resolved_name, model, resume))
+        short_code = asyncio.run(async_start(config, resolved_cwd, resolved_name, model, resume))
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+    _print_auth_banner(short_code)
 
     # Show update notification if available (after banner)
     update_thread.join(timeout=4.0)
     if update_result and not ctx.obj.get("quiet"):
         click.echo(update_result[0], err=True)
-
-
-async def _async_cmd_start(
-    config: SummonConfig,
-    cwd: str,
-    name: str,
-    model: str | None,
-    resume: str | None,
-) -> None:
-    """Orchestrate daemon startup, session creation, and auth banner display."""
-    options = SessionOptions(
-        cwd=cwd,
-        name=name,
-        model=model or config.default_model,
-        resume=resume,
-    )
-
-    # Phase 0: Run DB migration if needed (fast, ~10ms)
-    async with SessionRegistry() as reg:
-        if reg.migrated_from is not None and reg.migrated_from < CURRENT_SCHEMA_VERSION:
-            click.echo(
-                f"Database schema upgraded: v{reg.migrated_from} → v{CURRENT_SCHEMA_VERSION}",
-                err=True,
-            )
-
-    # Phase 1: Ensure daemon is running (auto-start if not)
-    try:
-        start_daemon(config)
-    except Exception as e:
-        click.echo(f"Error starting daemon: {e}", err=True)
-        raise SystemExit(1) from e
-
-    # Phase 2: Send create_session to daemon; daemon generates session_id + auth
-    try:
-        short_code = await daemon_client.create_session(options)
-    except Exception as e:
-        click.echo(f"Error communicating with daemon: {e}", err=True)
-        raise SystemExit(1) from e
-
-    # Phase 3: Print auth banner so user can authenticate via Slack
-    _print_auth_banner(short_code)
 
 
 # ---------------------------------------------------------------------------
@@ -313,111 +254,7 @@ async def _async_cmd_start(
 @click.pass_context
 def cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
     """Stop a session (or all sessions) via the daemon."""
-    asyncio.run(_async_cmd_stop(ctx, session_id, stop_all))
-
-
-async def _resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:
-    """Look up a session by ID prefix or channel name (async registry query)."""
-    async with SessionRegistry() as registry:
-        return await registry.resolve_session(identifier)
-
-
-def _resolve_session_or_exit(identifier: str, ctx: click.Context) -> dict | None:
-    """Resolve a session identifier, with interactive disambiguation.
-
-    Returns the resolved session dict, or ``None`` if not found.
-    """
-    session, matches = asyncio.run(_resolve_session(identifier))
-    if not session:
-        if matches:
-            session = _pick_session(identifier, matches, ctx)
-        else:
-            click.echo(f"Session not found: {identifier}")
-            return None
-    return session
-
-
-def _pick_session(identifier: str, matches: list[dict], ctx: click.Context) -> dict | None:
-    """Interactively disambiguate when a session identifier matches multiple sessions."""
-    options = [format_session_option(m) for m in matches]
-    result = interactive_select(options, f"'{identifier}' matches {len(matches)} sessions:", ctx)
-    if result is None:
-        click.echo("No session selected.")
-        return None
-    return matches[result[1]]
-
-
-async def _stop_and_report(resolved_id: str, *, suggest_cleanup: bool = False) -> None:
-    """Stop a session via the daemon and report the result."""
-    found = await daemon_client.stop_session(resolved_id)
-    if found:
-        click.echo(f"Stop requested for session {resolved_id[:8]}")
-    else:
-        msg = f"Session {resolved_id[:8]} not owned by running daemon."
-        if suggest_cleanup:
-            msg += " Run 'summon session cleanup' to clear stale sessions."
-        click.echo(msg)
-
-
-async def _async_cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
-    if not is_daemon_running():
-        click.echo("Daemon is not running.")
-        return
-
-    try:
-        if not session_id and not stop_all:
-            if not is_interactive(ctx):
-                click.echo("Provide SESSION_ID or --all.", err=True)
-                ctx.exit(1)
-                return
-            try:
-                active = await daemon_client.list_sessions()
-            except Exception as exc:
-                click.echo(f"Error: {exc}", err=True)
-                ctx.exit(1)
-                return
-            if not active:
-                click.echo("No active sessions.")
-                return
-            if len(active) == 1:
-                session = active[0]
-                resolved_id = session["session_id"]
-                label = session.get("session_name") or resolved_id[:8]
-                click.echo(f"Auto-selecting {label} ({resolved_id[:8]})")
-            else:
-                options = [format_session_option(s) for s in active]
-                result = interactive_select(options, "Select session to stop:", ctx)
-                if result is None:
-                    click.echo("No session selected.")
-                    return
-                resolved_id = active[result[1]]["session_id"]
-            await _stop_and_report(resolved_id)
-            return
-
-        if stop_all:
-            results = await daemon_client.stop_all_sessions()
-            if not results:
-                click.echo("No active sessions.")
-                return
-            for sid, found in results:
-                click.echo(f"Stop requested for {sid}: {'sent' if found else 'not found'}")
-        else:
-            session, matches = await _resolve_session(session_id)  # type: ignore[arg-type]
-            if not session:
-                if matches:
-                    session = _pick_session(session_id, matches, ctx)
-                else:
-                    click.echo(f"Session not found: {session_id}")
-                    ctx.exit(1)
-                    return
-            if not session:
-                ctx.exit(1)
-                return
-
-            await _stop_and_report(session["session_id"], suggest_cleanup=True)
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
-        ctx.exit(1)
+    asyncio.run(async_stop(ctx, session_id, stop_all))
 
 
 # ---------------------------------------------------------------------------
@@ -449,37 +286,7 @@ def cmd_session() -> None:
 @click.pass_context
 def session_list(ctx: click.Context, show_all: bool, output: str) -> None:
     """List sessions. Shows active sessions by default; use --all for all recent."""
-    asyncio.run(_async_session_list(ctx, show_all, output))
-
-
-async def _async_session_list(ctx: click.Context, show_all: bool, output: str) -> None:
-    # Print daemon status header (table mode only)
-    if output == "table" and not ctx.obj.get("quiet"):
-        if is_daemon_running():
-            # Query daemon for live status
-            try:
-                status = await daemon_client.get_status()
-                pid = status.get("pid", "?")
-                uptime_s = status.get("uptime", 0)
-                uptime_str = _format_uptime(uptime_s)
-                click.echo(f"Daemon: running (pid {pid}, uptime {uptime_str})")
-            except Exception as e:
-                click.echo(f"Daemon: running (status unavailable: {e})")
-        else:
-            click.echo("Daemon: not running")
-
-    async with SessionRegistry() as registry:
-        if show_all:
-            sessions = await registry.list_all(limit=50)
-        else:
-            sessions = await registry.list_active()
-        if not sessions:
-            _echo("No sessions found." if show_all else "No active sessions.", ctx)
-            return
-        if output == "json":
-            click.echo(_format_json(sessions))
-        else:
-            _print_session_table(sessions)
+    asyncio.run(async_session_list(ctx, show_all, output))
 
 
 @cmd_session.command("info")
@@ -494,13 +301,7 @@ async def _async_session_list(ctx: click.Context, show_all: bool, output: str) -
 @click.pass_context
 def session_info(ctx: click.Context, session_id: str, output: str) -> None:
     """Show detailed information for a specific session."""
-    session = _resolve_session_or_exit(session_id, ctx)
-    if not session:
-        return
-    if output == "json":
-        click.echo(_format_json(session))
-    else:
-        _print_session_detail(session)
+    asyncio.run(session_info_impl(ctx, session_id, output))
 
 
 @cmd_session.command("logs")
@@ -509,63 +310,7 @@ def session_info(ctx: click.Context, session_id: str, output: str) -> None:
 @click.pass_context
 def session_logs(ctx: click.Context, session_id: str | None, tail: int) -> None:
     """Show session logs. Pass SESSION_ID for a specific session, or list available logs."""
-    log_dir = get_data_dir() / "logs"
-    if not log_dir.exists():
-        click.echo("No log files found.")
-        return
-
-    if session_id is None:
-        log_files = sorted(log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not log_files:
-            click.echo("No log files found.")
-            return
-
-        if not is_interactive(ctx):
-            # Non-interactive: list and exit (preserve existing behavior)
-            click.echo("Available session logs:")
-            for lf in log_files:
-                click.echo(f"  {lf.stem}")
-            return
-
-        # Build picker: daemon.log first, then by mtime
-        ordered_paths: list[pathlib.Path] = []
-        daemon_log = log_dir / "daemon.log"
-        if daemon_log.exists():
-            ordered_paths.append(daemon_log)
-            log_files = [f for f in log_files if f.name != "daemon.log"]
-        ordered_paths.extend(log_files)
-
-        if len(ordered_paths) == 1:
-            log_file = ordered_paths[0]
-            click.echo(f"Auto-selecting {log_file.name}")
-        else:
-            options = [format_log_option(p) for p in ordered_paths]
-            result = interactive_select(options, "Select log file:", ctx)
-            if result is None:
-                click.echo("No log selected.")
-                return
-            log_file = ordered_paths[result[1]]
-        lines = log_file.read_text().splitlines()
-        for line in lines[-tail:]:
-            click.echo(line)
-        return
-
-    # Resolve partial ID or channel name to full session_id
-    resolved_id = session_id
-    if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", session_id):
-        session_record = _resolve_session_or_exit(session_id, ctx)
-        if session_record is None:
-            return
-        resolved_id = session_record["session_id"]
-
-    log_file = log_dir / f"{resolved_id}.log"
-    if not log_file.exists():
-        click.echo(f"No log file found for session: {resolved_id[:8]}")
-        return
-
-    lines = log_file.read_text().splitlines()
-    for line in lines[-tail:]:
-        click.echo(line)
+    asyncio.run(session_logs_impl(ctx, session_id, tail))
 
 
 @cmd_session.command("cleanup")
@@ -578,89 +323,7 @@ def session_logs(ctx: click.Context, session_id: str | None, tail: int) -> None:
 @click.pass_context
 def session_cleanup(ctx: click.Context, archive: bool) -> None:
     """Mark sessions with dead processes as errored."""
-    asyncio.run(_async_session_cleanup(ctx, archive=archive))
-
-
-async def _async_session_cleanup(ctx: click.Context, *, archive: bool = False) -> None:
-    async with SessionRegistry() as registry:
-        stale = await registry.list_stale()
-        pid_stale_ids = {s["session_id"] for s in stale}
-
-        # Cross-reference with daemon: sessions in SQLite as "active" but
-        # not tracked by the running daemon are also stale.
-        if is_daemon_running():
-            try:
-                daemon_sessions = await daemon_client.list_sessions()
-                daemon_sids = {s["session_id"] for s in daemon_sessions}
-                active = await registry.list_active()
-                for session in active:
-                    sid = session["session_id"]
-                    if sid not in daemon_sids and sid not in pid_stale_ids:
-                        stale.append(session)
-            except Exception as e:
-                logger.debug("Could not cross-reference daemon sessions: %s", e)
-
-        # Interactive: let user select which sessions to clean
-        if stale and is_interactive(ctx) and not archive:
-            options = []
-            for session in stale:
-                if session["session_id"] in pid_stale_ids:
-                    reason = f"pid {session.get('pid', '?')} dead"
-                else:
-                    reason = "orphaned"
-                options.append(format_session_option(session, annotation=reason))
-
-            try:
-                selected = interactive_multi_select(
-                    options,
-                    "Select sessions to clean up (space=toggle, enter=confirm):",
-                    ctx,
-                )
-            except KeyboardInterrupt:
-                click.echo("\nCleanup cancelled.")
-                return
-
-            if not selected:
-                click.echo("No sessions selected.")
-                return
-
-            selected_indices = {idx for _, idx in selected}
-            stale = [s for i, s in enumerate(stale) if i in selected_indices]
-
-        if not stale:
-            _echo("No stale sessions found.", ctx)
-            return
-
-        # Try to construct a Slack client for archiving channels (best-effort, only if --archive)
-        slack_client = None
-        if archive:
-            try:
-                config_path: str | None = ctx.obj.get("config_path") if ctx.obj else None
-                config = SummonConfig.from_file(config_path)
-                slack_client = AsyncWebClient(token=config.slack_bot_token)
-            except Exception as e:
-                logger.debug("Could not initialize Slack client for cleanup: %s", e)
-
-        for session in stale:
-            session_id = session["session_id"]
-            channel_id = session.get("slack_channel_id")
-
-            if session_id in pid_stale_ids:
-                reason = f"Owner process (pid {session['pid']}) no longer running"
-            else:
-                reason = "Not tracked by running daemon (orphaned)"
-
-            # Archive the Slack channel only if --archive flag was passed
-            if archive and slack_client and channel_id:
-                try:
-                    await slack_client.conversations_archive(channel=channel_id)
-                    logger.info("Archived channel %s for stale session %s", channel_id, session_id)
-                except Exception as e:
-                    logger.debug("Could not archive channel %s: %s", channel_id, e)
-
-            await registry.mark_stale(session_id, reason)
-
-        click.echo(f"Cleaned up {len(stale)} stale session(s).")
+    asyncio.run(async_session_cleanup(ctx, archive=archive))
 
 
 # ---------------------------------------------------------------------------
@@ -774,35 +437,7 @@ def cmd_db() -> None:
 @click.pass_context
 def db_status(ctx: click.Context) -> None:
     """Show schema version, integrity, and row counts."""
-    asyncio.run(_async_db_status(ctx))
-
-
-async def _async_db_status(ctx: click.Context) -> None:
-    previous: int | None = None
-    version = 0
-    integrity = "unknown"
-    sessions_count = 0
-    audit_count = 0
-    async with SessionRegistry() as reg:
-        previous = reg.migrated_from
-        db = reg.db
-        version = await _get_schema_version(db)
-        async with db.execute("PRAGMA integrity_check") as cursor:
-            row = await cursor.fetchone()
-            integrity = row[0] if row else "unknown"
-        async with db.execute("SELECT COUNT(*) FROM sessions") as cur:
-            row = await cur.fetchone()
-            sessions_count = row[0] if row else 0
-        async with db.execute("SELECT COUNT(*) FROM audit_log") as cur:
-            row = await cur.fetchone()
-            audit_count = row[0] if row else 0
-
-    if previous is not None and previous < CURRENT_SCHEMA_VERSION:
-        _echo(f"Migrated schema from version {previous} → {version}", ctx)
-    else:
-        _echo(f"Schema version: {version} (current)", ctx)
-    _echo(f"Integrity: {integrity}", ctx)
-    _echo(f"Sessions: {sessions_count}, Audit log: {audit_count}", ctx)
+    asyncio.run(async_db_status(ctx))
 
 
 @cmd_db.command("reset")
@@ -823,14 +458,7 @@ def db_reset(ctx: click.Context, yes: bool) -> None:
     for suffix in ("", "-wal", "-shm"):
         (db_path.parent / (db_path.name + suffix)).unlink(missing_ok=True)
 
-    asyncio.run(_async_db_reset(db_path, ctx))
-
-
-async def _async_db_reset(db_path: pathlib.Path, ctx: click.Context) -> None:
-    async with SessionRegistry(db_path=db_path):
-        pass
-    _echo(f"Database recreated at {db_path}", ctx)
-    _echo(f"Schema version: {CURRENT_SCHEMA_VERSION}", ctx)
+    asyncio.run(async_db_reset(db_path, ctx))
 
 
 @cmd_db.command("vacuum")
@@ -844,21 +472,10 @@ def db_vacuum(ctx: click.Context) -> None:
         return
 
     size_before = db_path.stat().st_size
-    asyncio.run(_async_db_vacuum(db_path, ctx))
+    asyncio.run(async_db_vacuum(db_path, ctx))
     size_after = db_path.stat().st_size
 
-    _echo(f"Size: {size_before:,} → {size_after:,} bytes", ctx)
-
-
-async def _async_db_vacuum(db_path: pathlib.Path, ctx: click.Context) -> None:
-    integrity = "unknown"
-    async with SessionRegistry(db_path=db_path) as reg:
-        db = reg.db
-        async with db.execute("PRAGMA integrity_check") as cursor:
-            result = await cursor.fetchone()
-            integrity = result[0] if result else "unknown"
-        await db.execute("VACUUM")
-    _echo(f"Integrity: {integrity}", ctx)
+    echo(f"Size: {size_before:,} → {size_after:,} bytes", ctx)
 
 
 @cmd_db.command("purge")
@@ -876,128 +493,7 @@ def db_purge(ctx: click.Context, older_than: int, yes: bool) -> None:
     if not yes:
         msg = f"Purge all completed/errored records older than {older_than} days?"
         click.confirm(msg, abort=True)
-    asyncio.run(_async_db_purge(older_than, ctx))
-
-
-async def _async_db_purge(older_than: int, ctx: click.Context) -> None:
-    cutoff = (datetime.now(UTC) - timedelta(days=older_than)).isoformat()
-
-    sessions_deleted = 0
-    audit_deleted = 0
-    tokens_deleted = 0
-    async with SessionRegistry() as reg:
-        db = reg.db
-        await db.execute("BEGIN")
-        try:
-            async with db.execute(
-                "DELETE FROM sessions WHERE started_at < ? AND status IN ('completed', 'errored')",
-                (cutoff,),
-            ) as cur:
-                sessions_deleted = cur.rowcount
-            async with db.execute(
-                "DELETE FROM audit_log WHERE timestamp < ?",
-                (cutoff,),
-            ) as cur:
-                audit_deleted = cur.rowcount
-            async with db.execute(
-                "DELETE FROM pending_auth_tokens WHERE expires_at < ?",
-                (cutoff,),
-            ) as cur:
-                tokens_deleted = cur.rowcount
-            await db.execute("COMMIT")
-        except Exception:
-            await db.execute("ROLLBACK")
-            raise
-
-    _echo(f"Purged records older than {older_than} days (before {cutoff[:10]}):", ctx)
-    _echo(f"  Sessions:    {sessions_deleted}", ctx)
-    _echo(f"  Audit log:   {audit_deleted}", ctx)
-    _echo(f"  Auth tokens: {tokens_deleted}", ctx)
-
-
-# ---------------------------------------------------------------------------
-# Formatting helpers
-# ---------------------------------------------------------------------------
-
-
-def _print_session_table(sessions: list[dict]) -> None:
-    """Print a compact table of sessions."""
-    if not sessions:
-        return
-
-    headers = ["ID", "STATUS", "NAME", "CHANNEL", "CWD"]
-    rows: list[list[str]] = []
-    for s in sessions:
-        session_id = s.get("session_id", "")
-        # Show first 8 chars of UUID — enough to be unique and passable to `stop`
-        short_id = session_id[:8] if session_id else "-"
-        rows.append(
-            [
-                short_id,
-                s.get("status", "?"),
-                s.get("session_name") or "-",
-                s.get("slack_channel_name") or "-",
-                s.get("cwd", ""),
-            ]
-        )
-
-    # Fixed-width for all columns except CWD (last), which wraps freely
-    fixed = headers[:-1]
-    col_widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(fixed)]
-    prefix_fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
-    click.echo(f"{prefix_fmt.format(*fixed)}  {headers[-1]}")
-    click.echo("  ".join("-" * w for w in col_widths) + "  " + "-" * len(headers[-1]))
-    for row in rows:
-        click.echo(f"{prefix_fmt.format(*row[:-1])}  {row[-1]}")
-
-
-def _print_session_detail(session: dict) -> None:
-    """Print detailed info for a single session."""
-    fields = [
-        ("Session ID", session.get("session_id", "")),
-        ("Status", session.get("status", "")),
-        ("Name", session.get("session_name") or "-"),
-        ("PID", str(session.get("pid", ""))),
-        ("CWD", session.get("cwd", "")),
-        ("Model", session.get("model") or "-"),
-        ("Channel ID", session.get("slack_channel_id") or "-"),
-        ("Channel", session.get("slack_channel_name") or "-"),
-        ("Claude Session", session.get("claude_session_id") or "-"),
-        ("Started", _format_ts(session.get("started_at"))),
-        ("Authenticated", _format_ts(session.get("authenticated_at"))),
-        ("Last Activity", _format_ts(session.get("last_activity_at"))),
-        ("Ended", _format_ts(session.get("ended_at"))),
-        ("Turns", str(session.get("total_turns", 0))),
-        ("Total Cost", f"${session.get('total_cost_usd', 0.0) or 0.0:.4f}"),
-    ]
-    if session.get("error_message"):
-        fields.append(("Error", session["error_message"]))
-
-    max_key = max(len(k) for k, _ in fields)
-    for key, val in fields:
-        click.echo(f"  {key.ljust(max_key)} : {val}")
-
-
-def _format_ts(ts: str | None) -> str:
-    if not ts:
-        return "-"
-    try:
-        dt = datetime.fromisoformat(ts)
-        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return ts
-
-
-def _format_uptime(seconds: float) -> str:
-    """Format a duration in seconds as a human-readable uptime string."""
-    seconds = int(seconds)
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m}m"
-    if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
+    asyncio.run(async_db_purge(older_than, ctx))
 
 
 def main() -> None:

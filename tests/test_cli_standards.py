@@ -85,7 +85,8 @@ class TestQuietFlag:
     def test_quiet_flag_suppresses_status_messages(self):
         """Test that --quiet suppresses non-essential output."""
         runner = CliRunner()
-        with patch("summon_claude.cli.SessionRegistry", return_value=_mock_registry(active=[])):
+        mock_ctx = _mock_registry(active=[])
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             result = runner.invoke(cli, ["--quiet", "session", "list"])
             assert result.exit_code == 0
             # With quiet flag and no sessions, output should be empty
@@ -101,7 +102,8 @@ class TestQuietFlag:
     def test_quiet_errors_still_shown(self):
         """Test that error messages are shown even with --quiet."""
         runner = CliRunner()
-        with patch("summon_claude.cli.SessionRegistry", return_value=_mock_registry(session=None)):
+        mock_ctx = _mock_registry(session=None)
+        with patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx):
             result = runner.invoke(cli, ["--quiet", "session", "info", "nonexistent"])
             # Errors should still be visible
             assert "not found" in result.output.lower() or result.exit_code != 0
@@ -144,7 +146,7 @@ class TestOutputFlag:
         runner = CliRunner()
         sessions = [_ACTIVE_SESSION]
         mock_ctx = _mock_registry(active=sessions)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             result = runner.invoke(cli, ["session", "list", "-o", "json"])
             assert result.exit_code == 0
             data = json.loads(result.output)
@@ -156,7 +158,7 @@ class TestOutputFlag:
         """Test that -o json session info outputs valid JSON object."""
         runner = CliRunner()
         mock_ctx = _mock_registry(session=_ACTIVE_SESSION)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.helpers.SessionRegistry", return_value=mock_ctx):
             result = runner.invoke(cli, ["session", "info", "test-id", "-o", "json"])
             assert result.exit_code == 0
             data = json.loads(result.output)
@@ -168,7 +170,7 @@ class TestOutputFlag:
         runner = CliRunner()
         sessions = [_ACTIVE_SESSION]
         mock_ctx = _mock_registry(active=sessions)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             result = runner.invoke(cli, ["session", "list"])
             assert result.exit_code == 0
             # Table format should have headers and dashes
@@ -333,7 +335,7 @@ class TestCLIStandardsIntegration:
         runner = CliRunner()
         sessions = [_ACTIVE_SESSION]
         mock_ctx = _mock_registry(active=sessions)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             result = runner.invoke(cli, ["--quiet", "session", "list", "-o", "json"])
             assert result.exit_code == 0
             data = json.loads(result.output)
@@ -358,6 +360,6 @@ class TestCLIStandardsIntegration:
         runner = CliRunner()
         sessions = [_ACTIVE_SESSION]
         mock_ctx = _mock_registry(active=sessions)
-        with patch("summon_claude.cli.SessionRegistry", return_value=mock_ctx):
+        with patch("summon_claude.cli.session.SessionRegistry", return_value=mock_ctx):
             result = runner.invoke(cli, ["--no-color", "session", "list"])
             assert result.exit_code == 0
