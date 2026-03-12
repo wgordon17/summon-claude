@@ -154,9 +154,27 @@ async def generate_spawn_token(
 
 
 async def verify_spawn_token(registry: SessionRegistry, token: str) -> SpawnAuth | None:
-    """Verify and consume a spawn token. Returns SpawnAuth or None if invalid/expired."""
+    """Verify and consume a spawn token. Returns SpawnAuth or None if invalid/expired.
+
+    Uses constant-time comparison across all spawn tokens to prevent
+    timing side-channel attacks, mirroring the verify_short_code pattern.
+    """
     now = datetime.now(UTC)
-    row = await registry.consume_spawn_token(token, now.isoformat())
+    all_tokens = await registry.get_all_spawn_tokens()
+
+    # Iterate ALL entries unconditionally for constant-time behavior
+    match = None
+    for entry in all_tokens:
+        tokens_equal = hmac.compare_digest(entry["token"].encode(), token.encode())
+        if tokens_equal and datetime.fromisoformat(entry["expires_at"]) > now:
+            match = entry
+        # Do NOT break — always iterate all entries
+
+    if match is None:
+        return None
+
+    # Atomically consume using the stored token value (not user input)
+    row = await registry.consume_spawn_token(match["token"], now.isoformat())
     if row is None:
         return None
     return SpawnAuth(

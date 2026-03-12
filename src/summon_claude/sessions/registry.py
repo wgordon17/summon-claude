@@ -541,6 +541,13 @@ class SessionRegistry:
             )
             await db.commit()
 
+    async def get_all_spawn_tokens(self) -> list[dict]:
+        """Retrieve all spawn tokens for constant-time comparison."""
+        db = self._check_connected()
+        async with db.execute("SELECT * FROM spawn_tokens") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def consume_spawn_token(self, token: str, now_iso: str) -> dict | None:
         """Atomically delete and return a non-expired spawn token."""
         db = self._check_connected()
