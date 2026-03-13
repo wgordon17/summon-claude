@@ -133,7 +133,7 @@ class _TurnState:
     """Mutable per-turn routing state, reset on each ``stream_with_flush`` call."""
 
     has_seen_tool_use: bool = False
-    text_after_tools: str = ""
+    last_intermediate_text: str = ""
     posted_conclusion: bool = False
     posted_text_to_main: bool = False
     main_ts: str | None = None
@@ -317,11 +317,13 @@ class ResponseStreamer:
             await self._flush_buffer()
             await self._post_to_subagent(parent_id, block.text)
         elif self._turn.has_seen_tool_use:
-            # Flush any pending pre-tool text before switching to conclusion mode
+            # Flush any pending pre-tool text before switching
             await self._flush_buffer()
-            # Accumulate conclusion text for main channel only — do NOT add to buffer
-            # This prevents duplication: text_after_tools goes to main via _flush_conclusion_to_main
-            self._turn.text_after_tools += block.text
+            # Eager: post immediately to turn thread for real-time visibility
+            await self._router.post_to_active_thread(block.text)
+            # Track for conclusion: final segment goes to main with @mention
+            self._turn.last_intermediate_text += block.text
+            await self._set_status("Thinking...")
         else:
             self._turn.posting_to_thread = False
             await self._append_text(block.text)
@@ -346,12 +348,13 @@ class ResponseStreamer:
     ) -> None:
         """Route a ToolResultBlock to the correct thread."""
         await self._post_tool_result(block, parent_id)
+        await self._set_status("Thinking...")
 
     async def _flush_conclusion_to_main(self) -> None:
-        """Flush post-tool text to the main channel as the conclusion."""
-        if self._turn.text_after_tools.strip():
-            text = self._turn.text_after_tools
-            self._turn.text_after_tools = ""
+        """Flush accumulated intermediate text to the main channel as conclusion."""
+        if self._turn.last_intermediate_text.strip():
+            text = self._turn.last_intermediate_text
+            self._turn.last_intermediate_text = ""
             self._turn.posted_conclusion = True
             # Post conclusion text to main channel
             chunks = split_text(text, _MAX_MESSAGE_CHARS)
