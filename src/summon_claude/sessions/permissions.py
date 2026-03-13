@@ -268,14 +268,8 @@ class PermissionHandler:
         ]
 
         try:
-            await self._router.client.post_ephemeral(
-                self._authenticated_user_id,
-                f"Permission required: {header_text[:100]}",
-                blocks=blocks,
-            )
-            # Ping user in main channel so they get a Slack notification
-            # (ephemeral messages don't trigger notifications, and thread
-            # mentions auto-subscribe the user to the thread)
+            # Ping user in main channel FIRST so the notification arrives
+            # before they open the app (ephemeral messages don't trigger notifications)
             if self._authenticated_user_id:
                 try:
                     await self._router.post_to_main(
@@ -283,6 +277,11 @@ class PermissionHandler:
                     )
                 except Exception as e:
                     logger.warning("Failed to post permission ping to main channel: %s", e)
+            await self._router.client.post_ephemeral(
+                self._authenticated_user_id,
+                f"Permission required: {header_text[:100]}",
+                blocks=blocks,
+            )
         except Exception as e:
             logger.error("Failed to post permission message: %s", e)
             # Auto-deny if we can't post
@@ -367,6 +366,14 @@ class PermissionHandler:
 
         blocks = _build_ask_user_blocks(request_id, questions)
         try:
+            # Ping user in main channel FIRST so the notification arrives
+            if self._authenticated_user_id:
+                try:
+                    await self._router.post_to_main(
+                        f"<@{self._authenticated_user_id}> Question from Claude",
+                    )
+                except Exception as e:
+                    logger.warning("Failed to post ask-user ping to main channel: %s", e)
             await self._router.client.post_ephemeral(
                 self._authenticated_user_id,
                 "Claude has a question for you",
