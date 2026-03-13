@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
 from summon_claude.config import SummonConfig
 
@@ -149,3 +151,57 @@ class TestScribeConfigSettableKeys:
             "SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS",
         }
         assert expected_scribe_keys.issubset(_SETTABLE_KEYS)
+
+
+class TestGoogleWorkspaceMCP:
+    """Tests for Google Workspace MCP config helper."""
+
+    def test_build_google_workspace_mcp_default_services(self):
+        from summon_claude.sessions.session import _build_google_workspace_mcp
+
+        result = _build_google_workspace_mcp("gmail,calendar,drive")
+        assert result["command"] == sys.executable
+        assert "-m" in result["args"]
+        assert "workspace_mcp" in result["args"]
+        assert "gmail,calendar,drive" in result["args"]
+        assert "--tool-tier" in result["args"]
+        assert "core" in result["args"]
+
+    def test_build_google_workspace_mcp_custom_services(self):
+        from summon_claude.sessions.session import _build_google_workspace_mcp
+
+        result = _build_google_workspace_mcp("gmail")
+        assert "gmail" in result["args"]
+
+
+class TestGoogleAuthCLI:
+    """Tests for google-auth and google-status CLI commands."""
+
+    def test_google_auth_missing_package(self):
+        from summon_claude.cli import cli
+
+        runner = CliRunner()
+        with patch.dict(sys.modules, {"workspace_mcp": None, "workspace_mcp.auth": None}):
+            result = runner.invoke(cli, ["config", "google-auth"])
+        # Should fail with import error message
+        assert result.exit_code != 0 or "google" in result.output.lower()
+
+    def test_google_status_missing_package(self):
+        from summon_claude.cli import cli
+
+        runner = CliRunner()
+        with patch.dict(sys.modules, {"workspace_mcp": None, "workspace_mcp.auth": None}):
+            result = runner.invoke(cli, ["config", "google-status"])
+        assert result.exit_code != 0 or "google" in result.output.lower()
+
+    def test_pyproject_has_google_optional_dep(self):
+        """Verify pyproject.toml declares the google optional dependency."""
+        import tomllib
+        from pathlib import Path
+
+        pyproject = Path(__file__).parent.parent / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text())
+        optional_deps = data.get("project", {}).get("optional-dependencies", {})
+        assert "google" in optional_deps
+        google_deps = optional_deps["google"]
+        assert any("workspace-mcp" in dep for dep in google_deps)

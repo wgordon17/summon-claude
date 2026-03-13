@@ -135,6 +135,48 @@ def config_set(key: str, value: str, override: str | None = None) -> None:
     click.echo(f"Set {key} in {config_file}")
 
 
+def google_auth(services: str = "gmail,calendar,drive") -> None:
+    """Run Google Workspace OAuth authentication flow."""
+    try:
+        from workspace_mcp.auth import run_oauth_flow  # noqa: PLC0415
+    except ImportError:
+        # Fallback: try running as subprocess
+        try:
+            subprocess.run(  # noqa: S603
+                [sys.executable, "-m", "workspace_mcp", "--auth"],
+                check=True,
+            )
+            click.echo("Google Workspace authenticated successfully.")
+            return
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            click.echo(
+                "Google Workspace support requires the 'google' extra: "
+                "pip install summon-claude[google]",
+                err=True,
+            )
+            sys.exit(1)
+
+    run_oauth_flow(services=services.split(","))
+    click.echo("Google Workspace authenticated successfully.")
+
+
+def google_status() -> None:
+    """Check Google Workspace authentication status."""
+    try:
+        from workspace_mcp.auth import check_token_status  # noqa: PLC0415
+    except ImportError:
+        click.echo(
+            "Google Workspace support requires the 'google' extra: "
+            "pip install summon-claude[google]",
+            err=True,
+        )
+        sys.exit(1)
+
+    status = check_token_status()
+    valid = getattr(status, "valid", False)
+    click.echo(f"Google auth: {'valid' if valid else 'expired/missing'}")
+
+
 _REQUIRED_KEYS = (
     "SUMMON_SLACK_BOT_TOKEN",
     "SUMMON_SLACK_APP_TOKEN",
