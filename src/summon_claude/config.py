@@ -241,6 +241,46 @@ class SummonConfig(BaseSettings):
     # Content display
     max_inline_chars: int = 2500
 
+    # ------------------------------------------------------------------
+    # Scribe agent settings
+    # ------------------------------------------------------------------
+
+    # Core scribe settings
+    scribe_enabled: bool = False
+    scribe_scan_interval_minutes: int = 5
+    scribe_cwd: str | None = None  # None -> get_data_dir() / "scribe"
+    scribe_model: str | None = None  # None -> inherit default_model
+    scribe_importance_keywords: str = ""  # comma-separated: "urgent,action required,deadline"
+    scribe_quiet_hours: str = ""  # "22:00-07:00" — only level-5 alerts during this window
+
+    # Google Workspace data collector
+    scribe_google_enabled: bool = True
+    scribe_google_services: str = "gmail,calendar,drive"  # comma-separated service list
+
+    # External Slack data collector
+    scribe_slack_enabled: bool = False
+    scribe_slack_browser: str = "chrome"  # "chrome", "firefox", or "webkit"
+    scribe_slack_monitored_channels: str = ""  # comma-separated channel names
+
+    @field_validator("scribe_slack_browser")
+    @classmethod
+    def validate_scribe_slack_browser(cls, v: str) -> str:
+        """Validate that browser choice is one of the supported Playwright browsers."""
+        valid = ("chrome", "firefox", "webkit")
+        if v not in valid:
+            raise ValueError(f"SUMMON_SCRIBE_SLACK_BROWSER must be one of {valid!r}, got {v!r}")
+        return v
+
+    @field_validator("scribe_quiet_hours")
+    @classmethod
+    def validate_scribe_quiet_hours(cls, v: str) -> str:
+        """Validate quiet hours format: HH:MM-HH:MM or empty."""
+        if not v:
+            return v
+        if not re.match(r"^\d{2}:\d{2}-\d{2}:\d{2}$", v):
+            raise ValueError(f"SUMMON_SCRIBE_QUIET_HOURS must be in HH:MM-HH:MM format, got {v!r}")
+        return v
+
     @field_validator("slack_bot_token")
     @classmethod
     def validate_bot_token_prefix(cls, v: str) -> str:
@@ -276,6 +316,15 @@ class SummonConfig(BaseSettings):
 
         if not self.slack_signing_secret:
             errors.append("SUMMON_SLACK_SIGNING_SECRET is required")
+
+        # Scribe warnings (non-fatal)
+        warnings: list[str] = []
+        if self.scribe_enabled and not self.scribe_google_enabled and not self.scribe_slack_enabled:
+            warnings.append("Scribe enabled but no data collectors configured")
+
+        if warnings:
+            for w in warnings:
+                logger.warning("Config: %s", w)
 
         if errors:
             raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
