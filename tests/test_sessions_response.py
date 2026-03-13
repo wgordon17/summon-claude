@@ -710,3 +710,148 @@ class TestSplitTextAdditional:
         for chunk in chunks:
             fence_count = chunk.count("```")
             assert fence_count % 2 == 0
+
+
+class TestTurnHeaderSnippet:
+    """Tests for turn header with user snippet."""
+
+    async def test_start_turn_with_snippet(self):
+        streamer, router, provider = make_streamer()
+        ts = await streamer.start_turn(1, user_snippet="fix the auth bug")
+        assert ts
+        # Verify snippet is in the posted message
+        post_text = provider.post.call_args.args[0]
+        assert "fix the auth bug" in post_text
+        assert "Turn 1" in post_text
+
+    async def test_start_turn_strips_mrkdwn_chars(self):
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="**bold** _italic_ `code`")
+        post_text = provider.post.call_args.args[0]
+        # mrkdwn special chars should be stripped
+        assert "**" not in post_text
+        assert "`" not in post_text
+
+    async def test_start_turn_without_snippet(self):
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1)
+        post_text = provider.post.call_args.args[0]
+        assert "Processing..." in post_text
+
+    async def test_update_turn_summary_preserves_snippet(self):
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="fix bug")
+        provider.update.reset_mock()
+        await streamer.update_turn_summary("3 tools, 45%")
+        update_text = provider.update.call_args.args[1]
+        assert "fix bug" in update_text
+        assert "3 tools, 45%" in update_text
+
+
+class TestSetStatus:
+    """Tests for setStatus integration."""
+
+    async def test_set_status_at_turn_start(self):
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="test")
+        provider.set_thread_status.assert_called()
+        # Should have set "Thinking..." status
+        call_args = provider.set_thread_status.call_args
+        assert call_args.args[1] == "Thinking..."
+
+    async def test_set_status_before_tool_use(self):
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1)
+        provider.set_thread_status.reset_mock()
+        tool_block = make_tool_use_block("Read", {"file_path": "/test.py"})
+        msg = make_assistant_message([tool_block])
+        await streamer._handle_assistant_message(msg)
+        # Should have called setStatus with "Running Read..."
+        calls = [c.args[1] for c in provider.set_thread_status.call_args_list]
+        assert "Running Read..." in calls
+
+    async def test_set_status_cleared_at_turn_end(self):
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="test")
+        provider.set_thread_status.reset_mock()
+        messages = [
+            make_assistant_message([make_text_block("text")]),
+            make_result_message(),
+        ]
+        # stream_with_flush resets _turn but we need turn_thread_ts preserved
+        # So set it manually after the reset
+        streamer._turn.turn_thread_ts = "fake_ts"
+        await streamer.stream_with_flush(agen(messages))
+        # The last setStatus call should clear with ""
+        calls = [c.args[1] for c in provider.set_thread_status.call_args_list]
+        assert "" in calls
+
+
+class TestEagerIntermediateText:
+    """Tests for eager intermediate text routing to thread."""
+
+    async def test_intermediate_text_goes_to_thread(self):
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="test")
+        provider.post.reset_mock()
+        tool_block = make_tool_use_block("Read", {"file_path": "/test.py"})
+        messages = [
+            make_assistant_message([tool_block, make_text_block("intermediate")]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+        # Intermediate text should be posted to thread (thread_ts is set)
+        thread_calls = [c for c in provider.post.call_args_list if c.kwargs.get("thread_ts")]
+        thread_texts = [c.args[0] for c in thread_calls if c.args]
+        assert any("intermediate" in t for t in thread_texts)
+
+
+class TestThinkingBlock:
+    """Tests for ThinkingBlock display."""
+
+    async def test_thinking_silent_when_disabled(self):
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        streamer = ResponseStreamer(router, show_thinking=False)
+        from claude_agent_sdk import ThinkingBlock
+
+        tb = ThinkingBlock(thinking="deep thoughts", signature="sig")
+        msg = AssistantMessage(content=[tb, make_text_block("result")], model="claude-opus-4-6")
+        messages = [msg, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+        # Thinking should NOT appear in posted messages
+        all_texts = [c.args[0] for c in client.post.call_args_list if c.args]
+        assert not any("deep thoughts" in t for t in all_texts)
+
+    async def test_thinking_posted_when_enabled(self):
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        streamer = ResponseStreamer(router, show_thinking=True)
+        from claude_agent_sdk import ThinkingBlock
+
+        tb = ThinkingBlock(thinking="deep thoughts", signature="sig")
+        msg = AssistantMessage(content=[tb, make_text_block("result")], model="claude-opus-4-6")
+        messages = [msg, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+        # Check blocks for thinking content
+        all_blocks = []
+        for c in client.post.call_args_list:
+            if c.kwargs.get("blocks"):
+                all_blocks.extend(c.kwargs["blocks"])
+        has_thinking = any("deep thoughts" in str(b) for b in all_blocks)
+        assert has_thinking
+
+    async def test_thinking_sets_status_deeply(self):
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        streamer = ResponseStreamer(router, show_thinking=False)
+        await streamer.start_turn(1)
+        client.set_thread_status.reset_mock()
+        from claude_agent_sdk import ThinkingBlock
+
+        tb = ThinkingBlock(thinking="thinking...", signature="sig")
+        msg = AssistantMessage(content=[tb], model="claude-opus-4-6")
+        await streamer._handle_assistant_message(msg)
+        # Should set "Thinking deeply..."
+        calls = [c.args[1] for c in client.set_thread_status.call_args_list]
+        assert "Thinking deeply..." in calls

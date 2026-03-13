@@ -265,7 +265,10 @@ class ResponseStreamer:
 
     async def stream_with_flush(self, messages: AsyncIterator) -> StreamResult | None:
         """Stream with a background flush task for periodic Slack updates."""
-        self._turn = _TurnState()
+        # Preserve fields set by start_turn() across the per-stream reset
+        saved_snippet = self._turn.user_snippet
+        saved_thread_ts = self._turn.turn_thread_ts
+        self._turn = _TurnState(user_snippet=saved_snippet, turn_thread_ts=saved_thread_ts)
         result: ResultMessage | None = None
         stop_flush = asyncio.Event()
 

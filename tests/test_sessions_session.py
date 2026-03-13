@@ -938,3 +938,56 @@ class TestProcessIncomingEvent:
         assert ts == "42"
         # find_commands should NOT have been called (fast path)
         mock_find.assert_not_called()
+
+
+class TestPendingTurn:
+    """Tests for the _PendingTurn dataclass."""
+
+    def test_pending_turn_defaults(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="hello")
+        assert pt.message == "hello"
+        assert pt.message_ts is None
+        assert pt.thread_ts is None
+        assert pt.pre_sent is True
+        assert pt.queued_at is not None
+
+    def test_pending_turn_frozen(self):
+        from dataclasses import FrozenInstanceError
+
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="hello")
+        with pytest.raises(FrozenInstanceError):
+            pt.message = "other"  # type: ignore[misc]
+
+
+class TestShutdownSentinels:
+    """Tests for shutdown sentinel propagation."""
+
+    def test_request_shutdown_uses_none_sentinel(self):
+        session = make_session()
+        session.request_shutdown()
+        item = session._raw_event_queue.get_nowait()
+        assert item is None
+
+    def test_raw_event_queue_has_backpressure(self):
+        session = make_session()
+        assert session._raw_event_queue.maxsize == 100
+
+    def test_pending_turns_queue_unbounded(self):
+        session = make_session()
+        assert session._pending_turns.maxsize == 0
+
+
+class TestThinkingTriggers:
+    """Tests for ultrathink detection."""
+
+    def test_triggers_constant_is_frozenset(self):
+        from summon_claude.sessions.session import _THINKING_TRIGGERS
+
+        assert isinstance(_THINKING_TRIGGERS, frozenset)
+        assert "ultrathink" in _THINKING_TRIGGERS
+        assert "think harder" in _THINKING_TRIGGERS
+        assert "megathink" in _THINKING_TRIGGERS
