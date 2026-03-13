@@ -97,10 +97,10 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | `summon version` | Show version and environment info (Python, platform, paths) |
 | `summon init` | Interactive setup wizard — creates config file with your tokens |
 | `summon start` | Start a new session (prints auth code, waits for `/summon` in Slack) |
-| `summon session list` | Show active sessions (use `--all` for all recent) |
-| `summon session info SESSION_ID` | Show detailed view of one session |
-| `summon session stop SESSION_ID` | Send SIGTERM to a running session |
-| `summon session logs [SESSION_ID]` | View session logs (list files, or tail a specific session) |
+| `summon session list` | Show active sessions (use `--all` for all recent, `--name` to filter) |
+| `summon session info SESSION` | Show detailed view of one session (by name or ID) |
+| `summon stop SESSION` | Stop a session (by name or ID), or `--all` to stop all |
+| `summon session logs [SESSION]` | View session logs (by name or ID, or list available) |
 | `summon session cleanup` | Mark sessions with dead processes as errored |
 | `summon config show` | Show current config file (tokens masked) |
 | `summon config set KEY VALUE` | Set a single config value |
@@ -119,10 +119,10 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | Flag | Description |
 |------|-------------|
 | `--cwd PATH` | Working directory for Claude (default: current directory) |
-| `--name NAME` | Session name used for Slack channel naming |
+| `--name NAME` | Session name (default: `<cwd>-<hex6>`, e.g. `myproject-a1b2c3`) |
 | `--model MODEL` | Override the default Claude model |
 | `--resume SESSION_ID` | Resume an existing Claude Code session by ID |
-| `-b`, `--background` | Run session in background as daemon (logs accessible via `summon session logs`) |
+| `--effort LEVEL` | Effort level: `low`, `medium`, `high`, `max` (default: `high`, or `SUMMON_DEFAULT_EFFORT`) |
 
 ### Global flags
 
@@ -144,7 +144,7 @@ Once a session is active in Slack, type `!`-prefixed commands to control the ses
 | Command | Description |
 |---------|-------------|
 | `!help` | Show all available commands |
-| `!status` | Show session status (model, turns, cost, uptime) |
+| `!status` | Show session status (model, effort, turns, cost, uptime) |
 | `!end` | End the current session |
 | `!model` | Show the active model |
 | `!model <name>` | Switch model (takes effect on next session start) |
@@ -184,6 +184,7 @@ Use `summon config path` to see which path is active. Use `summon init` to creat
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SUMMON_DEFAULT_MODEL` | (SDK default) | Default Claude model |
+| `SUMMON_DEFAULT_EFFORT` | `high` | Default effort level (`low`, `medium`, `high`, `max`) |
 | `SUMMON_CHANNEL_PREFIX` | `summon` | Prefix for created session channels |
 | `SUMMON_PERMISSION_DEBOUNCE_MS` | `500` | Debounce window for batching permission requests (ms) |
 | `SUMMON_MAX_INLINE_CHARS` | `2500` | Threshold for inline vs file upload display |
