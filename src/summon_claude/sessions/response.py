@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import difflib
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +47,9 @@ _TOOL_PATH_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 _BASH_PREVIEW_CHARS = 120
+
+# Characters that break mrkdwn formatting when embedded in italic/bold text
+_MRKDWN_SPECIAL_RE = re.compile(r"[*_~`<>]")
 
 
 def get_tool_primary_arg(tool_name: str, input_data: dict[str, Any]) -> str:
@@ -141,6 +145,8 @@ class _TurnState:
     # Turn lifecycle fields
     tool_call_count: int = 0
     files_touched: list[str] = field(default_factory=list)
+    user_snippet: str = ""
+    turn_thread_ts: str | None = None
 
 
 @dataclass
@@ -181,13 +187,24 @@ class ResponseStreamer:
 
     # --- Turn lifecycle ---
 
-    async def start_turn(self, turn_number: int) -> str:
+    async def start_turn(self, turn_number: int, user_snippet: str | None = None) -> str:
         """Create turn thread starter message, return thread_ts."""
         self._current_turn_number = turn_number
-        ref = await self._router.post_to_main(
-            f"\U0001f527 Turn {turn_number}: Processing...",
-        )
+        if user_snippet:
+            # Truncate, strip newlines, remove mrkdwn special chars
+            snippet = user_snippet.replace("\n", " ")[:60]
+            snippet = _MRKDWN_SPECIAL_RE.sub("", snippet)
+            self._turn.user_snippet = snippet
+            header = f"\U0001f527 Turn {turn_number}: re: _{snippet}_..."
+        else:
+            header = f"\U0001f527 Turn {turn_number}: Processing..."
+        ref = await self._router.post_to_main(header)
         self._router.set_active_thread(ref.ts, ref)
+        self._turn.turn_thread_ts = ref.ts
+
+        # Set initial thread status
+        await self._set_status("Thinking...")
+
         return ref.ts
 
     def finalize_turn(self, context: ContextUsage | None = None) -> str:
@@ -197,10 +214,14 @@ class ResponseStreamer:
     async def update_turn_summary(self, summary: str) -> None:
         """Update the current turn's thread starter message with a summary."""
         if self._router.active_thread_ref:
-            await self._router.update(
-                self._router.active_thread_ref.ts,
-                f"\U0001f527 Turn {self._current_turn_number}: {summary}",
-            )
+            if self._turn.user_snippet:
+                text = (
+                    f"\U0001f527 Turn {self._current_turn_number}: "
+                    f"re: _{self._turn.user_snippet}_ | {summary}"
+                )
+            else:
+                text = f"\U0001f527 Turn {self._current_turn_number}: {summary}"
+            await self._router.update(self._router.active_thread_ref.ts, text)
 
     def _generate_turn_summary(self, context: ContextUsage | None = None) -> str:
         """Build a concise summary string for the turn starter message."""
@@ -227,6 +248,11 @@ class ResponseStreamer:
                 path = tool_input[key]
                 if "/" in path and path not in self._turn.files_touched:
                     self._turn.files_touched.append(path)
+
+    async def _set_status(self, status: str) -> None:
+        """Set the thread status indicator (best-effort)."""
+        if self._turn.turn_thread_ts:
+            await self._router.client.set_thread_status(self._turn.turn_thread_ts, status)
 
     # --- Streaming ---
 
@@ -263,6 +289,8 @@ class ResponseStreamer:
         if result:
             await self._flush_conclusion_to_main()
             await self._post_result_summary(result)
+            # Clear thread status at turn end
+            await self._set_status("")
             model = self._turn.resolved_model
             context = compute_context_usage(result.usage, model)
             return StreamResult(result=result, context=context, model=model)
@@ -310,6 +338,7 @@ class ResponseStreamer:
             description = _extract_task_description(block.input or {})
             await self._router.start_subagent_thread(block.id, description)
 
+        await self._set_status(f"Running {block.name}...")
         await self._post_tool_use(block, parent_id)
 
     async def _handle_tool_result_block(

@@ -914,7 +914,7 @@ class SummonSession:
                 await rt.client.unreact(pending.message_ts, "inbox_tray")
                 await rt.client.react(pending.message_ts, "gear")
 
-            await streamer.start_turn(self._total_turns)
+            await streamer.start_turn(self._total_turns, user_snippet=pending.message)
             # If preprocessor couldn't pre-send, call query() now
             if not pending.pre_sent:
                 await claude.query(pending.message)
