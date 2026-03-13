@@ -14,7 +14,7 @@ import os
 import queue
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -281,6 +281,21 @@ class SessionOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class _PendingTurn:
+    """A preprocessed user message ready for the response consumer.
+
+    Created by the preprocessor after running ``_process_incoming_event``
+    and (optionally) calling ``query()`` on the SDK.
+    """
+
+    message: str
+    message_ts: str | None = None  # User's original Slack message ts (for reactions)
+    thread_ts: str | None = None  # Thread context
+    pre_sent: bool = True  # Whether query() was already called by preprocessor
+    queued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True, slots=True)
 class _SessionRuntime:
     registry: SessionRegistry
     client: SlackClient
@@ -296,7 +311,7 @@ class SummonSession:
     """Orchestrates a Claude Code session bridged to a Slack channel.
 
     In the daemon architecture this class runs as an asyncio task inside the
-    daemon process.  Slack events arrive via ``_message_queue`` (populated by
+    daemon process.  Slack events arrive via ``_raw_event_queue`` (populated by
     ``EventDispatcher``) rather than being received directly by a per-session
     ``AsyncSocketModeHandler``.
 
@@ -338,11 +353,12 @@ class SummonSession:
         # Pre-cached bot user ID from BoltRouter.start() — avoids a per-session auth_test() call
         self._bot_user_id = bot_user_id
 
-        # Message queue: Slack user messages -> Claude (populated by EventDispatcher)
+        # Raw event queue: Slack events from EventDispatcher -> preprocessor
         # maxsize=100 provides backpressure — EventDispatcher drops events when full
-        self._message_queue: asyncio.Queue[dict | tuple[str, str | None]] = asyncio.Queue(
-            maxsize=100
-        )
+        self._raw_event_queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=100)
+
+        # Pending turns: preprocessed messages ready for response consumer
+        self._pending_turns: asyncio.Queue[_PendingTurn | None] = asyncio.Queue()
 
         # Shutdown signal
         self._shutdown_event = asyncio.Event()
@@ -390,9 +406,9 @@ class SummonSession:
         if not self._shutdown_event.is_set():
             logger.info("Session %s: shutdown requested", self._session_id)
             self._shutdown_event.set()
-            # Unblock the message queue poll
+            # Unblock the raw event queue poll
             try:
-                self._message_queue.put_nowait(("", None))
+                self._raw_event_queue.put_nowait(None)
             except asyncio.QueueFull:
                 logger.debug("Shutdown sentinel dropped (queue full); shutdown_event is set")
 
@@ -418,7 +434,7 @@ class SummonSession:
         In the daemon architecture:
         - No Bolt app or socket handler is created here.
         - Authentication is signalled externally via ``authenticate()``.
-        - Events arrive via ``_message_queue`` populated by ``EventDispatcher``.
+        - Events arrive via ``_raw_event_queue`` populated by ``EventDispatcher``.
         """
         # Set contextvar so all log records in this task carry session_id
         _session_id_var.set(self._session_id)
@@ -637,7 +653,7 @@ class SummonSession:
             handle = SessionHandle(
                 session_id=self._session_id,
                 channel_id=channel_id,
-                message_queue=self._message_queue,
+                message_queue=self._raw_event_queue,
                 permission_handler=permission_handler,
                 abort_callback=self._abort_current_turn,
                 authenticated_user_id=self._authenticated_user_id or "",
@@ -648,7 +664,7 @@ class SummonSession:
 
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(rt))
         try:
-            await self._run_message_loop(rt, router)
+            await self._run_session_tasks(rt, router)
         finally:
             heartbeat_task.cancel()
             try:
@@ -699,10 +715,10 @@ class SummonSession:
             f"Could not create channel after {self._CHANNEL_CREATE_RETRIES} attempts"
         ) from last_err
 
-    async def _run_message_loop(  # noqa: PLR0912, PLR0915
+    async def _run_session_tasks(  # noqa: PLR0912
         self, rt: _SessionRuntime, router: ThreadRouter
     ) -> None:
-        """Listen for Slack messages and forward them to Claude."""
+        """Create SDK client, then run preprocessor + response consumer concurrently."""
         slack_mcp = create_summon_mcp_server(
             rt.client,
             allowed_channels=lambda: {rt.client.channel_id},
@@ -754,32 +770,14 @@ class SummonSession:
                 except Exception as e:
                     logger.debug("Could not discover plugin skills: %s", e)
 
-                while not self._shutdown_event.is_set():
-                    try:
-                        item = await asyncio.wait_for(
-                            self._message_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
-                        )
-                    except TimeoutError:
-                        continue
-
-                    # Items are either raw Slack event dicts (from EventDispatcher)
-                    # or internal tuples (sentinel / slash passthrough from _dispatch_command)
-                    if isinstance(item, dict):
-                        # Raw Slack event — run full preprocessing pipeline
-                        result = await self._process_incoming_event(item, rt)
-                        if result is None:
-                            # Filtered out (subtype, empty, permission input handled, etc.)
-                            continue
-                        user_message, _ = result
-                    else:
-                        # Internal tuple: (text, thread_ts) from _dispatch_command passthrough
-                        # or ("", None) shutdown sentinel
-                        user_message, _ = item
-
-                    if not user_message:
-                        continue
-
-                    await self._handle_user_message(rt, claude, streamer, user_message)
+                try:
+                    async with asyncio.TaskGroup() as tg:
+                        tg.create_task(self._run_preprocessor(rt, claude))
+                        tg.create_task(self._run_response_consumer(rt, claude, streamer))
+                except ExceptionGroup as eg:
+                    for exc in eg.exceptions:
+                        logger.error("Session task failed: %s", exc, exc_info=exc)
+                    raise eg.exceptions[0] from eg
             finally:
                 # Post session summary while the client is still open
                 if self._total_turns > 0:
@@ -793,15 +791,86 @@ class SummonSession:
                         logger.warning("Session summary failed: %s", e)
                 self._claude = None
 
+    async def _run_preprocessor(self, rt: _SessionRuntime, claude: ClaudeSDKClient) -> None:
+        """Dequeue raw Slack events, preprocess, call query(), enqueue _PendingTurn.
+
+        Runs concurrently with ``_run_response_consumer``. Calling ``query()``
+        immediately on receipt eliminates inter-turn latency — the SDK queues
+        messages internally while the previous ``receive_response()`` is still
+        streaming.
+        """
+        while not self._shutdown_event.is_set():
+            try:
+                item = await asyncio.wait_for(
+                    self._raw_event_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
+                )
+            except TimeoutError:
+                continue
+
+            # None sentinel = shutdown
+            if item is None:
+                await self._pending_turns.put(None)
+                return
+
+            # Raw Slack event dict — run full preprocessing pipeline
+            result = await self._process_incoming_event(item, rt, claude=claude)
+            if result is None:
+                # Filtered out (subtype, empty, permission input handled, etc.)
+                continue
+            user_message, thread_ts = result
+
+            if not user_message:
+                continue
+
+            # Pre-send: call query() immediately so SDK queues it
+            message_ts = item.get("ts")
+            pre_sent = False
+            try:
+                await claude.query(user_message)
+                pre_sent = True
+            except Exception as e:
+                logger.warning("Pre-send query() failed: %s — consumer will retry", e)
+
+            pending = _PendingTurn(
+                message=user_message,
+                message_ts=message_ts,
+                thread_ts=thread_ts,
+                pre_sent=pre_sent,
+            )
+            await self._pending_turns.put(pending)
+
+        # Shutdown event was set externally — propagate sentinel
+        await self._pending_turns.put(None)
+
+    async def _run_response_consumer(
+        self,
+        rt: _SessionRuntime,
+        claude: ClaudeSDKClient,
+        streamer: ResponseStreamer,
+    ) -> None:
+        """Dequeue _PendingTurn and stream responses from Claude.
+
+        Only calls ``receive_response()`` — the preprocessor already called
+        ``query()`` (unless ``pre_sent=False``, in which case we call it here).
+        """
+        while True:
+            pending = await self._pending_turns.get()
+            if pending is None:
+                return
+
+            await self._handle_user_message(rt, claude, streamer, pending)
+
     async def _handle_user_message(  # noqa: PLR0915
         self,
         rt: _SessionRuntime,
         claude: ClaudeSDKClient,
         streamer: ResponseStreamer,
-        message: str,
+        pending: _PendingTurn,
     ) -> None:
-        """Forward a single user message to Claude and stream the response."""
-        logger.info("Forwarding message to Claude (%d chars)", len(message))
+        """Consume a preprocessed turn: stream the response from Claude."""
+        logger.info(
+            "Processing turn (%d chars, pre_sent=%s)", len(pending.message), pending.pre_sent
+        )
 
         # Reset abort event for this turn
         self._abort_event.clear()
@@ -809,7 +878,9 @@ class SummonSession:
         async def _do_turn() -> None:
             self._total_turns += 1
             await streamer.start_turn(self._total_turns)
-            await claude.query(message)
+            # If preprocessor couldn't pre-send, call query() now
+            if not pending.pre_sent:
+                await claude.query(pending.message)
             stream_result = await streamer.stream_with_flush(claude.receive_response())
             if stream_result:
                 if stream_result.model:
@@ -1075,6 +1146,7 @@ class SummonSession:
         args: list[str],
         user_id: str,
         thread_ts: str | None,
+        claude: ClaudeSDKClient | None = None,
     ) -> None:
         """Dispatch a !-prefixed command and post the result as a threaded reply."""
         ctx = CommandContext(
@@ -1108,7 +1180,7 @@ class SummonSession:
                     logger.warning("Failed to post shutdown message: %s", e)
             self._shutdown_event.set()
             try:
-                self._message_queue.put_nowait(("", None))
+                self._raw_event_queue.put_nowait(None)
             except asyncio.QueueFull:
                 logger.debug("Shutdown sentinel dropped (queue full); shutdown_event is set")
             return
@@ -1159,7 +1231,15 @@ class SummonSession:
                 )
             except Exception as e:
                 logger.warning("Failed to post passthrough ack: %s", e)
-            await self._message_queue.put((slash_message, None))
+            # Pre-send: call query() and enqueue as _PendingTurn
+            pre_sent = False
+            if claude:
+                try:
+                    await claude.query(slash_message)
+                    pre_sent = True
+                except Exception as e:
+                    logger.warning("Pre-send query() for passthrough failed: %s", e)
+            await self._pending_turns.put(_PendingTurn(message=slash_message, pre_sent=pre_sent))
             return
 
         # Post the response text in thread (with splitting for long responses)
@@ -1239,6 +1319,7 @@ class SummonSession:
         self,
         event: dict,  # type: ignore[type-arg]
         rt: _SessionRuntime,
+        claude: ClaudeSDKClient | None = None,
     ) -> tuple[str, str | None] | None:
         """Process a raw Slack message event from the EventDispatcher queue.
 
@@ -1330,7 +1411,9 @@ class SummonSession:
                 return None
 
             # LOCAL or PASSTHROUGH — route through existing _dispatch_command
-            await self._dispatch_command(rt, match.name, standalone_args, user_id, thread_ts)
+            await self._dispatch_command(
+                rt, match.name, standalone_args, user_id, thread_ts, claude=claude
+            )
             return None
 
         # Mid-message: multiple commands or command not at start
@@ -1367,7 +1450,7 @@ class SummonSession:
                     if result.metadata.get("shutdown"):
                         self._shutdown_event.set()
                         try:
-                            self._message_queue.put_nowait(("", None))
+                            self._raw_event_queue.put_nowait(None)
                         except asyncio.QueueFull:
                             pass
                         return None

@@ -184,8 +184,8 @@ class TestSessionShutdownControl:
     async def test_request_shutdown_puts_sentinel_on_queue(self):
         session = make_session()
         session.request_shutdown()
-        item = await asyncio.wait_for(session._message_queue.get(), timeout=1.0)
-        assert item == ("", None)
+        item = await asyncio.wait_for(session._raw_event_queue.get(), timeout=1.0)
+        assert item is None
 
     def test_request_shutdown_idempotent(self):
         """Calling request_shutdown() twice should not raise."""
@@ -646,7 +646,7 @@ class TestSessionHandleRegistration:
                 patch("summon_claude.sessions.session.SlackClient") as mock_slack_cls,
                 patch("summon_claude.sessions.session.ThreadRouter"),
                 patch("summon_claude.sessions.session.PermissionHandler"),
-                patch.object(session, "_run_message_loop", new=AsyncMock()),
+                patch.object(session, "_run_session_tasks", new=AsyncMock()),
                 patch.object(session, "_shutdown", new=AsyncMock()),
             ):
                 mock_slack_cls.return_value = make_mock_client("C_DISP")
