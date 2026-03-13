@@ -44,10 +44,15 @@ from summon_claude.sessions.commands import (
 from summon_claude.sessions.commands import (
     dispatch as dispatch_command,
 )
-from summon_claude.sessions.context import ContextUsage
+from summon_claude.sessions.context import (
+    ContextUsage,
+    compute_context_usage,
+    derive_transcript_path,
+    get_last_step_usage,
+)
 from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.sessions.registry import SessionRegistry
-from summon_claude.sessions.response import ResponseStreamer
+from summon_claude.sessions.response import ResponseStreamer, StreamResult
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.client import SlackClient
 from summon_claude.slack.mcp import create_summon_mcp_server
@@ -124,6 +129,7 @@ _AUTH_COUNTDOWN_INTERVAL_S = 15.0  # log countdown every 15 seconds
 _QUEUE_POLL_INTERVAL_S = 1.0
 _MAX_USER_MESSAGE_CHARS = 10_000
 _CLEANUP_TIMEOUT_S = 10.0
+_CONTEXT_WARNING_THRESHOLD = 75.0  # Warn user when context exceeds this %
 _MAX_CHANNEL_NAME_LEN = 80
 
 # Words/phrases that trigger extended thinking (ultrathink) in the Claude CLI.
@@ -153,11 +159,17 @@ _SYSTEM_PROMPT = {
     "type": "preset",
     "preset": "claude_code",
     "append": (
-        "You are running via summon-claude, bridged to a Slack channel. "
-        "The user interacts through Slack messages. "
+        "You are running headlessly via summon-claude, bridged to a private Slack channel. "
+        "There is no terminal, no visible desktop, and no interactive UI. "
+        "The user interacts through Slack messages — all your replies, tool use, "
+        "and thinking are captured and routed to Slack automatically. "
+        "UI-based tools (non-headless browsers, GUI editors, desktop apps) "
+        "will not be visible to the user. "
         "Use standard markdown formatting "
         "(e.g. **bold**, *italic*, [text](url), ```code```). "
-        "Your output will be automatically converted for Slack display."
+        "Your output will be automatically converted for Slack display. "
+        "The user can use !commands (e.g. !help, !status, !stop, !end) "
+        "for session control."
     ),
 }
 
@@ -402,6 +414,7 @@ class SummonSession:
         # Turn abort infrastructure
         self._current_turn_task: asyncio.Task | None = None
         self._abort_event = asyncio.Event()
+        self._context_warned: bool = False
 
         # Session state
         self._last_heartbeat_time: float = 0.0
@@ -922,61 +935,7 @@ class SummonSession:
                 await claude.query(pending.message)
             stream_result = await streamer.stream_with_flush(claude.receive_response())
             if stream_result:
-                if stream_result.model:
-                    self._model = stream_result.model
-                # Capture claude_session_id on the first turn (ResultMessage
-                # always includes it, unlike get_server_info which may not).
-                claude_sid = stream_result.result.session_id
-                if claude_sid and not self._claude_session_id:
-                    self._claude_session_id = claude_sid
-                    await rt.registry.update_status(
-                        self._session_id, "active", claude_session_id=claude_sid
-                    )
-                    logger.info("Captured Claude session ID: %s", claude_sid[:16])
-                    try:
-                        await rt.client.post(
-                            f"Claude session: `{claude_sid[:16]}...`",
-                            blocks=[
-                                {
-                                    "type": "context",
-                                    "elements": [
-                                        {
-                                            "type": "mrkdwn",
-                                            "text": (
-                                                f":brain: Claude session ID: `{claude_sid[:16]}...`"
-                                            ),
-                                        }
-                                    ],
-                                }
-                            ],
-                        )
-                    except Exception:
-                        logger.warning("Failed to post Claude session ID to Slack", exc_info=True)
-                cost = stream_result.result.total_cost_usd or 0.0
-                self._total_cost += cost
-                await rt.registry.record_turn(self._session_id, cost)
-                if stream_result.context is not None:
-                    self._last_context = stream_result.context
-                if stream_result.model is not None:
-                    self._last_model_seen = stream_result.model
-                summary = streamer.finalize_turn(context=self._last_context)
-                await streamer.update_turn_summary(summary)
-                # Only update topic if model or branch changed
-                try:
-                    current_model = self._last_model_seen or self._model
-                    git_branch = await _get_git_branch(self._cwd)
-                    if (
-                        current_model != self._last_topic_model
-                        or git_branch != self._last_topic_branch
-                    ):
-                        topic = _format_topic(
-                            model=current_model, cwd=self._cwd, git_branch=git_branch
-                        )
-                        await rt.client.set_topic(topic)
-                        self._last_topic_model = current_model
-                        self._last_topic_branch = git_branch
-                except Exception:
-                    logger.warning("Post-turn topic update failed", exc_info=True)
+                await self._finalize_turn_result(rt, streamer, stream_result)
 
             # Emoji lifecycle: gear -> white_check_mark (success)
             if pending.message_ts:
@@ -1044,6 +1003,83 @@ class SummonSession:
             if pending.message_ts and not emoji_finalized:
                 await rt.client.unreact(pending.message_ts, "gear")
             self._current_turn_task = None
+
+    async def _finalize_turn_result(
+        self,
+        rt: _SessionRuntime,
+        streamer: ResponseStreamer,
+        stream_result: StreamResult,
+    ) -> None:
+        """Process a completed turn: capture session ID, update context, topic."""
+        if stream_result.model:
+            self._model = stream_result.model
+        claude_sid = stream_result.result.session_id
+        if claude_sid and not self._claude_session_id:
+            self._claude_session_id = claude_sid
+            await rt.registry.update_status(
+                self._session_id, "active", claude_session_id=claude_sid
+            )
+            logger.info("Captured Claude session ID: %s", claude_sid[:16])
+            try:
+                await rt.client.post(
+                    f"Claude session: `{claude_sid[:16]}...`",
+                    blocks=[
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f":brain: Claude session ID: `{claude_sid[:16]}...`",
+                                }
+                            ],
+                        }
+                    ],
+                )
+            except Exception:
+                logger.warning("Failed to post Claude session ID to Slack", exc_info=True)
+        cost = stream_result.result.total_cost_usd or 0.0
+        self._total_cost += cost
+        await rt.registry.record_turn(self._session_id, cost)
+        if stream_result.model is not None:
+            self._last_model_seen = stream_result.model
+
+        # Compute accurate context from JSONL transcript (not cumulative usage)
+        if self._claude_session_id:
+            tp = derive_transcript_path(self._cwd, self._claude_session_id)
+            transcript_usage = get_last_step_usage(tp)
+            if transcript_usage:
+                self._last_context = compute_context_usage(transcript_usage, self._last_model_seen)
+
+        summary = streamer.finalize_turn(context=self._last_context)
+        await streamer.update_turn_summary(summary)
+
+        # Proactive context warning
+        if (
+            self._last_context
+            and self._last_context.percentage > _CONTEXT_WARNING_THRESHOLD
+            and not self._context_warned
+        ):
+            try:
+                await rt.client.post(
+                    f":warning: Context is getting large "
+                    f"(~{self._last_context.percentage:.0f}% used). "
+                    "Consider running `!compact` to free up space."
+                )
+            except Exception:
+                logger.debug("Failed to post context warning", exc_info=True)
+            self._context_warned = True
+
+        # Only update topic if model or branch changed
+        try:
+            current_model = self._last_model_seen or self._model
+            git_branch = await _get_git_branch(self._cwd)
+            if current_model != self._last_topic_model or git_branch != self._last_topic_branch:
+                topic = _format_topic(model=current_model, cwd=self._cwd, git_branch=git_branch)
+                await rt.client.set_topic(topic)
+                self._last_topic_model = current_model
+                self._last_topic_branch = git_branch
+        except Exception:
+            logger.warning("Post-turn topic update failed", exc_info=True)
 
     async def _heartbeat_loop(self, rt: _SessionRuntime) -> None:
         """Update registry heartbeat every 30 seconds."""
