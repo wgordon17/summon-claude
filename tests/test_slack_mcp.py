@@ -202,6 +202,40 @@ class TestPostSnippetSanitization:
         assert "```\nfake" not in mrkdwn_text
 
 
+class TestUpdateMessage:
+    async def test_happy_path(self, tools, mock_client):
+        result = await tools["slack_update_message"].handler(
+            {"ts": "1234567890.123456", "text": "updated text"}
+        )
+        assert "Message updated" in result["content"][0]["text"]
+        mock_client._web.chat_update.assert_called_once()
+
+    async def test_invalid_ts(self, tools):
+        result = await tools["slack_update_message"].handler(
+            {"ts": "invalid", "text": "updated text"}
+        )
+        assert result["is_error"] is True
+        assert "ts" in result["content"][0]["text"].lower()
+
+    async def test_other_channel_denied(self, mock_client):
+        scoped_tools = {
+            t.name: t
+            for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123"})
+        }
+        result = await scoped_tools["slack_update_message"].handler(
+            {"ts": "1234567890.123456", "text": "updated", "channel": "C_FORBIDDEN"}
+        )
+        assert result["is_error"] is True
+        assert "denied" in result["content"][0]["text"].lower()
+
+    async def test_slack_api_error(self, tools, mock_client):
+        mock_client._web.chat_update.side_effect = Exception("API error")
+        result = await tools["slack_update_message"].handler(
+            {"ts": "1234567890.123456", "text": "updated"}
+        )
+        assert result["is_error"] is True
+
+
 class TestMCPServerCreation:
     def test_returns_valid_config(self, mock_client):
         config = create_summon_mcp_server(mock_client)
@@ -753,4 +787,4 @@ class TestBackwardCompatibility:
 
     def test_total_tool_count(self, mock_client):
         tools = create_summon_mcp_tools(mock_client)
-        assert len(tools) == 7
+        assert len(tools) == 8

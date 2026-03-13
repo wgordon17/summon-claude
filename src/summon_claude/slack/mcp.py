@@ -394,6 +394,51 @@ def create_summon_mcp_tools(  # noqa: PLR0915
             }
         return {"content": [{"type": "text", "text": "Code snippet posted to Slack"}]}
 
+    @tool(
+        "slack_update_message",
+        (
+            "Update an existing Slack message. "
+            "ts: message timestamp in '1234567890.123456' format. "
+            "text: new message text (max 3000 chars). "
+            "channel: channel ID (default: session channel)."
+        ),
+        {"ts": str, "text": str, "channel": str},
+    )
+    async def update_message(args: dict) -> dict:
+        ts = args.get("ts", "")
+        if not _PARENT_TS_RE.match(ts):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Error: invalid ts format. "
+                            "Expected 'seconds.microseconds' e.g. '1234567890.123456'."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+        try:
+            _check_channel(args.get("channel"))
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+        text = args["text"][:_MAX_TEXT_CHARS]
+        try:
+            await client.update(ts, text)
+        except Exception:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Error: failed to update message."
+                        " Check Slack API connectivity and permissions.",
+                    }
+                ],
+                "is_error": True,
+            }
+        return {"content": [{"type": "text", "text": "Message updated"}]}
+
     # ------------------------------------------------------------------
     # Reading tools
     # ------------------------------------------------------------------
@@ -657,6 +702,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
         create_thread,
         react,
         post_snippet,
+        update_message,
         read_history,
         fetch_thread,
         get_context,
