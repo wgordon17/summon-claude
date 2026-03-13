@@ -399,11 +399,11 @@ class TestSchemaVersioning:
 
     async def test_fresh_db_gets_current_schema_version(self, tmp_path):
         """A fresh database should have CURRENT_SCHEMA_VERSION after connection."""
-        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, _get_schema_version
+        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, get_schema_version
 
         db_path = tmp_path / "fresh.db"
         async with SessionRegistry(db_path=db_path) as reg:
-            version = await _get_schema_version(reg.db)
+            version = await get_schema_version(reg.db)
             assert version == CURRENT_SCHEMA_VERSION
 
     async def test_existing_db_at_current_version_is_noop(self, tmp_path, caplog):
@@ -425,7 +425,7 @@ class TestSchemaVersioning:
         """If schema_version is behind, migration should run and update version."""
         import aiosqlite
 
-        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, _get_schema_version
+        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, get_schema_version
 
         db_path = tmp_path / "behind.db"
         # First connection: creates DB at current version
@@ -441,7 +441,7 @@ class TestSchemaVersioning:
         with caplog.at_level(logging.INFO, logger="summon_claude.sessions.registry"):
             caplog.clear()
             async with SessionRegistry(db_path=db_path) as reg:
-                version = await _get_schema_version(reg.db)
+                version = await get_schema_version(reg.db)
                 assert version == CURRENT_SCHEMA_VERSION
             migration_msgs = [r for r in caplog.records if "migration" in r.message.lower()]
             assert len(migration_msgs) == CURRENT_SCHEMA_VERSION
@@ -540,12 +540,12 @@ class TestSchemaVersioning:
         """Opening a fresh DB should reach CURRENT_SCHEMA_VERSION via the full chain."""
         from summon_claude.sessions.registry import (
             CURRENT_SCHEMA_VERSION,
-            _get_schema_version,
+            get_schema_version,
         )
 
         db_path = tmp_path / "chain.db"
         async with SessionRegistry(db_path=db_path) as reg:
-            version = await _get_schema_version(reg.db)
+            version = await get_schema_version(reg.db)
             assert version == CURRENT_SCHEMA_VERSION
 
             # Verify all expected tables exist
@@ -564,7 +564,7 @@ class TestSchemaVersioning:
         """Migrations must not destroy existing rows."""
         import aiosqlite
 
-        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, _get_schema_version
+        from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, get_schema_version
 
         db_path = tmp_path / "data.db"
 
@@ -581,7 +581,7 @@ class TestSchemaVersioning:
 
         # Re-open — migration runs over existing data
         async with SessionRegistry(db_path=db_path) as reg:
-            version = await _get_schema_version(reg.db)
+            version = await get_schema_version(reg.db)
             assert version == CURRENT_SCHEMA_VERSION
 
             # Verify data survived
@@ -599,8 +599,8 @@ class TestSchemaVersioning:
 
         from summon_claude.sessions.registry import (
             CURRENT_SCHEMA_VERSION,
-            _get_schema_version,
             _run_migrations,
+            get_schema_version,
         )
 
         db_path = tmp_path / "idempotent.db"
@@ -612,7 +612,7 @@ class TestSchemaVersioning:
             async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
                 await raw_db.execute("UPDATE schema_version SET version = 0")
                 await _run_migrations(raw_db)
-                version = await _get_schema_version(raw_db)
+                version = await get_schema_version(raw_db)
                 assert version == CURRENT_SCHEMA_VERSION
 
 

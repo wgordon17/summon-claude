@@ -11,7 +11,7 @@ from summon_claude.cli.formatting import echo
 from summon_claude.sessions.registry import (
     CURRENT_SCHEMA_VERSION,
     SessionRegistry,
-    _get_schema_version,
+    get_schema_version,
 )
 
 
@@ -25,7 +25,7 @@ async def async_db_status(ctx: click.Context) -> None:
     async with SessionRegistry() as reg:
         previous = reg.migrated_from
         db = reg.db
-        version = await _get_schema_version(db)
+        version = await get_schema_version(db)
         async with db.execute("PRAGMA integrity_check") as cursor:
             row = await cursor.fetchone()
             integrity = row[0] if row else "unknown"

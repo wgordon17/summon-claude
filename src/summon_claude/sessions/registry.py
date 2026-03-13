@@ -110,7 +110,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _default_db_path() -> Path:
+def default_db_path() -> Path:
     """Determine the default DB path using XDG data dir, with migration from old path."""
     new_path = get_data_dir() / "registry.db"
     old_path = Path.home() / ".summon" / "registry.db"
@@ -123,7 +123,7 @@ def _default_db_path() -> Path:
     return new_path
 
 
-async def _get_schema_version(db: aiosqlite.Connection) -> int:
+async def get_schema_version(db: aiosqlite.Connection) -> int:
     """Return the current schema version, or 0 if the version table is empty."""
     async with db.execute("SELECT version FROM schema_version WHERE id = 1") as cursor:
         row = await cursor.fetchone()
@@ -138,7 +138,7 @@ async def _run_migrations(db: aiosqlite.Connection) -> int:
     # Use BEGIN IMMEDIATE to prevent concurrent migration races across processes.
     await db.execute("BEGIN IMMEDIATE")
     try:
-        current = await _get_schema_version(db)
+        current = await get_schema_version(db)
 
         if current >= CURRENT_SCHEMA_VERSION:
             await db.execute("COMMIT")
@@ -166,7 +166,7 @@ class SessionRegistry:
     """Async SQLite session registry. Use as an async context manager."""
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self._db_path = db_path or _default_db_path()
+        self._db_path = db_path or default_db_path()
         self._db: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
         self.migrated_from: int | None = None

@@ -27,7 +27,7 @@ class TestDbStatus:
         asyncio.run(_create_db(db_path))
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "status"])
@@ -53,7 +53,7 @@ class TestDbStatus:
         asyncio.run(_setup())
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "status"])
@@ -71,7 +71,7 @@ class TestDbReset:
         assert db_path.exists()
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "reset", "--yes"])
@@ -84,7 +84,7 @@ class TestDbReset:
         runner = CliRunner()
         db_path = tmp_path / "registry.db"
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "reset"], input="n\n")
@@ -100,7 +100,7 @@ class TestDbVacuum:
         asyncio.run(_create_db(db_path))
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "vacuum"])
@@ -114,7 +114,7 @@ class TestDbVacuum:
         db_path = tmp_path / "nonexistent.db"
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "vacuum"])
@@ -142,7 +142,7 @@ class TestDbPurge:
         asyncio.run(_seed())
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
@@ -171,7 +171,7 @@ class TestDbPurge:
         asyncio.run(_seed())
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "30", "--yes"])
@@ -197,7 +197,7 @@ class TestDbPurge:
         asyncio.run(_seed())
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
@@ -221,7 +221,7 @@ class TestDbPurge:
         asyncio.run(_seed())
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
@@ -246,7 +246,7 @@ class TestDbPurge:
         asyncio.run(_seed())
 
         with patch(
-            "summon_claude.sessions.registry._default_db_path",
+            "summon_claude.sessions.registry.default_db_path",
             return_value=db_path,
         ):
             result = runner.invoke(cli, ["db", "purge", "--older-than", "1", "--yes"])
