@@ -16,6 +16,10 @@ display_information:
   background_color: "#000000"
 
 features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: false
+    messages_tab_read_only_enabled: false
   bot_user:
     display_name: summon-claude
     always_online: false
@@ -28,24 +32,30 @@ features:
 oauth_config:
   scopes:
     bot:
-      - chat:write
-      - channels:manage
+      - canvases:read
+      - canvases:write
       - channels:history
+      - channels:join
+      - channels:manage
       - channels:read
-      - groups:write
+      - chat:write
+      - commands
+      - files:read
+      - files:write
       - groups:history
       - groups:read
-      - files:write
+      - groups:write
       - reactions:read
       - reactions:write
       - users:read
-      - commands
 
 settings:
   org_deploy_enabled: false
   socket_mode_enabled: true
   event_subscriptions:
     bot_events:
+      - app_home_opened
+      - file_shared
       - message.channels
       - message.groups
       - reaction_added
