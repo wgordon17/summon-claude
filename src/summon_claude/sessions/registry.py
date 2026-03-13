@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS spawn_tokens (
 )
 """
 
+_CREATE_WORKFLOW_DEFAULTS = """
+CREATE TABLE IF NOT EXISTS workflow_defaults (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    instructions TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+)
+"""
+
 _CREATE_SCHEMA_VERSION = """
 CREATE TABLE IF NOT EXISTS schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -82,7 +90,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 )
 """
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
@@ -96,11 +104,17 @@ async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
             logger.debug("Column %s already exists, skipping", col)
 
 
+async def _migrate_2_to_3(db: aiosqlite.Connection) -> None:
+    """Create workflow_defaults table."""
+    await db.execute(_CREATE_WORKFLOW_DEFAULTS)
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the existing DDL already produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
     0: None,  # baseline — no-op
     1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
 }
 
 _MAX_FAILED_ATTEMPTS = 5
@@ -197,6 +211,7 @@ class SessionRegistry:
         await self._db.execute(_CREATE_PENDING_AUTH_TOKENS)
         await self._db.execute(_CREATE_AUDIT_LOG)
         await self._db.execute(_CREATE_SPAWN_TOKENS)
+        await self._db.execute(_CREATE_WORKFLOW_DEFAULTS)
         await self._db.execute(_CREATE_SCHEMA_VERSION)
         await self._db.commit()
 
@@ -564,6 +579,92 @@ class SessionRegistry:
                 row = await cursor.fetchone()
             await db.commit()
             return dict(row) if row else None
+
+    # --- Workflow instruction methods ---
+
+    async def get_workflow_defaults(self) -> str:
+        """Return global default workflow instructions, or empty string if unset."""
+        db = self._check_connected()
+        async with db.execute("SELECT instructions FROM workflow_defaults WHERE id = 1") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else ""
+
+    async def set_workflow_defaults(self, instructions: str) -> None:
+        """Set global default workflow instructions (upsert)."""
+        db = self._check_connected()
+        async with self._lock:
+            await db.execute(
+                "INSERT INTO workflow_defaults (id, instructions, updated_at)"
+                " VALUES (1, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET instructions = ?, updated_at = ?",
+                (instructions, _now(), instructions, _now()),
+            )
+            await db.commit()
+
+    async def clear_workflow_defaults(self) -> None:
+        """Remove global default workflow instructions."""
+        db = self._check_connected()
+        async with self._lock:
+            await db.execute("DELETE FROM workflow_defaults WHERE id = 1")
+            await db.commit()
+
+    async def get_project_workflow(self, project_id: str) -> str:
+        """Return per-project workflow instructions, or empty string if unset.
+
+        Requires the ``projects`` table (M2). Returns empty string if the
+        table does not exist yet.
+        """
+        db = self._check_connected()
+        try:
+            async with db.execute(
+                "SELECT workflow_instructions FROM projects WHERE project_id = ?",
+                (project_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else ""
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                return ""
+            raise
+
+    async def set_project_workflow(self, project_id: str, instructions: str) -> None:
+        """Set per-project workflow instructions.
+
+        Requires the ``projects`` table (M2). Raises ``RuntimeError`` if the
+        table does not exist yet.
+        """
+        db = self._check_connected()
+        try:
+            async with self._lock:
+                await db.execute(
+                    "UPDATE projects SET workflow_instructions = ? WHERE project_id = ?",
+                    (instructions, project_id),
+                )
+                await db.commit()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                raise RuntimeError(
+                    "Per-project workflows require the projects table (not yet created)."
+                ) from e
+            raise
+
+    async def clear_project_workflow(self, project_id: str) -> None:
+        """Reset per-project workflow instructions to empty string.
+
+        Requires the ``projects`` table (M2). Raises ``RuntimeError`` if the
+        table does not exist yet.
+        """
+        await self.set_project_workflow(project_id, "")
+
+    async def get_effective_workflow(self, project_id: str) -> str:
+        """Return effective workflow instructions for a project.
+
+        Returns per-project override if non-empty, otherwise global defaults.
+        """
+        project = await self.get_project_workflow(project_id)
+        if project:
+            return project
+        return await self.get_workflow_defaults()
 
     # --- Audit log methods ---
 

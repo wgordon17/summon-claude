@@ -9,7 +9,7 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from summon_claude.cli import cli
-from summon_claude.sessions.registry import SessionRegistry
+from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, SessionRegistry
 
 
 async def _create_db(db_path):
@@ -32,7 +32,7 @@ class TestDbStatus:
         ):
             result = runner.invoke(cli, ["db", "status"])
         assert result.exit_code == 0
-        assert "Schema version: 2" in result.output
+        assert f"Schema version: {CURRENT_SCHEMA_VERSION}" in result.output
         assert "Integrity:" in result.output
         assert "Sessions:" in result.output
 
@@ -272,7 +272,7 @@ class TestConfigCheckDbValidation:
             patch("summon_claude.cli.config.get_data_dir", return_value=tmp_path),
         ):
             result = runner.invoke(cli, ["config", "check"])
-        assert "[PASS] Schema version 2 (current)" in result.output
+        assert f"[PASS] Schema version {CURRENT_SCHEMA_VERSION} (current)" in result.output
 
     def test_config_check_reports_integrity(self, tmp_path):
         """'config check' should report database integrity OK."""

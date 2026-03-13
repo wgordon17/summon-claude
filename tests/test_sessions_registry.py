@@ -559,6 +559,7 @@ class TestSchemaVersioning:
             assert "pending_auth_tokens" in tables
             assert "spawn_tokens" in tables
             assert "schema_version" in tables
+            assert "workflow_defaults" in tables
 
     async def test_migration_preserves_existing_data(self, tmp_path):
         """Migrations must not destroy existing rows."""
@@ -690,3 +691,71 @@ class TestSpawnTokens:
         await registry.register("sess-uid", 1234, "/tmp", authenticated_user_id="U123")
         session = await registry.get_session("sess-uid")
         assert session["authenticated_user_id"] == "U123"
+
+
+class TestWorkflowDefaults:
+    async def test_get_workflow_defaults_empty_by_default(self, registry):
+        result = await registry.get_workflow_defaults()
+        assert result == ""
+
+    async def test_set_get_workflow_defaults(self, registry):
+        await registry.set_workflow_defaults("Always run tests before committing.")
+        result = await registry.get_workflow_defaults()
+        assert result == "Always run tests before committing."
+
+    async def test_set_workflow_defaults_overwrites(self, registry):
+        await registry.set_workflow_defaults("First version.")
+        await registry.set_workflow_defaults("Second version.")
+        result = await registry.get_workflow_defaults()
+        assert result == "Second version."
+
+    async def test_clear_workflow_defaults(self, registry):
+        await registry.set_workflow_defaults("Some instructions.")
+        await registry.clear_workflow_defaults()
+        result = await registry.get_workflow_defaults()
+        assert result == ""
+
+    async def test_clear_workflow_defaults_noop_when_empty(self, registry):
+        await registry.clear_workflow_defaults()
+        result = await registry.get_workflow_defaults()
+        assert result == ""
+
+
+class TestProjectWorkflow:
+    async def test_get_project_workflow_no_projects_table(self, registry):
+        """Returns empty string when projects table doesn't exist."""
+        result = await registry.get_project_workflow("proj-1")
+        assert result == ""
+
+    async def test_set_project_workflow_no_projects_table(self, registry):
+        """Raises RuntimeError when projects table doesn't exist."""
+        with pytest.raises(RuntimeError, match="projects table"):
+            await registry.set_project_workflow("proj-1", "instructions")
+
+    async def test_clear_project_workflow_no_projects_table(self, registry):
+        """Raises RuntimeError when projects table doesn't exist."""
+        with pytest.raises(RuntimeError, match="projects table"):
+            await registry.clear_project_workflow("proj-1")
+
+
+class TestEffectiveWorkflow:
+    async def test_effective_workflow_returns_global_when_no_project(self, registry):
+        """Falls back to global defaults when projects table doesn't exist."""
+        await registry.set_workflow_defaults("Global instructions.")
+        result = await registry.get_effective_workflow("nonexistent")
+        assert result == "Global instructions."
+
+    async def test_effective_workflow_empty_when_neither_set(self, registry):
+        result = await registry.get_effective_workflow("nonexistent")
+        assert result == ""
+
+
+class TestWorkflowDefaultsTable:
+    async def test_workflow_defaults_table_exists(self, registry):
+        """Verify workflow_defaults table is created on connect."""
+        db = registry.db
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_defaults'"
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row is not None
