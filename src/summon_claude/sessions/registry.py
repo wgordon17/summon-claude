@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -89,7 +90,7 @@ async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
     for col in ("parent_session_id TEXT", "authenticated_user_id TEXT"):
         try:
             await db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
-        except Exception as e:
+        except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise
             logger.debug("Column %s already exists, skipping", col)
