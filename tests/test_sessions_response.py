@@ -490,11 +490,12 @@ class TestBug025ResponseDuplication:
         ]
         await streamer.stream_with_flush(agen(messages))
 
-        # last_message_ts should be set so the checkmark reaction lands correctly
+        # last_message_ts should be set for tracking
         assert streamer._turn.last_message_ts is not None
 
-        # add_reaction should have been called (checkmark on conclusion or result)
-        assert provider.react.called
+        # Checkmark reaction is now on the user's message (in session.py),
+        # not on the bot's message (streamer no longer reacts)
+        assert not provider.react.called
 
 
 class TestStreamResult:

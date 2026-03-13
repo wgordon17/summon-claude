@@ -126,6 +126,26 @@ _MAX_USER_MESSAGE_CHARS = 10_000
 _CLEANUP_TIMEOUT_S = 10.0
 _MAX_CHANNEL_NAME_LEN = 80
 
+# Words/phrases that trigger extended thinking (ultrathink) in the Claude CLI.
+# When detected, a :brain: reaction is added to the user's message (permanent).
+_THINKING_TRIGGERS = frozenset(
+    {
+        "ultrathink",
+        "think harder",
+        "think intensely",
+        "think longer",
+        "think really hard",
+        "think super hard",
+        "think very hard",
+        "megathink",
+        "think hard",
+        "think deeply",
+        "think a lot",
+        "think more",
+        "think about it",
+    }
+)
+
 # Patterns that may appear in exception messages and should not be stored in the audit log
 _SECRET_PATTERN = re.compile(r"xox[a-z]-[A-Za-z0-9\-]+|xapp-[A-Za-z0-9\-]+|sk-ant-[A-Za-z0-9\-]+")
 
@@ -824,6 +844,15 @@ class SummonSession:
 
             # Pre-send: call query() immediately so SDK queues it
             message_ts = item.get("ts")
+
+            # Emoji lifecycle: acknowledge receipt
+            if message_ts:
+                await rt.client.react(message_ts, "inbox_tray")
+                # Check for ultrathink triggers (permanent :brain: reaction)
+                text_lower = user_message.lower()
+                if any(t in text_lower for t in _THINKING_TRIGGERS):
+                    await rt.client.react(message_ts, "brain")
+
             pre_sent = False
             try:
                 await claude.query(user_message)
@@ -860,7 +889,7 @@ class SummonSession:
 
             await self._handle_user_message(rt, claude, streamer, pending)
 
-    async def _handle_user_message(  # noqa: PLR0915
+    async def _handle_user_message(  # noqa: PLR0912, PLR0915
         self,
         rt: _SessionRuntime,
         claude: ClaudeSDKClient,
@@ -874,9 +903,17 @@ class SummonSession:
 
         # Reset abort event for this turn
         self._abort_event.clear()
+        emoji_finalized = False
 
         async def _do_turn() -> None:
+            nonlocal emoji_finalized
             self._total_turns += 1
+
+            # Emoji lifecycle: swap inbox_tray -> gear (processing)
+            if pending.message_ts:
+                await rt.client.unreact(pending.message_ts, "inbox_tray")
+                await rt.client.react(pending.message_ts, "gear")
+
             await streamer.start_turn(self._total_turns)
             # If preprocessor couldn't pre-send, call query() now
             if not pending.pre_sent:
@@ -939,14 +976,20 @@ class SummonSession:
                 except Exception:
                     logger.warning("Post-turn topic update failed", exc_info=True)
 
+            # Emoji lifecycle: gear -> white_check_mark (success)
+            if pending.message_ts:
+                await rt.client.unreact(pending.message_ts, "gear")
+                await rt.client.react(pending.message_ts, "white_check_mark")
+                emoji_finalized = True
+
         self._current_turn_task = asyncio.create_task(_do_turn())
         abort_wait = asyncio.create_task(self._abort_event.wait())
         try:
-            done, pending = await asyncio.wait(
+            done, wait_pending = await asyncio.wait(
                 {self._current_turn_task, abort_wait},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
+            for task in wait_pending:
                 task.cancel()
                 try:
                     await task
@@ -959,6 +1002,11 @@ class SummonSession:
                     raise exc
             elif self._abort_event.is_set():
                 logger.info("Turn aborted by user")
+                # Emoji lifecycle: gear -> octagonal_sign (abort)
+                if pending.message_ts and not emoji_finalized:
+                    await rt.client.unreact(pending.message_ts, "gear")
+                    await rt.client.react(pending.message_ts, "octagonal_sign")
+                    emoji_finalized = True
         except asyncio.CancelledError:
             if self._current_turn_task and not self._current_turn_task.done():
                 self._current_turn_task.cancel()
@@ -969,6 +1017,11 @@ class SummonSession:
             raise
         except Exception as e:
             logger.exception("Error during Claude response: %s", e)
+            # Emoji lifecycle: gear -> warning (error)
+            if pending.message_ts and not emoji_finalized:
+                await rt.client.unreact(pending.message_ts, "gear")
+                await rt.client.react(pending.message_ts, "warning")
+                emoji_finalized = True
             error_type = type(e).__name__
             await rt.registry.log_event(
                 "session_errored",
@@ -985,6 +1038,9 @@ class SummonSession:
             except Exception as e2:
                 logger.warning("Failed to post error notification: %s", e2)
         finally:
+            # Safety net: clean up gear if turn ended without proper emoji transition
+            if pending.message_ts and not emoji_finalized:
+                await rt.client.unreact(pending.message_ts, "gear")
             self._current_turn_task = None
 
     async def _heartbeat_loop(self, rt: _SessionRuntime) -> None:

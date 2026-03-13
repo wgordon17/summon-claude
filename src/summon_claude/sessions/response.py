@@ -462,16 +462,6 @@ class ResponseStreamer:
 
         await self._router.post_to_main(f"Turn complete. Cost: {cost_str}", blocks=blocks)
 
-        # Add a reaction to the last text message
-        if self._turn.last_message_ts:
-            try:
-                await self._router.client.react(
-                    self._turn.last_message_ts,
-                    "white_check_mark",
-                )
-            except Exception:
-                logger.warning("Reaction failed", exc_info=True)
-
     def _make_tool_use_blocks(
         self,
         tool_name: str,
