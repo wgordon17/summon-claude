@@ -11,11 +11,12 @@ from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, SessionRegis
 from summon_claude.sessions.session import SessionOptions
 
 
-async def async_start(
+async def async_start(  # noqa: PLR0913
     config: SummonConfig,
     cwd: str,
     name: str,
     model: str | None,
+    effort: str | None,
     resume: str | None,
 ) -> str:
     """Orchestrate daemon startup, session creation, and return the short_code."""
@@ -23,6 +24,7 @@ async def async_start(
         cwd=cwd,
         name=name,
         model=model or config.default_model,
+        effort=effort or config.default_effort,
         resume=resume,
     )
 

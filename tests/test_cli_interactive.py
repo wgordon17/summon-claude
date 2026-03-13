@@ -514,7 +514,7 @@ class TestStopNoArgsInteractive:
             runner = CliRunner()
             result = runner.invoke(cli, ["stop"])
         assert result.exit_code != 0
-        assert "Provide SESSION_ID or --all" in result.output
+        assert "Provide a session name/ID or --all" in result.output
 
     def test_stop_no_args_interactive_no_active_sessions(self):
         """Interactive mode, no active sessions → 'No active sessions.'."""

@@ -232,6 +232,9 @@ class SummonConfig(BaseSettings):
     # Claude model
     default_model: str | None = None
 
+    # Claude effort level
+    default_effort: str = "high"
+
     # Slack channel configuration
     channel_prefix: str = "summon"
 
@@ -240,6 +243,15 @@ class SummonConfig(BaseSettings):
 
     # Content display
     max_inline_chars: int = 2500
+
+    @field_validator("default_effort")
+    @classmethod
+    def validate_effort_level(cls, v: str) -> str:
+        """Validate that effort is one of the allowed levels."""
+        valid = {"low", "medium", "high", "max"}
+        if v not in valid:
+            raise ValueError(f"SUMMON_DEFAULT_EFFORT must be one of {sorted(valid)}, got {v!r}")
+        return v
 
     @field_validator("slack_bot_token")
     @classmethod

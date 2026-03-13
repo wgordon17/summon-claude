@@ -60,7 +60,7 @@ def make_auth(**overrides) -> SessionAuth:
 
 
 def make_session(session_id: str = "test-session", **overrides) -> SummonSession:
-    opt_fields = ("cwd", "name", "model", "resume")
+    opt_fields = ("cwd", "name", "model", "effort", "resume")
     opts_kw = {k: overrides.pop(k) for k in list(overrides) if k in opt_fields}
     auth_fields = ("short_code", "expires_at")
     auth_kw = {k: overrides.pop(k) for k in list(overrides) if k in auth_fields}
@@ -97,6 +97,22 @@ def make_rt(
         client=client,
         permission_handler=AsyncMock(),
     )
+
+
+class TestSessionOptions:
+    """Tests for SessionOptions dataclass."""
+
+    def test_default_effort(self):
+        opts = make_options()
+        assert opts.effort == "high"
+
+    def test_custom_effort(self):
+        opts = make_options(effort="max")
+        assert opts.effort == "max"
+
+    def test_effort_stored_on_session(self):
+        session = make_session(effort="low")
+        assert session._effort == "low"
 
 
 class TestSummonSessionConstructorGuards:

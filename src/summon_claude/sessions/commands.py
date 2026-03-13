@@ -32,6 +32,7 @@ class CommandContext:
     cost_usd: float = 0.0
     start_time: datetime | None = None
     model: str | None = None
+    effort: str | None = None
     session_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -140,11 +141,17 @@ async def _handle_status(_args: list[str], ctx: CommandContext) -> CommandResult
     lines = [
         "*Session Status*",
         f"  Model: `{model_display}`",
-        f"  Session ID: `{ctx.session_id}`",
-        f"  Turns: {ctx.turns}",
-        f"  Cost: ${ctx.cost_usd:.4f}",
-        f"  Uptime: {uptime}",
     ]
+    if ctx.effort:
+        lines.append(f"  Effort: `{ctx.effort}`")
+    lines.extend(
+        [
+            f"  Session ID: `{ctx.session_id}`",
+            f"  Turns: {ctx.turns}",
+            f"  Cost: ${ctx.cost_usd:.4f}",
+            f"  Uptime: {uptime}",
+        ]
+    )
     return CommandResult(text="\n".join(lines))
 
 

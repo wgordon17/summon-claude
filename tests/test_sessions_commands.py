@@ -346,6 +346,20 @@ class TestStatusHandler:
         assert result.text is not None
         assert "unknown" in result.text
 
+    async def test_status_contains_effort(self, make_context):
+        """Status should contain effort level when set."""
+        context = make_context(effort="max")
+        result = await dispatch("status", [], context)
+        assert result.text is not None
+        assert "Effort: `max`" in result.text
+
+    async def test_status_omits_effort_when_none(self, make_context):
+        """Status should not contain effort line when effort is None."""
+        context = make_context(effort=None)
+        result = await dispatch("status", [], context)
+        assert result.text is not None
+        assert "Effort:" not in result.text
+
 
 class TestEndHandler:
     """Test the !end command handler."""

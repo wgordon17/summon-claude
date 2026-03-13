@@ -35,7 +35,13 @@ from summon_claude.sessions.registry import SessionRegistry
 logger = logging.getLogger(__name__)
 
 
-async def async_session_list(ctx: click.Context, show_all: bool, output: str) -> None:
+async def async_session_list(
+    ctx: click.Context,
+    show_all: bool,
+    output: str,
+    *,
+    name: str | None = None,
+) -> None:
     # Print daemon status header (table mode only)
     if output == "table" and not ctx.obj.get("quiet"):
         if is_daemon_running():
@@ -56,13 +62,15 @@ async def async_session_list(ctx: click.Context, show_all: bool, output: str) ->
             sessions = await registry.list_all(limit=50)
         else:
             sessions = await registry.list_active()
+        if name:
+            sessions = [s for s in sessions if s.get("session_name") == name]
         if not sessions:
             echo("No sessions found." if show_all else "No active sessions.", ctx)
             return
         if output == "json":
             click.echo(format_json(sessions))
         else:
-            print_session_table(sessions)
+            print_session_table(sessions, show_id=show_all)
 
 
 async def session_info_impl(ctx: click.Context, session_id: str, output: str) -> None:

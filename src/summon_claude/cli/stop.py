@@ -18,7 +18,7 @@ async def async_stop(ctx: click.Context, session_id: str | None, stop_all: bool)
     try:
         if not session_id and not stop_all:
             if not is_interactive(ctx):
-                click.echo("Provide SESSION_ID or --all.", err=True)
+                click.echo("Provide a session name/ID or --all.", err=True)
                 ctx.exit(1)
                 return
             try:

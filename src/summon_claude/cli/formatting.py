@@ -39,18 +39,27 @@ def format_uptime(seconds: float) -> str:
     return f"{s}s"
 
 
-def print_session_table(sessions: list[dict]) -> None:
-    """Print a compact table of sessions."""
+def print_session_table(sessions: list[dict], *, show_id: bool = False) -> None:
+    """Print a compact table of sessions.
+
+    When *show_id* is True (e.g. ``--all``), a full SESSION ID column is added.
+    """
     if not sessions:
         return
 
-    headers = ["ID", "STATUS", "NAME", "CHANNEL", "CWD"]
+    headers: list[str] = []
+    if show_id:
+        headers.append("SESSION ID")
+    headers.extend(["ID", "STATUS", "NAME", "CHANNEL", "CWD"])
+
     rows: list[list[str]] = []
     for s in sessions:
         session_id = s.get("session_id", "")
-        # Show first 8 chars of UUID — enough to be unique and passable to `stop`
         short_id = session_id[:8] if session_id else "-"
-        rows.append(
+        row: list[str] = []
+        if show_id:
+            row.append(session_id or "-")
+        row.extend(
             [
                 short_id,
                 s.get("status", "?"),
@@ -59,6 +68,7 @@ def print_session_table(sessions: list[dict]) -> None:
                 s.get("cwd", ""),
             ]
         )
+        rows.append(row)
 
     # Fixed-width for all columns except CWD (last), which wraps freely
     fixed = headers[:-1]
