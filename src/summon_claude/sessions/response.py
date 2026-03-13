@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_MESSAGE_CHARS = 3000
 _FLUSH_HEADROOM_CHARS = 100
+_FOOTER_RESERVE = 80  # chars reserved for turn summary footer in last chunk
 _FLUSH_INTERVAL_S = 2.0  # 2 seconds to stay under Slack Tier 3 rate limits
 
 # Maps tool names to the keys where their primary argument lives (tried in order).
@@ -295,7 +296,6 @@ class ResponseStreamer:
         if self._turn.buffer:
             await self._flush_buffer()
         if result:
-            await self._flush_conclusion_to_main()
             await self._post_result_summary(result)
             # Clear thread status at turn end
             await self._set_status("")
@@ -391,16 +391,19 @@ class ResponseStreamer:
             await self._router.post_to_active_thread("Thinking...", blocks=blocks)
         await self._set_status("Thinking...")
 
-    async def _flush_conclusion_to_main(self) -> None:
+    async def _flush_conclusion_to_main(self, footer: str = "") -> None:
         """Flush accumulated intermediate text to the main channel as conclusion."""
         if self._turn.last_intermediate_text.strip():
             text = self._turn.last_intermediate_text
             self._turn.last_intermediate_text = ""
             self._turn.posted_conclusion = True
-            # Post conclusion text to main channel
-            chunks = split_text(text, _MAX_MESSAGE_CHARS)
+            # Reserve space for footer in the last chunk
+            limit = _MAX_MESSAGE_CHARS - _FOOTER_RESERVE if footer else _MAX_MESSAGE_CHARS
+            chunks = split_text(text, limit)
+            # Append footer to the last chunk
+            if footer and chunks:
+                chunks[-1] = f"{chunks[-1]}\n\n---\n{footer}"
             for i, chunk in enumerate(chunks):
-                # Ping the user on the first conclusion chunk only
                 post_text = f"<@{self._user_id}> {chunk}" if i == 0 and self._user_id else chunk
                 ref = await self._router.post_to_main(post_text)
                 self._turn.last_message_ts = ref.ts
@@ -504,36 +507,40 @@ class ResponseStreamer:
                 await self._router.post_to_active_thread(text, blocks=blocks)
                 self._turn.thread_ts = None
 
-    async def _post_result_summary(self, result: ResultMessage) -> None:
-        """Post session summary after Claude finishes a turn."""
-        # Only post result.result if we didn't already post the same content
-        # via buffer flush (pre-tool text) or _flush_conclusion_to_main (post-tool text).
-        already_posted = self._turn.posted_conclusion or self._turn.posted_text_to_main
-        if result.result and not already_posted:
-            await self._router.post_to_main(result.result)
-
+    def _build_turn_footer(self, result: ResultMessage) -> str:
+        """Build a concise turn footer string for the conclusion message."""
         cost = result.total_cost_usd
         cost_str = f"${cost:.4f}" if cost is not None else "unknown"
-        turns = result.num_turns
-        turns_str = f"{turns}" if turns is not None else "?"
+        return f":checkered_flag: {cost_str}"
 
+    async def _post_result_summary(self, result: ResultMessage) -> None:
+        """Post turn summary — as footer on conclusion or standalone fallback."""
+        footer = self._build_turn_footer(result)
+
+        # If there's conclusion text (post-tool), flush it with the footer appended
+        if self._turn.last_intermediate_text.strip():
+            await self._flush_conclusion_to_main(footer=footer)
+            return
+
+        # If pre-tool text was already posted to main, no separate summary needed
+        if self._turn.posted_text_to_main:
+            return
+
+        # Post result.result if not already posted
+        if result.result:
+            await self._router.post_to_main(result.result)
+
+        # Standalone fallback: post summary as a separate message
         blocks: list[dict[str, Any]] = [
             {"type": "divider"},
             {
                 "type": "context",
                 "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": (
-                            f":checkered_flag: Turn complete"
-                            f" | Cost: {cost_str} | Turns: {turns_str}"
-                        ),
-                    }
+                    {"type": "mrkdwn", "text": footer},
                 ],
             },
         ]
-
-        await self._router.post_to_main(f"Turn complete. Cost: {cost_str}", blocks=blocks)
+        await self._router.post_to_main(footer, blocks=blocks)
 
     def _make_tool_use_blocks(
         self,
