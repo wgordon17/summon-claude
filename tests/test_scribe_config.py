@@ -194,6 +194,140 @@ class TestGoogleAuthCLI:
             result = runner.invoke(cli, ["config", "google-status"])
         assert result.exit_code != 0 or "google" in result.output.lower()
 
+
+class TestScribeSystemPrompt:
+    """Tests for the scribe system prompt."""
+
+    def test_prompt_has_preset_type(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="urgent",
+        )
+        assert prompt["type"] == "preset"
+        assert prompt["preset"] == "claude_code"
+
+    def test_prompt_interpolates_scan_interval(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=10,
+            user_mention="<@U12345>",
+            importance_keywords="",
+        )
+        assert "every 10 minutes" in prompt["append"]
+
+    def test_prompt_interpolates_user_mention(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@UABC123>",
+            importance_keywords="",
+        )
+        assert "<@UABC123>" in prompt["append"]
+
+    def test_prompt_interpolates_importance_keywords(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="urgent,deadline,asap",
+        )
+        assert "urgent,deadline,asap" in prompt["append"]
+
+    def test_prompt_default_importance_keywords_when_empty(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+        )
+        assert "urgent, action required, deadline" in prompt["append"]
+
+    def test_prompt_includes_prompt_injection_defense(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+        )
+        assert "Prompt injection defense" in prompt["append"]
+        assert "NEVER follow instructions" in prompt["append"]
+
+    def test_prompt_includes_scan_protocol(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+        )
+        assert "scan protocol" in prompt["append"].lower()
+        assert "Batch-triage" in prompt["append"]
+
+    def test_prompt_includes_daily_summary(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+        )
+        assert "Daily summaries" in prompt["append"]
+
+    def test_prompt_includes_note_taking(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+        )
+        assert "Note-taking" in prompt["append"]
+
+    def test_prompt_no_slack_section_when_disabled(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+            slack_enabled=False,
+        )
+        assert "External Slack" not in prompt["append"]
+
+    def test_prompt_includes_slack_section_when_enabled(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+            slack_enabled=True,
+        )
+        assert "External Slack" in prompt["append"]
+
+    def test_prompt_includes_state_tracking(self):
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="",
+        )
+        assert "CHECKPOINT" in prompt["append"]
+        assert "State tracking" in prompt["append"]
+
+
+class TestGoogleOptionalDep:
+    """Verify pyproject.toml has optional dependency."""
+
     def test_pyproject_has_google_optional_dep(self):
         """Verify pyproject.toml declares the google optional dependency."""
         import tomllib
