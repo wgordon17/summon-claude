@@ -760,6 +760,8 @@ class SummonSession:
         streamer = ResponseStreamer(
             router=router,
             user_id=self._authenticated_user_id,
+            show_thinking=self._config.show_thinking,
+            max_inline_chars=self._config.max_inline_chars,
         )
 
         async with ClaudeSDKClient(options) as claude:

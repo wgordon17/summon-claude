@@ -21,6 +21,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
@@ -147,6 +148,7 @@ class _TurnState:
     files_touched: list[str] = field(default_factory=list)
     user_snippet: str = ""
     turn_thread_ts: str | None = None
+    thinking_buffer: str = ""
 
 
 @dataclass
@@ -176,9 +178,13 @@ class ResponseStreamer:
         self,
         router: ThreadRouter,
         user_id: str | None = None,
+        show_thinking: bool = False,
+        max_inline_chars: int = 2500,
     ) -> None:
         self._router = router
         self._user_id = user_id
+        self._show_thinking = show_thinking
+        self._max_inline_chars = max_inline_chars
 
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
@@ -284,6 +290,8 @@ class ResponseStreamer:
                 await flush_task
 
         # Final flush
+        if self._turn.thinking_buffer:
+            await self._flush_thinking()
         if self._turn.buffer:
             await self._flush_buffer()
         if result:
@@ -304,9 +312,13 @@ class ResponseStreamer:
         parent_id = message.parent_tool_use_id
 
         for block in message.content:
-            if isinstance(block, TextBlock):
+            if isinstance(block, ThinkingBlock):
+                await self._handle_thinking_block(block)
+            elif isinstance(block, TextBlock):
+                await self._flush_thinking()
                 await self._handle_text_block(block, parent_id)
             elif isinstance(block, ToolUseBlock):
+                await self._flush_thinking()
                 await self._handle_tool_use_block(block, parent_id)
             elif isinstance(block, ToolResultBlock):
                 await self._handle_tool_result_block(block, parent_id)
@@ -348,6 +360,35 @@ class ResponseStreamer:
     ) -> None:
         """Route a ToolResultBlock to the correct thread."""
         await self._post_tool_result(block, parent_id)
+        await self._set_status("Thinking...")
+
+    async def _handle_thinking_block(self, block: ThinkingBlock) -> None:
+        """Handle a ThinkingBlock — accumulate if showing, always update status."""
+        await self._set_status("Thinking deeply...")
+        if self._show_thinking and hasattr(block, "thinking"):
+            self._turn.thinking_buffer += block.thinking
+
+    async def _flush_thinking(self) -> None:
+        """Flush accumulated thinking content to the turn thread."""
+        if not self._turn.thinking_buffer:
+            return
+        text = self._turn.thinking_buffer
+        self._turn.thinking_buffer = ""
+        if len(text) > self._max_inline_chars:
+            await self._router.upload_to_active_thread(text, "thinking.md")
+        else:
+            blocks = [
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f":thought_balloon: {text[:2900]}",
+                        }
+                    ],
+                }
+            ]
+            await self._router.post_to_active_thread("Thinking...", blocks=blocks)
         await self._set_status("Thinking...")
 
     async def _flush_conclusion_to_main(self) -> None:
