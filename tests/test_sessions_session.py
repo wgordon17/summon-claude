@@ -81,8 +81,10 @@ def make_mock_client(channel_id: str = "C_TEST_CHAN") -> AsyncMock:
     client.post_ephemeral = AsyncMock()
     client.update = AsyncMock()
     client.react = AsyncMock()
+    client.unreact = AsyncMock()
     client.upload = AsyncMock()
     client.set_topic = AsyncMock()
+    client.set_thread_status = AsyncMock()
     return client
 
 

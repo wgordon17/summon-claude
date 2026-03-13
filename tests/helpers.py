@@ -13,8 +13,10 @@ def make_mock_slack_client():
     client.post = AsyncMock(return_value=MessageRef(channel_id="C123", ts="1234567890.123456"))
     client.update = AsyncMock()
     client.react = AsyncMock()
+    client.unreact = AsyncMock()
     client.upload = AsyncMock()
     client.set_topic = AsyncMock()
+    client.set_thread_status = AsyncMock()
     client.post_ephemeral = AsyncMock()
     client.channel_id = "C123"
     return client
