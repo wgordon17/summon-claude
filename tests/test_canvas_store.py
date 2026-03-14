@@ -96,9 +96,9 @@ class TestCanvasStoreUpdateSection:
         assert "Old status" not in result
         assert "Some notes" in result
 
-    async def test_update_section_missing_heading_no_change(self, canvas_registry):
+    async def test_update_section_missing_heading_appends(self, canvas_registry):
         client = _make_mock_client()
-        md = "# Title\n\nContent\n"
+        md = "# Title\n\nContent"
         store = CanvasStore(
             session_id="sess-cv",
             canvas_id="F_1",
@@ -107,7 +107,10 @@ class TestCanvasStoreUpdateSection:
             markdown=md,
         )
         await store.update_section("Nonexistent", "New stuff")
-        assert store.read() == md
+        result = store.read()
+        assert "## Nonexistent" in result
+        assert "New stuff" in result
+        assert result.startswith("# Title\n\nContent")
 
 
 class TestReplaceSectionHelper:
@@ -124,10 +127,12 @@ class TestReplaceSectionHelper:
         assert "New content" in result
         assert "Old content" not in result
 
-    def test_heading_not_found_returns_unchanged(self):
-        md = "# Title\n\nContent\n"
+    def test_heading_not_found_appends_section(self):
+        md = "# Title\n\nContent"
         result = _replace_section(md, "Missing", "New")
-        assert result == md
+        assert "## Missing" in result
+        assert "New" in result
+        assert result.startswith("# Title\n\nContent")
 
     def test_respects_heading_level(self):
         md = "# Top\n\n## Sub\n\nSub content\n\n# Another Top\n\nOther\n"

@@ -127,13 +127,15 @@ class CanvasStore:
 
     async def _flush(self) -> None:
         """Sync markdown to Slack and clear dirty flag."""
-        md = self._markdown
-        ok = await self._client.canvas_sync(self._canvas_id, md)
-        if ok:
+        async with self._write_lock:
+            md = self._markdown
             self._dirty = False
-            logger.debug("Canvas synced to Slack for session %s", self._session_id)
-        else:
+        ok = await self._client.canvas_sync(self._canvas_id, md)
+        if not ok:
+            self._dirty = True  # re-mark for retry
             logger.debug("Canvas sync to Slack failed for session %s", self._session_id)
+        else:
+            logger.debug("Canvas synced to Slack for session %s", self._session_id)
 
     async def _sync_loop(self) -> None:
         """Background loop that periodically flushes dirty state to Slack."""
@@ -175,7 +177,9 @@ def _replace_section(markdown: str, heading: str, new_body: str) -> str:
             break
 
     if start_idx is None:
-        return markdown  # heading not found — no change
+        # Heading not found — append new section at end
+        suffix = f"\n\n## {heading}\n{new_body}"
+        return markdown.rstrip() + suffix
 
     # Find the end of the section (next heading of same or higher level)
     end_idx = len(lines)
