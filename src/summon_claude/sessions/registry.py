@@ -592,12 +592,13 @@ class SessionRegistry:
     async def set_workflow_defaults(self, instructions: str) -> None:
         """Set global default workflow instructions (upsert)."""
         db = self._check_connected()
+        now = _now()
         async with self._lock:
             await db.execute(
                 "INSERT INTO workflow_defaults (id, instructions, updated_at)"
                 " VALUES (1, ?, ?)"
                 " ON CONFLICT(id) DO UPDATE SET instructions = ?, updated_at = ?",
-                (instructions, _now(), instructions, _now()),
+                (instructions, now, instructions, now),
             )
             await db.commit()
 
