@@ -524,9 +524,8 @@ class TestStreamResult:
         ]
         stream_result = await streamer.stream_with_flush(agen(messages))
         assert stream_result is not None
-        assert stream_result.context is not None
-        assert stream_result.context.input_tokens == 84000
-        assert stream_result.context.percentage == pytest.approx(42.0)
+        # Context is now computed from JSONL transcript in session.py, not in stream_with_flush
+        assert stream_result.context is None
 
     async def test_stream_result_model_captured(self):
         """Model from AssistantMessage should appear in StreamResult."""

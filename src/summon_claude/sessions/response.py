@@ -26,7 +26,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from summon_claude.sessions.context import ContextUsage, compute_context_usage
+from summon_claude.sessions.context import ContextUsage
 from summon_claude.slack.router import ThreadRouter
 
 logger = logging.getLogger(__name__)
@@ -303,8 +303,7 @@ class ResponseStreamer:
             # Clear thread status at turn end
             await self._set_status("")
             model = self._turn.resolved_model
-            context = compute_context_usage(result.usage, model)
-            return StreamResult(result=result, context=context, model=model)
+            return StreamResult(result=result, context=None, model=model)
 
         return None
 
