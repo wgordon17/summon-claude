@@ -103,7 +103,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
         "session_info",
         (
             "Get detailed information about a specific session. "
-            "session_id: the full or partial session ID to look up."
+            "session_id: the full session ID to look up."
         ),
         {"session_id": str},
     )

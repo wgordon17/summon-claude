@@ -419,13 +419,19 @@ def create_summon_mcp_tools(  # noqa: PLR0915
                 ],
                 "is_error": True,
             }
+        channel = args.get("channel") or client.channel_id
         try:
-            _check_channel(args.get("channel"))
+            _check_channel(channel)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
-        text = args["text"][:_MAX_TEXT_CHARS]
+        text = args.get("text", "")[:_MAX_TEXT_CHARS]
+        if not text:
+            return {
+                "content": [{"type": "text", "text": "Error: text is required."}],
+                "is_error": True,
+            }
         try:
-            await client.update(ts, text)
+            await client.update(ts, text, channel=channel)
         except Exception:
             return {
                 "content": [
