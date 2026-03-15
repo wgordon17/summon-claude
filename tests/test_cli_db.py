@@ -32,7 +32,7 @@ class TestDbStatus:
         ):
             result = runner.invoke(cli, ["db", "status"])
         assert result.exit_code == 0
-        assert "Schema version: 2" in result.output
+        assert "Schema version: 3" in result.output
         assert "Integrity:" in result.output
         assert "Sessions:" in result.output
 
@@ -272,7 +272,7 @@ class TestConfigCheckDbValidation:
             patch("summon_claude.cli.config.get_data_dir", return_value=tmp_path),
         ):
             result = runner.invoke(cli, ["config", "check"])
-        assert "[PASS] Schema version 2 (current)" in result.output
+        assert "[PASS] Schema version 3 (current)" in result.output
 
     def test_config_check_reports_integrity(self, tmp_path):
         """'config check' should report database integrity OK."""

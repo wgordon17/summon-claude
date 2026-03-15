@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_turns INTEGER DEFAULT 0,
     error_message TEXT,
     parent_session_id TEXT,
-    authenticated_user_id TEXT
+    authenticated_user_id TEXT,
+    canvas_id TEXT,
+    canvas_markdown TEXT
 )
 """
 
@@ -81,7 +83,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 )
 """
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
@@ -95,11 +97,23 @@ async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
             logger.debug("Column %s already exists, skipping", col)
 
 
+async def _migrate_2_to_3(db: aiosqlite.Connection) -> None:
+    """Add canvas_id and canvas_markdown to sessions table."""
+    for col in ("canvas_id TEXT", "canvas_markdown TEXT"):
+        try:
+            await db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+        except Exception as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+            logger.debug("Column %s already exists, skipping", col)
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the existing DDL already produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
     0: None,  # baseline — no-op
     1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
 }
 
 _MAX_FAILED_ATTEMPTS = 5
@@ -276,6 +290,8 @@ class SessionRegistry:
             "ended_at",
             "error_message",
             "model",
+            "canvas_id",
+            "canvas_markdown",
         }
     )
 
@@ -423,6 +439,45 @@ class SessionRegistry:
         for session in active:
             await self.mark_stale(session["session_id"], reason)
         return active
+
+    # --- Canvas methods ---
+
+    async def update_canvas(self, session_id: str, canvas_id: str, canvas_markdown: str) -> None:
+        """Update the canvas ID and markdown for a session."""
+        db = self._check_connected()
+        async with self._lock:
+            await db.execute(
+                "UPDATE sessions SET canvas_id = ?, canvas_markdown = ?, last_activity_at = ?"
+                " WHERE session_id = ?",
+                (canvas_id, canvas_markdown, _now(), session_id),
+            )
+            await db.commit()
+
+    async def get_canvas(self, session_id: str) -> tuple[str | None, str | None]:
+        """Return (canvas_id, canvas_markdown) for a session."""
+        db = self._check_connected()
+        async with db.execute(
+            "SELECT canvas_id, canvas_markdown FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return row[0], row[1]
+            return None, None
+
+    async def get_canvas_by_channel(self, channel_id: str) -> tuple[str | None, str | None]:
+        """Return (canvas_id, canvas_markdown) for a session by channel ID."""
+        db = self._check_connected()
+        async with db.execute(
+            "SELECT canvas_id, canvas_markdown FROM sessions"
+            " WHERE slack_channel_id = ? AND canvas_id IS NOT NULL"
+            " ORDER BY started_at DESC LIMIT 1",
+            (channel_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return row[0], row[1]
+            return None, None
 
     # --- Pending auth token methods ---
 
