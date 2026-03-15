@@ -752,7 +752,7 @@ class TestMigrationNotification:
         with _start_patches() as stack:
             stack.enter_context(
                 patch(
-                    "summon_claude.sessions.registry._default_db_path",
+                    "summon_claude.sessions.registry.default_db_path",
                     return_value=db_path,
                 )
             )
@@ -779,7 +779,7 @@ class TestMigrationNotification:
         with _start_patches() as stack:
             stack.enter_context(
                 patch(
-                    "summon_claude.sessions.registry._default_db_path",
+                    "summon_claude.sessions.registry.default_db_path",
                     return_value=db_path,
                 )
             )

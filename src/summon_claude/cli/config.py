@@ -16,7 +16,7 @@ from summon_claude.config import get_config_file, get_data_dir
 from summon_claude.sessions.registry import (
     CURRENT_SCHEMA_VERSION,
     SessionRegistry,
-    _get_schema_version,
+    get_schema_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,7 +211,7 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
             reg = SessionRegistry(db_path=db_path)
             async with reg:
                 db = reg.db
-                version = await _get_schema_version(db)
+                version = await get_schema_version(db)
                 async with db.execute("PRAGMA integrity_check") as cursor:
                     row = await cursor.fetchone()
                     integrity = row[0] if row else "unknown"

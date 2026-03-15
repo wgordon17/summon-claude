@@ -445,7 +445,7 @@ def db_status(ctx: click.Context) -> None:
 @click.pass_context
 def db_reset(ctx: click.Context, yes: bool) -> None:
     """Delete and recreate the registry database."""
-    db_path = _registry._default_db_path()  # noqa: SLF001
+    db_path = _registry.default_db_path()
 
     if not yes:
         click.confirm(
@@ -465,7 +465,7 @@ def db_reset(ctx: click.Context, yes: bool) -> None:
 @click.pass_context
 def db_vacuum(ctx: click.Context) -> None:
     """Compact the database and check integrity."""
-    db_path = _registry._default_db_path()  # noqa: SLF001
+    db_path = _registry.default_db_path()
     if not db_path.exists():
         click.echo(f"Database not found: {db_path}", err=True)
         ctx.exit(1)
