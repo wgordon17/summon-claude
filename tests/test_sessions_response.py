@@ -94,13 +94,12 @@ class TestResponseStreamerStream:
         # Should have posted at least one message
         assert provider.post.call_count >= 1
 
-    async def test_result_summary_posted(self):
-        """Result summary should be posted on ResultMessage."""
+    async def test_result_only_no_streamer_post(self):
+        """ResultMessage with no text produces no streamer post (footer comes from session)."""
         streamer, router, provider = make_streamer()
         messages = [make_result_message(cost=0.0123, turns=3)]
         await streamer.stream_with_flush(agen(messages))
-        # Should post the summary
-        assert provider.post.call_count >= 1
+        assert provider.post.call_count == 0
 
     async def test_long_text_triggers_new_message(self):
         """Long text should trigger multiple messages."""
@@ -138,12 +137,11 @@ class TestResponseStreamerStream:
         assert provider.post.call_count >= 2
 
     async def test_empty_buffer_not_posted(self):
-        """Empty buffers should not be posted."""
+        """Empty buffers should not produce any streamer post."""
         streamer, router, provider = make_streamer()
         messages = [make_result_message()]
         await streamer.stream_with_flush(agen(messages))
-        # Only result summary should be posted (with blocks)
-        assert provider.post.call_count >= 1
+        assert provider.post.call_count == 0
 
 
 class TestResponseStreamerStreamWithFlush:
@@ -264,7 +262,7 @@ class TestBUG029ResultMessageWithOutput:
         assert provider.post.call_count >= 1
 
     async def test_result_message_without_output_no_extra_post(self):
-        """When ResultMessage.result is None, only summary should be posted."""
+        """When ResultMessage.result is None, streamer should not post anything."""
         streamer, router, provider = make_streamer()
         result_msg = make_result_message()
         result_msg.result = None
@@ -272,8 +270,7 @@ class TestBUG029ResultMessageWithOutput:
 
         await streamer.stream_with_flush(agen(messages))
 
-        # Should post the summary (divider + context block)
-        assert provider.post.call_count >= 1
+        assert provider.post.call_count == 0
 
 
 class TestTextOnlyResponseNoDuplicate:
@@ -387,11 +384,14 @@ class TestSplitText:
 
 
 class TestBug025ResponseDuplication:
-    """Tests for BUG-025: post-tool conclusion text only in main channel, not thread."""
+    """Tests for post-tool text routing: eager to thread + conclusion to main."""
 
-    async def test_post_tool_text_not_flushed_to_thread(self):
-        """After tool use, conclusion text should NOT be posted to thread."""
+    async def test_post_tool_text_eager_to_thread_and_conclusion_to_main(self):
+        """Post-tool text should appear in thread (eager) AND main (conclusion)."""
         streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="test")
+        provider.post.reset_mock()
+
         tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
         conclusion_text = "Conclusion text after tool"
         messages = [
@@ -400,43 +400,47 @@ class TestBug025ResponseDuplication:
         ]
         await streamer.stream_with_flush(agen(messages))
 
-        # Extract all calls to post_message to check thread_ts patterns
         calls = provider.post.call_args_list
+        thread_posts = [c for c in calls if c.kwargs.get("thread_ts")]
+        main_posts = [c for c in calls if not c.kwargs.get("thread_ts")]
 
-        # Find thread posts (those with thread_ts argument)
-        thread_posts = [call for call in calls if call.kwargs.get("thread_ts")]
+        thread_texts = [c.args[0] for c in thread_posts if c.args]
+        main_texts = [c.args[0] for c in main_posts if c.args]
 
-        # Verify no thread post contains the conclusion text
-        for call in thread_posts:
-            call_text = call.args[0] if call.args else ""
-            assert conclusion_text not in call_text
-
-    async def test_post_tool_text_flushed_to_main(self):
-        """After tool use, conclusion text SHOULD appear in main channel."""
-        streamer, router, provider = make_streamer()
-        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
-        conclusion_text = "Conclusion text after tool"
-        messages = [
-            make_assistant_message([tool_block, make_text_block(conclusion_text)]),
-            make_result_message(),
-        ]
-        await streamer.stream_with_flush(agen(messages))
-
-        # Extract all calls to post_message
-        calls = provider.post.call_args_list
-
-        # Find main channel posts (those WITHOUT thread_ts)
-        main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
-
-        # Verify the conclusion text appears in a main post
-        main_texts = [call.args[0] for call in main_posts if call.args]
+        # Eager: posted to thread
+        assert any(conclusion_text in t for t in thread_texts), (
+            f"Conclusion text not found in thread posts: {thread_texts}"
+        )
+        # Conclusion: posted to main
         assert any(conclusion_text in t for t in main_texts), (
             f"Conclusion text not found in main posts: {main_texts}"
         )
 
+    async def test_conclusion_not_duplicated_in_main(self):
+        """Conclusion text should appear exactly once in main channel."""
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="test")
+        provider.post.reset_mock()
+
+        tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
+        conclusion_text = "Unique conclusion"
+        messages = [
+            make_assistant_message([tool_block, make_text_block(conclusion_text)]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        main_posts = [c for c in provider.post.call_args_list if not c.kwargs.get("thread_ts")]
+        main_texts = [c.args[0] for c in main_posts if c.args]
+        count = sum(1 for t in main_texts if conclusion_text in t)
+        assert count == 1, f"Expected conclusion once in main, got {count}: {main_texts}"
+
     async def test_multiple_text_blocks_after_tool_concatenated(self):
         """Multiple TextBlocks after tool use should be concatenated in conclusion."""
         streamer, router, provider = make_streamer()
+        await streamer.start_turn(1, user_snippet="test")
+        provider.post.reset_mock()
+
         tool_block = make_tool_use_block("Read", {"file_path": "/src/main.py"})
         messages = [
             make_assistant_message(
@@ -450,11 +454,8 @@ class TestBug025ResponseDuplication:
         ]
         await streamer.stream_with_flush(agen(messages))
 
-        # Check that conclusion contains both parts concatenated
-        calls = provider.post.call_args_list
-        main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
-
-        full_text = "".join(call.args[0] if call.args else "" for call in main_posts)
+        main_posts = [c for c in provider.post.call_args_list if not c.kwargs.get("thread_ts")]
+        full_text = "".join(c.args[0] if c.args else "" for c in main_posts)
         assert "Part 1" in full_text
         assert "Part 2" in full_text
 
@@ -469,12 +470,9 @@ class TestBug025ResponseDuplication:
         ]
         await streamer.stream_with_flush(agen(messages))
 
-        # Extract main channel posts
         calls = provider.post.call_args_list
-        main_posts = [call for call in calls if not call.kwargs.get("thread_ts")]
-
-        # Verify pre-tool text appears in main
-        main_texts = [call.args[0] for call in main_posts if call.args]
+        main_posts = [c for c in calls if not c.kwargs.get("thread_ts")]
+        main_texts = [c.args[0] for c in main_posts if c.args]
         assert any(pre_tool_text in t for t in main_texts), (
             f"Pre-tool text not found in main posts: {main_texts}"
         )
@@ -499,34 +497,6 @@ class TestBug025ResponseDuplication:
 
 
 class TestStreamResult:
-    async def test_stream_result_contains_context(self):
-        """When ResultMessage has usage, StreamResult should have ContextUsage."""
-        streamer, router, provider = make_streamer()
-        result_msg = ResultMessage(
-            subtype="success",
-            session_id="s1",
-            is_error=False,
-            total_cost_usd=0.01,
-            num_turns=1,
-            result=None,
-            usage={
-                "input_tokens": 84000,
-                "output_tokens": 1000,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-            },
-            duration_ms=1000,
-            duration_api_ms=800,
-        )
-        messages = [
-            make_assistant_message([make_text_block("text")]),
-            result_msg,
-        ]
-        stream_result = await streamer.stream_with_flush(agen(messages))
-        assert stream_result is not None
-        # Context is now computed from JSONL transcript in session.py, not in stream_with_flush
-        assert stream_result.context is None
-
     async def test_stream_result_model_captured(self):
         """Model from AssistantMessage should appear in StreamResult."""
         streamer, router, provider = make_streamer()
@@ -544,17 +514,6 @@ class TestStreamResult:
         messages = [make_assistant_message([make_text_block("text")])]
         result = await streamer.stream_with_flush(agen(messages))
         assert result is None
-
-    async def test_stream_result_none_usage_means_none_context(self):
-        """When ResultMessage.usage is None, context should be None."""
-        streamer, router, provider = make_streamer()
-        messages = [
-            make_assistant_message([make_text_block("text")]),
-            make_result_message(),  # usage=None by default
-        ]
-        stream_result = await streamer.stream_with_flush(agen(messages))
-        assert stream_result is not None
-        assert stream_result.context is None
 
     async def test_stream_result_result_attribute_matches_message(self):
         """StreamResult.result should be the exact ResultMessage object."""
@@ -758,14 +717,14 @@ class TestSetStatus:
         call_args = provider.set_thread_status.call_args
         assert call_args.args[1] == "Thinking..."
 
-    async def test_set_status_before_tool_use(self):
+    async def test_set_status_during_tool_execution(self):
         streamer, router, provider = make_streamer()
         await streamer.start_turn(1)
         provider.set_thread_status.reset_mock()
         tool_block = make_tool_use_block("Read", {"file_path": "/test.py"})
         msg = make_assistant_message([tool_block])
         await streamer._handle_assistant_message(msg)
-        # Should have called setStatus with "Running Read..."
+        # "Running Read..." should be set AFTER the tool use post (persists during execution)
         calls = [c.args[1] for c in provider.set_thread_status.call_args_list]
         assert "Running Read..." in calls
 
@@ -773,17 +732,31 @@ class TestSetStatus:
         streamer, router, provider = make_streamer()
         await streamer.start_turn(1, user_snippet="test")
         provider.set_thread_status.reset_mock()
+        # Simulate a turn with a tool (so status actually changes during the turn)
+        tool_block = make_tool_use_block("Read", {"file_path": "/test.py"})
         messages = [
-            make_assistant_message([make_text_block("text")]),
+            make_assistant_message([tool_block, make_text_block("result")]),
             make_result_message(),
         ]
-        # stream_with_flush resets _turn but we need turn_thread_ts preserved
-        # So set it manually after the reset
-        streamer._turn.turn_thread_ts = "fake_ts"
         await streamer.stream_with_flush(agen(messages))
         # The last setStatus call should clear with ""
         calls = [c.args[1] for c in provider.set_thread_status.call_args_list]
         assert "" in calls
+
+    async def test_no_redundant_thinking_between_tools(self):
+        """No 'Thinking...' status between tool result and next tool use."""
+        streamer, router, provider = make_streamer()
+        await streamer.start_turn(1)
+        provider.set_thread_status.reset_mock()
+        tool1 = make_tool_use_block("Read", {"file_path": "/a.py"})
+        tool2 = make_tool_use_block("Edit", {"path": "/a.py"})
+        msg = make_assistant_message([tool1, tool2])
+        await streamer._handle_assistant_message(msg)
+        calls = [c.args[1] for c in provider.set_thread_status.call_args_list]
+        # Should have "Running Read..." and "Running Edit...", no "Thinking..." in between
+        assert "Running Read..." in calls
+        assert "Running Edit..." in calls
+        assert "Thinking..." not in calls
 
 
 class TestEagerIntermediateText:
@@ -854,3 +827,46 @@ class TestThinkingBlock:
         # Should set "Thinking deeply..."
         calls = [c.args[1] for c in client.set_thread_status.call_args_list]
         assert "Thinking deeply..." in calls
+
+    async def test_thinking_splits_long_content(self):
+        """Thinking content near context element limit should split, not truncate."""
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        streamer = ResponseStreamer(router, show_thinking=True, max_inline_chars=5000)
+        from claude_agent_sdk import ThinkingBlock
+
+        # 4000 chars — exceeds single context element (3000) but under max_inline_chars
+        long_thinking = "x" * 4000
+        tb = ThinkingBlock(thinking=long_thinking, signature="sig")
+        msg = AssistantMessage(content=[tb, make_text_block("result")], model="claude-opus-4-6")
+        messages = [msg, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+
+        # Should have multiple thinking posts (split), not truncated to one
+        thinking_posts = [
+            c
+            for c in client.post.call_args_list
+            if c.kwargs.get("blocks")
+            and any("thought_balloon" in str(b) for b in c.kwargs["blocks"])
+        ]
+        assert len(thinking_posts) >= 2, (
+            f"Expected multiple thinking posts for split, got {len(thinking_posts)}"
+        )
+
+
+class TestPostTurnFooter:
+    """Tests for post_turn_footer method."""
+
+    async def test_footer_posts_to_main(self):
+        streamer, router, provider = make_streamer()
+        await streamer.post_turn_footer(":checkered_flag: $0.0100 \u00b7 42% context")
+        assert provider.post.call_count == 1
+        call = provider.post.call_args
+        assert "0.0100" in call.args[0]
+        assert call.kwargs.get("blocks")
+
+    async def test_footer_contains_divider(self):
+        streamer, router, provider = make_streamer()
+        await streamer.post_turn_footer(":checkered_flag: $0.01")
+        blocks = provider.post.call_args.kwargs["blocks"]
+        assert any(b["type"] == "divider" for b in blocks)

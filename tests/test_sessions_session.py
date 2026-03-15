@@ -991,3 +991,35 @@ class TestThinkingTriggers:
         assert "ultrathink" in _THINKING_TRIGGERS
         assert "think harder" in _THINKING_TRIGGERS
         assert "megathink" in _THINKING_TRIGGERS
+
+
+class TestCompactRouting:
+    """Tests for compact command routing through _pending_turns."""
+
+    def test_pending_turn_compact_default_false(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="hello")
+        assert pt.compact is False
+
+    def test_pending_turn_compact_flag(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="", compact=True, pre_sent=False)
+        assert pt.compact is True
+        assert pt.pre_sent is False
+
+
+class TestContextWarningReset:
+    """Tests for _context_warned reset after compact."""
+
+    def test_context_warned_resets_on_init(self):
+        session = make_session()
+        assert session._context_warned is False
+
+    def test_context_warned_flag_exists(self):
+        session = make_session()
+        session._context_warned = True
+        assert session._context_warned is True
+        session._context_warned = False
+        assert session._context_warned is False

@@ -1,6 +1,6 @@
 """Session orchestrator — ties Claude SDK + Slack + permissions + streaming together."""
 
-# pyright: reportArgumentType=false, reportReturnType=false, reportAttributeAccessIssue=false
+# pyright: reportArgumentType=false, reportReturnType=false, reportAttributeAccessIssue=false, reportCallIssue=false
 # slack_sdk and claude_agent_sdk don't ship type stubs
 
 from __future__ import annotations
@@ -19,7 +19,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    TextBlock,
+    ThinkingConfigAdaptive,
+    ThinkingConfigDisabled,
+)
 from slack_sdk.http_retry.builtin_async_handlers import (
     AsyncRateLimitErrorRetryHandler,
     AsyncServerErrorRetryHandler,
@@ -325,6 +332,7 @@ class _PendingTurn:
     thread_ts: str | None = None  # Thread context
     pre_sent: bool = True  # Whether query() was already called by preprocessor
     queued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    compact: bool = False  # If True, consumer runs _execute_compact instead of normal turn
 
 
 @dataclass(frozen=True, slots=True)
@@ -768,6 +776,14 @@ class SummonSession:
             can_use_tool=rt.permission_handler.handle,
             mcp_servers={"summon-slack": slack_mcp},
             model=self._model,
+            # TODO: if config gains thinking_budget_tokens, use
+            # ThinkingConfigEnabled(budget_tokens=N) when enable_thinking
+            # is True + budget set; adaptive remains the default.
+            thinking=(
+                ThinkingConfigAdaptive()
+                if self._config.enable_thinking
+                else ThinkingConfigDisabled()
+            ),
         )
 
         streamer = ResponseStreamer(
@@ -834,57 +850,58 @@ class SummonSession:
         messages internally while the previous ``receive_response()`` is still
         streaming.
         """
-        while not self._shutdown_event.is_set():
-            try:
-                item = await asyncio.wait_for(
-                    self._raw_event_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
+        try:
+            while not self._shutdown_event.is_set():
+                try:
+                    item = await asyncio.wait_for(
+                        self._raw_event_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
+                    )
+                except TimeoutError:
+                    continue
+
+                # None sentinel = shutdown
+                if item is None:
+                    return
+
+                # Raw Slack event dict — run full preprocessing pipeline
+                result = await self._process_incoming_event(item, rt, claude=claude)
+                if result is None:
+                    # Filtered out (subtype, empty, permission input handled, etc.)
+                    continue
+                user_message, thread_ts = result
+
+                if not user_message:
+                    continue
+
+                # Pre-send: call query() immediately so SDK queues it
+                message_ts = item.get("ts")
+
+                # Emoji lifecycle: acknowledge receipt
+                if message_ts:
+                    await rt.client.react(message_ts, "inbox_tray")
+                    # Check for ultrathink triggers (permanent :brain: reaction)
+                    text_lower = user_message.lower()
+                    if any(t in text_lower for t in _THINKING_TRIGGERS):
+                        await rt.client.react(message_ts, "brain")
+
+                pre_sent = False
+                try:
+                    await claude.query(user_message)
+                    pre_sent = True
+                except Exception as e:
+                    logger.warning("Pre-send query() failed: %s — consumer will retry", e)
+
+                pending = _PendingTurn(
+                    message=user_message,
+                    message_ts=message_ts,
+                    thread_ts=thread_ts,
+                    pre_sent=pre_sent,
                 )
-            except TimeoutError:
-                continue
-
-            # None sentinel = shutdown
-            if item is None:
-                await self._pending_turns.put(None)
-                return
-
-            # Raw Slack event dict — run full preprocessing pipeline
-            result = await self._process_incoming_event(item, rt, claude=claude)
-            if result is None:
-                # Filtered out (subtype, empty, permission input handled, etc.)
-                continue
-            user_message, thread_ts = result
-
-            if not user_message:
-                continue
-
-            # Pre-send: call query() immediately so SDK queues it
-            message_ts = item.get("ts")
-
-            # Emoji lifecycle: acknowledge receipt
-            if message_ts:
-                await rt.client.react(message_ts, "inbox_tray")
-                # Check for ultrathink triggers (permanent :brain: reaction)
-                text_lower = user_message.lower()
-                if any(t in text_lower for t in _THINKING_TRIGGERS):
-                    await rt.client.react(message_ts, "brain")
-
-            pre_sent = False
-            try:
-                await claude.query(user_message)
-                pre_sent = True
-            except Exception as e:
-                logger.warning("Pre-send query() failed: %s — consumer will retry", e)
-
-            pending = _PendingTurn(
-                message=user_message,
-                message_ts=message_ts,
-                thread_ts=thread_ts,
-                pre_sent=pre_sent,
-            )
-            await self._pending_turns.put(pending)
-
-        # Shutdown event was set externally — propagate sentinel
-        await self._pending_turns.put(None)
+                await self._pending_turns.put(pending)
+        finally:
+            # Always unblock consumer — even on crash
+            with contextlib.suppress(Exception):
+                self._pending_turns.put_nowait(None)
 
     async def _run_response_consumer(
         self,
@@ -896,13 +913,22 @@ class SummonSession:
 
         Only calls ``receive_response()`` — the preprocessor already called
         ``query()`` (unless ``pre_sent=False``, in which case we call it here).
+
+        Compact commands are also routed through this consumer to prevent
+        concurrent ``receive_response()`` calls on the SDK client.
         """
         while True:
             pending = await self._pending_turns.get()
             if pending is None:
                 return
 
-            await self._handle_user_message(rt, claude, streamer, pending)
+            if pending.compact:
+                instructions = pending.message if pending.message else None
+                await self._execute_compact(
+                    rt, instructions, pending.thread_ts, pre_sent=pending.pre_sent
+                )
+            else:
+                await self._handle_user_message(rt, claude, streamer, pending)
 
     async def _handle_user_message(  # noqa: PLR0912, PLR0915
         self,
@@ -1053,6 +1079,16 @@ class SummonSession:
         summary = streamer.finalize_turn(context=self._last_context)
         await streamer.update_turn_summary(summary)
 
+        # Post turn footer with cost + context
+        cost_str = f"${cost:.4f}"
+        if self._last_context:
+            footer = (
+                f":checkered_flag: {cost_str} \u00b7 {self._last_context.percentage:.0f}% context"
+            )
+        else:
+            footer = f":checkered_flag: {cost_str}"
+        await streamer.post_turn_footer(footer)
+
         # Proactive context warning
         if (
             self._last_context
@@ -1191,13 +1227,19 @@ class SummonSession:
             logger.warning("Failed to post clear delineation: %s", e)
 
     async def _execute_compact(
-        self, rt: _SessionRuntime, instructions: str | None, thread_ts: str | None
+        self,
+        rt: _SessionRuntime,
+        instructions: str | None,
+        thread_ts: str | None,
+        *,
+        pre_sent: bool = False,
     ) -> None:
         """Execute /compact via SDK and post feedback to Slack."""
         compact_query = "/compact" + (f" {instructions}" if instructions else "")
         try:
             if self._claude:
-                await self._claude.query(compact_query)
+                if not pre_sent:
+                    await self._claude.query(compact_query)
                 pre_tokens = None
                 async for msg in self._claude.receive_response():
                     if (
@@ -1213,6 +1255,7 @@ class SummonSession:
                         f" (was ~{pre_tokens:,} tokens). Summary preserved.",
                         thread_ts=thread_ts,
                     )
+                    self._context_warned = False
                 else:
                     await rt.client.post(
                         ":warning: Compact may not have completed.",
@@ -1308,9 +1351,25 @@ class SummonSession:
         if result.metadata.get("clear"):
             await self._post_clear_delineation(rt)
 
-        # Handle !compact — execute via SDK and report results
+        # Handle !compact — pre-send and route through consumer for receive_response()
         if result.metadata.get("compact"):
-            await self._execute_compact(rt, result.metadata.get("instructions"), thread_ts)
+            instructions = result.metadata.get("instructions") or ""
+            compact_query = "/compact" + (f" {instructions}" if instructions else "")
+            pre_sent = False
+            if claude:
+                try:
+                    await claude.query(compact_query)
+                    pre_sent = True
+                except Exception as e:
+                    logger.warning("Pre-send query() for compact failed: %s", e)
+            await self._pending_turns.put(
+                _PendingTurn(
+                    message=instructions,
+                    thread_ts=thread_ts,
+                    pre_sent=pre_sent,
+                    compact=True,
+                )
+            )
             return
 
         # Pass-through: translate !cmd args -> /cmd args and enqueue
@@ -1561,8 +1620,22 @@ class SummonSession:
                     if result.metadata.get("clear"):
                         await self._post_clear_delineation(rt)
                     if result.metadata.get("compact"):
-                        await self._execute_compact(
-                            rt, result.metadata.get("instructions"), thread_ts
+                        instructions = result.metadata.get("instructions") or ""
+                        compact_query = "/compact" + (f" {instructions}" if instructions else "")
+                        pre_sent = False
+                        if claude:
+                            try:
+                                await claude.query(compact_query)
+                                pre_sent = True
+                            except Exception as e:
+                                logger.warning("Pre-send compact failed: %s", e)
+                        await self._pending_turns.put(
+                            _PendingTurn(
+                                message=instructions,
+                                thread_ts=thread_ts,
+                                pre_sent=pre_sent,
+                                compact=True,
+                            )
                         )
                         annotations.insert(0, f"`!{match.raw_name}` — compacting context...")
                     elif result.text:
