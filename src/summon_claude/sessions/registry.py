@@ -644,9 +644,9 @@ class SessionRegistry:
                     "UPDATE projects SET workflow_instructions = ? WHERE project_id = ?",
                     (instructions, project_id),
                 )
+                await db.commit()
                 if cursor.rowcount == 0:
                     raise KeyError(f"No project with id {project_id!r}")
-                await db.commit()
         except sqlite3.OperationalError as e:
             if "no such table" in str(e).lower():
                 raise RuntimeError(
@@ -657,10 +657,13 @@ class SessionRegistry:
     async def clear_project_workflow(self, project_id: str) -> None:
         """Reset per-project workflow instructions to empty string.
 
-        Requires the ``projects`` table (M2). Raises ``RuntimeError`` if the
-        table does not exist yet.
+        No-op if the project does not exist. Raises ``RuntimeError`` if the
+        ``projects`` table does not exist yet.
         """
-        await self.set_project_workflow(project_id, "")
+        try:
+            await self.set_project_workflow(project_id, "")
+        except KeyError:
+            pass
 
     async def get_effective_workflow(self, project_id: str) -> str:
         """Return effective workflow instructions for a project.

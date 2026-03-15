@@ -802,6 +802,13 @@ class TestProjectWorkflow:
         result = await registry.get_project_workflow("proj-1")
         assert result == ""
 
+    async def test_clear_project_workflow_noop_for_missing_project(self, registry):
+        """Clearing a non-existent project is a silent no-op."""
+        db = registry.db
+        await db.execute(self._PROJECTS_DDL)
+        await db.commit()
+        await registry.clear_project_workflow("no-such")  # should not raise
+
 
 class TestEffectiveWorkflow:
     async def test_effective_workflow_returns_global_when_no_project(self, registry):
