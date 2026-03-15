@@ -63,11 +63,6 @@ def tools(mock_client) -> dict:
     return {t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123"))}
 
 
-@pytest.fixture
-def reading_tools(mock_client) -> dict:
-    return {t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123"))}
-
-
 class TestUploadFile:
     async def test_happy_path(self, tools, mock_client):
         result = await tools["slack_upload_file"].handler(
@@ -353,58 +348,58 @@ class TestFetchContext:
 
 
 class TestReadHistoryTool:
-    async def test_happy_path_summary(self, reading_tools, mock_client):
-        result = await reading_tools["slack_read_history"].handler({"limit": 10})
+    async def test_happy_path_summary(self, tools, mock_client):
+        result = await tools["slack_read_history"].handler({"limit": 10})
         assert not result.get("is_error")
         text = result["content"][0]["text"]
         assert "[3.0]" in text
 
-    async def test_happy_path_raw(self, reading_tools, mock_client):
-        result = await reading_tools["slack_read_history"].handler({"format": "raw"})
+    async def test_happy_path_raw(self, tools, mock_client):
+        result = await tools["slack_read_history"].handler({"format": "raw"})
         import json
 
         parsed = json.loads(result["content"][0]["text"])
         assert isinstance(parsed, list)
 
-    async def test_limit_clamped_high(self, reading_tools, mock_client):
-        await reading_tools["slack_read_history"].handler({"limit": 999})
+    async def test_limit_clamped_high(self, tools, mock_client):
+        await tools["slack_read_history"].handler({"limit": 999})
         call_kwargs = mock_client._web.conversations_history.call_args.kwargs
         assert call_kwargs["limit"] == 200
 
-    async def test_channel_enforcement_rejects(self, reading_tools):
-        result = await reading_tools["slack_read_history"].handler({"channel": "C_FORBIDDEN"})
+    async def test_channel_enforcement_rejects(self, tools):
+        result = await tools["slack_read_history"].handler({"channel": "C_FORBIDDEN"})
         assert result["is_error"] is True
         assert "denied" in result["content"][0]["text"].lower()
         assert "C_FORBIDDEN" not in result["content"][0]["text"]
 
-    async def test_default_channel(self, reading_tools, mock_client):
-        await reading_tools["slack_read_history"].handler({})
+    async def test_default_channel(self, tools, mock_client):
+        await tools["slack_read_history"].handler({})
         call_kwargs = mock_client._web.conversations_history.call_args.kwargs
         assert call_kwargs["channel"] == "C123"
 
-    async def test_invalid_format_rejected(self, reading_tools):
-        result = await reading_tools["slack_read_history"].handler({"format": "detailed"})
+    async def test_invalid_format_rejected(self, tools):
+        result = await tools["slack_read_history"].handler({"format": "detailed"})
         assert result["is_error"] is True
         assert "invalid format" in result["content"][0]["text"].lower()
 
 
 class TestFetchThreadTool:
-    async def test_happy_path(self, reading_tools, mock_client):
-        result = await reading_tools["slack_fetch_thread"].handler({"parent_ts": "2.0"})
+    async def test_happy_path(self, tools, mock_client):
+        result = await tools["slack_fetch_thread"].handler({"parent_ts": "2.0"})
         assert not result.get("is_error")
 
-    async def test_invalid_parent_ts(self, reading_tools):
-        result = await reading_tools["slack_fetch_thread"].handler({"parent_ts": "invalid"})
+    async def test_invalid_parent_ts(self, tools):
+        result = await tools["slack_fetch_thread"].handler({"parent_ts": "invalid"})
         assert result["is_error"] is True
 
-    async def test_channel_enforcement(self, reading_tools):
-        result = await reading_tools["slack_fetch_thread"].handler(
+    async def test_channel_enforcement(self, tools):
+        result = await tools["slack_fetch_thread"].handler(
             {"parent_ts": "2.0", "channel": "C_FORBIDDEN"}
         )
         assert result["is_error"] is True
 
-    async def test_invalid_format_rejected(self, reading_tools):
-        result = await reading_tools["slack_fetch_thread"].handler(
+    async def test_invalid_format_rejected(self, tools):
+        result = await tools["slack_fetch_thread"].handler(
             {"parent_ts": "2.0", "format": "verbose"}
         )
         assert result["is_error"] is True
@@ -412,20 +407,20 @@ class TestFetchThreadTool:
 
 
 class TestGetContextTool:
-    async def test_with_url(self, reading_tools, mock_client):
+    async def test_with_url(self, tools, mock_client):
         mock_client._web.conversations_history = AsyncMock(
             side_effect=[
                 {"messages": [{"ts": "1234567890.123456", "user": "U1", "text": "hi"}]},
                 {"messages": []},
             ]
         )
-        result = await reading_tools["slack_get_context"].handler(
+        result = await tools["slack_get_context"].handler(
             {"url": "https://test.slack.com/archives/C123/p1234567890123456"}
         )
         assert not result.get("is_error")
 
-    async def test_threaded_url(self, reading_tools, mock_client):
-        result = await reading_tools["slack_get_context"].handler(
+    async def test_threaded_url(self, tools, mock_client):
+        result = await tools["slack_get_context"].handler(
             {
                 "url": "https://test.slack.com/archives/C123/p1234567890123456"
                 "?thread_ts=1234567890.000000&cid=C123"
@@ -434,46 +429,42 @@ class TestGetContextTool:
         assert not result.get("is_error")
         mock_client._web.conversations_replies.assert_called()
 
-    async def test_with_channel_and_ts(self, reading_tools, mock_client):
+    async def test_with_channel_and_ts(self, tools, mock_client):
         mock_client._web.conversations_history = AsyncMock(
             side_effect=[
                 {"messages": [{"ts": "2.0", "user": "U1", "text": "target"}]},
                 {"messages": []},
             ]
         )
-        result = await reading_tools["slack_get_context"].handler(
-            {"channel": "C123", "message_ts": "2.0"}
-        )
+        result = await tools["slack_get_context"].handler({"channel": "C123", "message_ts": "2.0"})
         assert not result.get("is_error")
 
-    async def test_invalid_url(self, reading_tools):
-        result = await reading_tools["slack_get_context"].handler(
-            {"url": "https://not-slack.com/foo"}
-        )
+    async def test_invalid_url(self, tools):
+        result = await tools["slack_get_context"].handler({"url": "https://not-slack.com/foo"})
         assert result["is_error"] is True
 
-    async def test_channel_enforcement_on_url(self, reading_tools):
-        result = await reading_tools["slack_get_context"].handler(
+    async def test_channel_enforcement_on_url(self, tools):
+        result = await tools["slack_get_context"].handler(
             {"url": "https://test.slack.com/archives/C_FORBIDDEN/p1234567890123456"}
         )
         assert result["is_error"] is True
 
-    async def test_invalid_message_ts_manual(self, reading_tools):
-        result = await reading_tools["slack_get_context"].handler(
+    async def test_invalid_message_ts_manual(self, tools):
+        result = await tools["slack_get_context"].handler(
             {"channel": "C123", "message_ts": "not-a-timestamp"}
         )
         assert result["is_error"] is True
         assert "message_ts" in result["content"][0]["text"].lower()
 
-    async def test_invalid_format_rejected(self, reading_tools):
-        result = await reading_tools["slack_get_context"].handler(
+    async def test_invalid_format_rejected(self, tools):
+        result = await tools["slack_get_context"].handler(
             {"channel": "C123", "message_ts": "2.0", "format": "xml"}
         )
         assert result["is_error"] is True
         assert "invalid format" in result["content"][0]["text"].lower()
 
-    async def test_invalid_thread_ts_in_url(self, reading_tools):
-        result = await reading_tools["slack_get_context"].handler(
+    async def test_invalid_thread_ts_in_url(self, tools):
+        result = await tools["slack_get_context"].handler(
             {"url": "https://test.slack.com/archives/C123/p1234567890123456?thread_ts=bad&cid=C123"}
         )
         assert result["is_error"] is True
@@ -590,29 +581,27 @@ class TestMessageFormatting:
 class TestAISummarization:
     """Tests for format='ai' which spawns a Haiku SDK session."""
 
-    async def test_read_history_ai_format(self, reading_tools, mock_client):
+    async def test_read_history_ai_format(self, tools, mock_client):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
                 "summon_claude.slack.mcp._ai_summarize",
                 AsyncMock(return_value="AI summary of conversation"),
             )
-            result = await reading_tools["slack_read_history"].handler({"format": "ai"})
+            result = await tools["slack_read_history"].handler({"format": "ai"})
         assert not result.get("is_error")
         assert "AI summary of conversation" in result["content"][0]["text"]
 
-    async def test_fetch_thread_ai_format(self, reading_tools, mock_client):
+    async def test_fetch_thread_ai_format(self, tools, mock_client):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
                 "summon_claude.slack.mcp._ai_summarize",
                 AsyncMock(return_value="Thread summary"),
             )
-            result = await reading_tools["slack_fetch_thread"].handler(
-                {"parent_ts": "2.0", "format": "ai"}
-            )
+            result = await tools["slack_fetch_thread"].handler({"parent_ts": "2.0", "format": "ai"})
         assert not result.get("is_error")
         assert "Thread summary" in result["content"][0]["text"]
 
-    async def test_get_context_ai_format_with_url(self, reading_tools, mock_client):
+    async def test_get_context_ai_format_with_url(self, tools, mock_client):
         mock_client._web.conversations_history = AsyncMock(
             side_effect=[
                 {"messages": [{"ts": "1234567890.123456", "user": "U1", "text": "hi"}]},
@@ -624,7 +613,7 @@ class TestAISummarization:
                 "summon_claude.slack.mcp._ai_summarize",
                 AsyncMock(return_value="Context summary"),
             )
-            result = await reading_tools["slack_get_context"].handler(
+            result = await tools["slack_get_context"].handler(
                 {
                     "url": "https://test.slack.com/archives/C123/p1234567890123456",
                     "format": "ai",
@@ -633,13 +622,13 @@ class TestAISummarization:
         assert not result.get("is_error")
         assert "Context summary" in result["content"][0]["text"]
 
-    async def test_get_context_ai_format_threaded_url(self, reading_tools, mock_client):
+    async def test_get_context_ai_format_threaded_url(self, tools, mock_client):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
                 "summon_claude.slack.mcp._ai_summarize",
                 AsyncMock(return_value="Threaded context summary"),
             )
-            result = await reading_tools["slack_get_context"].handler(
+            result = await tools["slack_get_context"].handler(
                 {
                     "url": "https://test.slack.com/archives/C123/p1234567890123456"
                     "?thread_ts=1234567890.000000&cid=C123",
@@ -649,19 +638,19 @@ class TestAISummarization:
         assert not result.get("is_error")
         assert "Threaded context summary" in result["content"][0]["text"]
 
-    async def test_ai_fallback_on_error(self, reading_tools, mock_client):
+    async def test_ai_fallback_on_error(self, tools, mock_client):
         """When AI summarization fails, falls back to summary format."""
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(
                 "summon_claude.slack.mcp._ai_summarize",
                 AsyncMock(side_effect=RuntimeError("SDK unavailable")),
             )
-            result = await reading_tools["slack_read_history"].handler({"format": "ai"})
+            result = await tools["slack_read_history"].handler({"format": "ai"})
         assert not result.get("is_error")
         # Falls back to summary format — should have timestamp markers
         assert "[3.0]" in result["content"][0]["text"]
 
-    async def test_ai_has_more_pagination_note(self, reading_tools, mock_client):
+    async def test_ai_has_more_pagination_note(self, tools, mock_client):
         mock_client._web.conversations_history = AsyncMock(
             return_value={"messages": [{"ts": "1.0", "user": "U1", "text": "hi"}], "has_more": True}
         )
@@ -670,7 +659,7 @@ class TestAISummarization:
                 "summon_claude.slack.mcp._ai_summarize",
                 AsyncMock(return_value="Summary"),
             )
-            result = await reading_tools["slack_read_history"].handler({"format": "ai"})
+            result = await tools["slack_read_history"].handler({"format": "ai"})
         assert "more messages available" in result["content"][0]["text"]
 
     async def test_ai_passes_cwd_to_summarize(self, mock_client):

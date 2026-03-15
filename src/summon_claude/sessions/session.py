@@ -715,11 +715,14 @@ class SummonSession:
             _own_cid = rt.client.channel_id
             _reg = rt.registry
             _sid = self._session_id
+            _owner = self._authenticated_user_id
 
             async def _pm_channel_scope() -> set[str]:
                 channels = {_own_cid}
-                children = await _reg.list_children(_sid)
+                children = await _reg.list_children(_sid, limit=500)
                 for child in children:
+                    if child.get("authenticated_user_id") != _owner:
+                        continue
                     cid = child.get("slack_channel_id")
                     if cid:
                         channels.add(cid)
@@ -742,6 +745,9 @@ class SummonSession:
         mcp_servers: dict = {"summon-slack": slack_mcp}
 
         if is_pm:
+            assert self._authenticated_user_id is not None, (
+                "_run_message_loop reached without authenticated_user_id"
+            )
             cli_mcp = create_summon_cli_mcp_server(
                 registry=rt.registry,
                 session_id=self._session_id,

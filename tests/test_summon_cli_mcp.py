@@ -9,6 +9,7 @@ import pytest
 
 from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.summon_cli_mcp import (
+    _MAX_ACTIVE_CHILDREN_PER_PM,
     _SENSITIVE_FIELDS,
     create_summon_cli_mcp_server,
     create_summon_cli_mcp_tools,
@@ -92,7 +93,8 @@ class TestSessionList:
         text = result["content"][0]["text"]
         assert "parent" in text
         assert "child" in text
-        assert "other" in text
+        # other user's sessions should not appear (same-user scope guard)
+        assert "other-sess" not in text
         # completed session should not appear
         assert "done-sess" not in text
 
@@ -134,6 +136,13 @@ class TestSessionList:
         assert "parent-1111" in text
         assert "child-2222" in text
 
+    async def test_other_user_sessions_hidden(self, tools):
+        """Sessions owned by a different user are never visible."""
+        for filter_type in ("active", "all"):
+            result = await tools["session_list"].handler({"filter": filter_type})
+            text = result["content"][0]["text"]
+            assert "other-3333" not in text
+
 
 class TestSessionInfo:
     async def test_found(self, tools):
@@ -145,6 +154,12 @@ class TestSessionInfo:
 
     async def test_not_found(self, tools):
         result = await tools["session_info"].handler({"session_id": "nonexistent"})
+        assert result["is_error"] is True
+        assert "not found" in result["content"][0]["text"]
+
+    async def test_other_user_session_hidden(self, tools):
+        """Other user's session returns 'not found' (no existence leak)."""
+        result = await tools["session_info"].handler({"session_id": "other-3333"})
         assert result["is_error"] is True
         assert "not found" in result["content"][0]["text"]
 
@@ -309,6 +324,129 @@ class TestSessionStart:
         assert not result.get("is_error"), result
         assert "new-session-id" in result["content"][0]["text"]
 
+    async def test_active_child_cap_enforced(self, registry, tmp_path):
+        """Spawning beyond _MAX_ACTIVE_CHILDREN_PER_PM is rejected with details."""
+        # Register a parent
+        await registry.register(
+            session_id="pm-parent",
+            pid=os.getpid(),
+            cwd=str(tmp_path),
+            name="pm-parent",
+            authenticated_user_id="U_PM",
+        )
+        await registry.update_status("pm-parent", "active", authenticated_user_id="U_PM")
+
+        # Spawn exactly _MAX_ACTIVE_CHILDREN_PER_PM active children
+        for i in range(_MAX_ACTIVE_CHILDREN_PER_PM):
+            sid = f"child-{i:04d}"
+            await registry.register(
+                session_id=sid,
+                pid=os.getpid(),
+                cwd=str(tmp_path),
+                name=f"child-{i}",
+                parent_session_id="pm-parent",
+                authenticated_user_id="U_PM",
+            )
+            await registry.update_status(sid, "active", authenticated_user_id="U_PM")
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=registry,
+                session_id="pm-parent",
+                authenticated_user_id="U_PM",
+                channel_id="C_PM",
+                cwd=str(tmp_path),
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "one-too-many"})
+        assert result["is_error"] is True
+        text = result["content"][0]["text"]
+        assert "limit reached" in text
+        assert f"{_MAX_ACTIVE_CHILDREN_PER_PM}" in text
+        # Should list active session names AND full IDs so the agent can stop them
+        assert "child-0" in text
+        assert "child-0000" in text  # full session ID included
+
+    async def test_completed_children_dont_count_toward_cap(self, registry, tmp_path):
+        """Completed children don't count toward the active cap."""
+        await registry.register(
+            session_id="pm-parent-2",
+            pid=os.getpid(),
+            cwd=str(tmp_path),
+            name="pm-parent-2",
+            authenticated_user_id="U_PM2",
+        )
+        await registry.update_status("pm-parent-2", "active", authenticated_user_id="U_PM2")
+
+        # Spawn _MAX children but mark all as completed
+        for i in range(_MAX_ACTIVE_CHILDREN_PER_PM):
+            sid = f"done-{i:04d}"
+            await registry.register(
+                session_id=sid,
+                pid=os.getpid(),
+                cwd=str(tmp_path),
+                name=f"done-{i}",
+                parent_session_id="pm-parent-2",
+                authenticated_user_id="U_PM2",
+            )
+            await registry.update_status(sid, "completed")
+
+        from summon_claude.sessions.auth import SpawnAuth
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok",
+                parent_session_id="pm-parent-2",
+                parent_channel_id="C_PM2",
+                target_user_id="U_PM2",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="new-id")
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=registry,
+                session_id="pm-parent-2",
+                authenticated_user_id="U_PM2",
+                channel_id="C_PM2",
+                cwd=str(tmp_path),
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "still-ok"})
+        assert not result.get("is_error"), result
+
+    async def test_registry_error_blocks_spawn(self, tmp_path):
+        """Registry failure during cap check is fail-closed, not fail-open."""
+        mock_reg = AsyncMock()
+        mock_reg.list_children = AsyncMock(side_effect=RuntimeError("DB locked"))
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=mock_reg,
+                session_id="pm-x",
+                authenticated_user_id="U_PM",
+                channel_id="C_PM",
+                cwd=str(tmp_path),
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "should-fail"})
+        assert result["is_error"] is True
+        assert "could not verify" in result["content"][0]["text"]
+
+    def test_max_active_children_constant(self):
+        assert _MAX_ACTIVE_CHILDREN_PER_PM == 15
+
 
 class TestSessionStop:
     async def test_not_found(self, tools):
@@ -326,10 +464,11 @@ class TestSessionStop:
         assert result["is_error"] is True
         assert "own session" in result["content"][0]["text"]
 
-    async def test_wrong_user_rejected(self, tools):
+    async def test_wrong_user_hidden(self, tools):
+        """Other user's session returns 'not found' — no existence leak."""
         result = await tools["session_stop"].handler({"session_id": "other-3333"})
         assert result["is_error"] is True
-        assert "different user" in result["content"][0]["text"]
+        assert "not found" in result["content"][0]["text"]
 
     async def test_missing_session_id(self, tools):
         result = await tools["session_stop"].handler({})
@@ -353,16 +492,28 @@ class TestSessionStop:
         assert "Stopped" in result["content"][0]["text"]
         mock_ipc.assert_called_once_with("child-2222")
 
+    async def test_daemon_not_found_returns_warning(self, populated_registry):
+        """When daemon says session not found, return warning (not error)."""
+        mock_ipc = AsyncMock(return_value=False)
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd="/home/user/proj",
+                _ipc_stop_session=mock_ipc,
+            )
+        }
+        result = await local_tools["session_stop"].handler({"session_id": "child-2222"})
+        assert not result.get("is_error")
+        assert "not found in the daemon" in result["content"][0]["text"]
+
 
 class TestSensitiveFields:
-    def test_sensitive_fields_includes_authenticated_user_id(self):
-        assert "authenticated_user_id" in _SENSITIVE_FIELDS
-
-    def test_sensitive_fields_includes_pid(self):
-        assert "pid" in _SENSITIVE_FIELDS
-
-    def test_sensitive_fields_includes_error_message(self):
-        assert "error_message" in _SENSITIVE_FIELDS
+    def test_sensitive_fields_pinned(self):
+        assert {"pid", "error_message", "authenticated_user_id"} == _SENSITIVE_FIELDS
 
 
 class TestListChildren:

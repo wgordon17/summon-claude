@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 _SESSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
+_MAX_ACTIVE_CHILDREN_PER_PM = 15
+
 _SENSITIVE_FIELDS = frozenset({"pid", "error_message", "authenticated_user_id"})
 
 
@@ -85,6 +87,10 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
             else:  # mine
                 sessions = await registry.list_children(session_id)
 
+            # Scope guard: only show sessions owned by the same user
+            sessions = [
+                s for s in sessions if s.get("authenticated_user_id") == authenticated_user_id
+            ]
             sanitized = [_sanitize_session(s) for s in sessions]
             if not sanitized:
                 return {"content": [{"type": "text", "text": "No sessions found."}]}
@@ -124,7 +130,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
             }
         try:
             session = await registry.get_session(target_id)
-            if session is None:
+            if session is None or session.get("authenticated_user_id") != authenticated_user_id:
                 return {
                     "content": [
                         {"type": "text", "text": f"Error: session '{target_id}' not found."}
@@ -151,7 +157,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
         ),
         {"name": str, "cwd": str, "model": str},
     )
-    async def session_start(args: dict) -> dict:
+    async def session_start(args: dict) -> dict:  # noqa: PLR0911
         name = args.get("name", "")
         if not _SESSION_NAME_RE.match(name):
             return {
@@ -191,6 +197,40 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
                             f"directory ({cwd}). Cannot spawn sessions in "
                             f"parent or unrelated directories."
                         ),
+                    }
+                ],
+                "is_error": True,
+            }
+
+        # Enforce active-child cap before spawning (fail-closed)
+        try:
+            children = await registry.list_children(session_id, limit=500)
+            active = [c for c in children if c.get("status") in ("pending_auth", "active")]
+            if len(active) >= _MAX_ACTIVE_CHILDREN_PER_PM:
+                active_list = ", ".join(
+                    f"{c.get('session_name', 'unnamed')} ({c['session_id']})" for c in active
+                )
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Error: active session limit reached "
+                                f"({len(active)}/{_MAX_ACTIVE_CHILDREN_PER_PM}). "
+                                f"Stop existing sessions before starting new ones.\n"
+                                f"Active sessions: {active_list}"
+                            ),
+                        }
+                    ],
+                    "is_error": True,
+                }
+        except Exception as e:
+            logger.error("Failed to verify session limit: %s", e)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Error: could not verify session limit. Try again.",
                     }
                 ],
                 "is_error": True,
@@ -253,7 +293,6 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
         "session_stop",
         (
             "Stop a running session. Cannot stop your own session. "
-            "Only sessions owned by the same user can be stopped. "
             "session_id: the session ID to stop."
         ),
         {"session_id": str},
@@ -275,7 +314,10 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
 
         try:
             target = await registry.get_session(target_id)
-            if target is None:
+
+            # Scope guard first: other users' sessions appear as "not found"
+            # to prevent leaking existence, status, or ownership.
+            if target is None or target.get("authenticated_user_id") != authenticated_user_id:
                 return {
                     "content": [
                         {"type": "text", "text": f"Error: session '{target_id}' not found."}
@@ -293,18 +335,6 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
                                 f"Error: session '{target_id}' is already "
                                 f"{target.get('status', 'ended')}."
                             ),
-                        }
-                    ],
-                    "is_error": True,
-                }
-
-            # Scope guard: same user
-            if target.get("authenticated_user_id") != authenticated_user_id:
-                return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Error: cannot stop a session owned by a different user.",
                         }
                     ],
                     "is_error": True,

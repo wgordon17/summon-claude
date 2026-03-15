@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 )
 """
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
@@ -95,11 +95,19 @@ async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
             logger.debug("Column %s already exists, skipping", col)
 
 
+async def _migrate_2_to_3(db: aiosqlite.Connection) -> None:
+    """Add index on parent_session_id for list_children queries."""
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_parent_session_id ON sessions (parent_session_id)"
+    )
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the existing DDL already produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
     0: None,  # baseline — no-op
     1: _migrate_1_to_2,
+    2: _migrate_2_to_3,
 }
 
 _MAX_FAILED_ATTEMPTS = 5
