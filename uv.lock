@@ -1993,6 +1993,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pyyaml" },
     { name = "ruff" },
+    { name = "workspace-mcp" },
 ]
 
 [package.metadata]
@@ -2022,6 +2023,7 @@ dev = [
     { name = "pytest-asyncio", specifier = "==1.3.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "ruff", specifier = "==0.15.2" },
+    { name = "workspace-mcp", specifier = ">=1.3" },
 ]
 
 [[package]]

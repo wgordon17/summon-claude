@@ -14,7 +14,6 @@ import os
 import queue
 import re
 import secrets
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,7 +30,9 @@ from summon_claude.config import (
     SummonConfig,
     discover_installed_plugins,
     discover_plugin_skills,
+    find_workspace_mcp_bin,
     get_data_dir,
+    google_mcp_env,
 )
 from summon_claude.sessions.auth import SessionAuth
 from summon_claude.sessions.commands import (
@@ -146,12 +147,16 @@ _SYSTEM_PROMPT = {
 def _build_google_workspace_mcp(services: str) -> dict:
     """Build MCP server config for Google Workspace (workspace-mcp).
 
-    Uses sys.executable to ensure we run from the same Python environment
-    as summon, so it works whether installed via pip, pipx, or Homebrew.
+    The ``--tools`` flag expects space-separated service names, so we
+    split the comma-separated config value into individual args.
+    Includes ``env`` overrides so the MCP server subprocess stores
+    credentials in summon's data directory.
     """
+    service_list = [s.strip() for s in services.split(",") if s.strip()]
     return {
-        "command": sys.executable,
-        "args": ["-m", "workspace_mcp", "--tools", services, "--tool-tier", "core"],
+        "command": str(find_workspace_mcp_bin()),
+        "args": ["--tools", *service_list, "--tool-tier", "core", "--single-user"],
+        "env": google_mcp_env(),
     }
 
 
@@ -161,9 +166,7 @@ _SCRIBE_SYSTEM_PROMPT_APPEND = (
     "via summon-claude, bridged to a Slack channel. Use standard markdown "
     "formatting — output is auto-converted for Slack.\n\n"
     "Your data sources:\n"
-    "- Gmail: check for new/unread emails using gmail tools\n"
-    "- Google Calendar: check for upcoming events, changed events, new invitations\n"
-    "- Google Drive: check for recently modified/shared documents\n"
+    "{google_section}"
     "{external_slack_section}"
     "\n"
     "Your scan protocol (triggered every {scan_interval} minutes):\n"
@@ -233,6 +236,7 @@ def build_scribe_system_prompt(
     scan_interval: int,
     user_mention: str,
     importance_keywords: str,
+    google_enabled: bool = True,
     slack_enabled: bool = False,
 ) -> dict:
     """Build the Scribe system prompt with interpolated values.
@@ -241,8 +245,22 @@ def build_scribe_system_prompt(
         scan_interval: Scan interval in minutes.
         user_mention: Slack user mention string (e.g. "<@U12345>").
         importance_keywords: Comma-separated importance keywords.
+        google_enabled: Whether Google Workspace MCP is available.
         slack_enabled: Whether external Slack monitoring is enabled.
+
+    Raises:
+        ValueError: If neither Google nor Slack data sources are enabled.
     """
+    if not google_enabled and not slack_enabled:
+        raise ValueError("Scribe requires at least one data source (Google or Slack)")
+
+    google_section = (
+        "- Gmail: check for new/unread emails using gmail tools\n"
+        "- Google Calendar: check for upcoming events, changed events, new invitations\n"
+        "- Google Drive: check for recently modified/shared documents\n"
+        if google_enabled
+        else ""
+    )
     external_slack_section = (
         "- External Slack: check monitored channels for new messages\n" if slack_enabled else ""
     )
@@ -250,6 +268,7 @@ def build_scribe_system_prompt(
         scan_interval=scan_interval,
         user_mention=user_mention,
         importance_keywords=importance_keywords or "urgent, action required, deadline",
+        google_section=google_section,
         external_slack_section=external_slack_section,
     )
     return {
