@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import (
@@ -203,7 +203,7 @@ def _format_messages(
 
 def create_summon_mcp_tools(  # noqa: PLR0915
     client: SlackClient,
-    allowed_channels: Callable[[], set[str]] | None = None,
+    allowed_channels: Callable[[], Awaitable[set[str]]],
     cwd: str = ".",
 ) -> list[SdkMcpTool]:
     """Create MCP tool instances bound to the given SlackClient.
@@ -213,9 +213,9 @@ def create_summon_mcp_tools(  # noqa: PLR0915
     previously posted to the active turn thread; they now post to main channel.
     """
 
-    def _check_channel(channel: str | None) -> str:
+    async def _check_channel(channel: str | None) -> str:
         resolved = channel or client.channel_id
-        allowed = (allowed_channels or (lambda: {client.channel_id}))()
+        allowed = await allowed_channels()
         if resolved not in allowed:
             raise ValueError("Channel access denied")
         return resolved
@@ -231,7 +231,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
     )
     async def upload_file(args: dict) -> dict:
         try:
-            _check_channel(None)
+            await _check_channel(None)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
         content = args["content"]
@@ -270,7 +270,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
     )
     async def create_thread(args: dict) -> dict:
         try:
-            _check_channel(None)
+            await _check_channel(None)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
         parent_ts = args.get("parent_ts", "")
@@ -314,7 +314,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
     )
     async def react(args: dict) -> dict:
         try:
-            _check_channel(None)
+            await _check_channel(None)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
         emoji_name = args["emoji"].strip(":")
@@ -364,7 +364,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
     )
     async def post_snippet(args: dict) -> dict:
         try:
-            _check_channel(None)
+            await _check_channel(None)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
         code = args["code"][: _MAX_TEXT_CHARS - 20]  # Reserve space for fences/title
@@ -393,6 +393,57 @@ def create_summon_mcp_tools(  # noqa: PLR0915
                 "is_error": True,
             }
         return {"content": [{"type": "text", "text": "Code snippet posted to Slack"}]}
+
+    @tool(
+        "slack_update_message",
+        (
+            "Update an existing Slack message. "
+            "ts: message timestamp in '1234567890.123456' format. "
+            "text: new message text (max 3000 chars). "
+            "channel: channel ID (default: session channel)."
+        ),
+        {"ts": str, "text": str, "channel": str},
+    )
+    async def update_message(args: dict) -> dict:
+        ts = args.get("ts", "")
+        if not _PARENT_TS_RE.match(ts):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Error: invalid ts format. "
+                            "Expected 'seconds.microseconds' e.g. '1234567890.123456'."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+        channel = args.get("channel") or client.channel_id
+        try:
+            await _check_channel(channel)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+        text = args.get("text", "")[:_MAX_TEXT_CHARS]
+        if not text:
+            return {
+                "content": [{"type": "text", "text": "Error: text is required."}],
+                "is_error": True,
+            }
+        try:
+            await client.update(ts, text, channel=channel)
+        except Exception:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Error: failed to update message."
+                        " Check Slack API connectivity and permissions.",
+                    }
+                ],
+                "is_error": True,
+            }
+        return {"content": [{"type": "text", "text": "Message updated"}]}
 
     # ------------------------------------------------------------------
     # Reading tools
@@ -430,7 +481,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
                     ],
                     "is_error": True,
                 }
-            channel = _check_channel(args.get("channel"))
+            channel = await _check_channel(args.get("channel"))
             fmt = args.get("format", "summary")
             if fmt not in _VALID_FORMATS:
                 return {
@@ -484,7 +535,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
             }
         try:
             limit = max(1, min(args.get("limit", 50), 200))
-            channel = _check_channel(args.get("channel"))
+            channel = await _check_channel(args.get("channel"))
             fmt = args.get("format", "summary")
             if fmt not in _VALID_FORMATS:
                 return {
@@ -599,7 +650,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
                     "is_error": True,
                 }
 
-            channel = _check_channel(channel)
+            channel = await _check_channel(channel)
 
             # Threaded URL: fetch thread, not channel context
             if thread_ts_from_url:
@@ -657,6 +708,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
         create_thread,
         react,
         post_snippet,
+        update_message,
         read_history,
         fetch_thread,
         get_context,
@@ -665,7 +717,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
 
 def create_summon_mcp_server(
     client: SlackClient,
-    allowed_channels: Callable[[], set[str]] | None = None,
+    allowed_channels: Callable[[], Awaitable[set[str]]],
     cwd: str = ".",
 ) -> McpSdkServerConfig:
     """Create an MCP server with Slack tools bound to the current SlackClient."""
