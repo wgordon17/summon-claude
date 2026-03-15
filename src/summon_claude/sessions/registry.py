@@ -634,15 +634,18 @@ class SessionRegistry:
         """Set per-project workflow instructions.
 
         Requires the ``projects`` table (M2). Raises ``RuntimeError`` if the
-        table does not exist yet.
+        table does not exist yet. Raises ``KeyError`` if the project_id does
+        not exist in the projects table.
         """
         db = self._check_connected()
         try:
             async with self._lock:
-                await db.execute(
+                cursor = await db.execute(
                     "UPDATE projects SET workflow_instructions = ? WHERE project_id = ?",
                     (instructions, project_id),
                 )
+                if cursor.rowcount == 0:
+                    raise KeyError(f"No project with id {project_id!r}")
                 await db.commit()
         except sqlite3.OperationalError as e:
             if "no such table" in str(e).lower():

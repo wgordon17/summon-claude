@@ -728,6 +728,13 @@ class TestWorkflowDefaults:
 
 
 class TestProjectWorkflow:
+    _PROJECTS_DDL = (
+        "CREATE TABLE projects ("
+        "  project_id TEXT PRIMARY KEY,"
+        "  workflow_instructions TEXT NOT NULL DEFAULT ''"
+        ")"
+    )
+
     async def test_get_project_workflow_no_projects_table(self, registry):
         """Returns empty string when projects table doesn't exist."""
         result = await registry.get_project_workflow("proj-1")
@@ -742,6 +749,58 @@ class TestProjectWorkflow:
         """Raises RuntimeError when projects table doesn't exist."""
         with pytest.raises(RuntimeError, match="projects table"):
             await registry.clear_project_workflow("proj-1")
+
+    async def test_get_project_workflow_returns_instructions(self, registry):
+        """Returns stored instructions when project exists."""
+        db = registry.db
+        await db.execute(self._PROJECTS_DDL)
+        await db.execute(
+            "INSERT INTO projects (project_id, workflow_instructions) VALUES ('proj-1', 'Use TDD.')"
+        )
+        await db.commit()
+        result = await registry.get_project_workflow("proj-1")
+        assert result == "Use TDD."
+
+    async def test_get_project_workflow_missing_project(self, registry):
+        """Returns empty string when project_id not in table."""
+        db = registry.db
+        await db.execute(self._PROJECTS_DDL)
+        await db.commit()
+        result = await registry.get_project_workflow("no-such")
+        assert result == ""
+
+    async def test_set_project_workflow_updates_existing(self, registry):
+        """Updates instructions for an existing project."""
+        db = registry.db
+        await db.execute(self._PROJECTS_DDL)
+        await db.execute(
+            "INSERT INTO projects (project_id, workflow_instructions) VALUES ('proj-1', 'Old.')"
+        )
+        await db.commit()
+        await registry.set_project_workflow("proj-1", "New.")
+        result = await registry.get_project_workflow("proj-1")
+        assert result == "New."
+
+    async def test_set_project_workflow_raises_on_missing_project(self, registry):
+        """Raises KeyError when project_id doesn't exist in the table."""
+        db = registry.db
+        await db.execute(self._PROJECTS_DDL)
+        await db.commit()
+        with pytest.raises(KeyError, match="proj-missing"):
+            await registry.set_project_workflow("proj-missing", "instructions")
+
+    async def test_clear_project_workflow_resets_to_empty(self, registry):
+        """Clears instructions by setting to empty string."""
+        db = registry.db
+        await db.execute(self._PROJECTS_DDL)
+        await db.execute(
+            "INSERT INTO projects (project_id, workflow_instructions)"
+            " VALUES ('proj-1', 'Some instructions.')"
+        )
+        await db.commit()
+        await registry.clear_project_workflow("proj-1")
+        result = await registry.get_project_workflow("proj-1")
+        assert result == ""
 
 
 class TestEffectiveWorkflow:
