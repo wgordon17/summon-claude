@@ -197,14 +197,33 @@ class TestSlackClient:
         assert call_args[0][0] == "canvases.create"
         assert call_args[1]["json"]["channel_id"] == "C123"
 
-    async def test_canvas_create_fallback_on_failure(self):
+    async def test_canvas_create_fallback_syncs_and_renames(self):
+        """Fallback should find existing canvas, sync content, and rename."""
         client, web = self._make_client()
-        web.api_call = AsyncMock(side_effect=Exception("plan_limit"))
-        web.files_list = AsyncMock(return_value={"files": [{"id": "F_EXIST"}]})
-        result = await client.canvas_create("# Hello")
-        assert result == "F_EXIST"
+        call_count = 0
 
-    async def test_canvas_create_returns_none_when_all_fail(self):
+        async def api_call_side_effect(method, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if method == "canvases.create":
+                raise Exception("plan_limit")
+            return {"ok": True}
+
+        web.api_call = AsyncMock(side_effect=api_call_side_effect)
+        web.files_list = AsyncMock(return_value={"files": [{"id": "F_EXIST"}]})
+        result = await client.canvas_create("# Hello", title="My Canvas")
+        assert result == "F_EXIST"
+        # Should have called: canvases.create (failed), canvases.edit (sync), canvases.edit (rename)
+        assert web.api_call.call_count == 3
+        edit_calls = [c for c in web.api_call.call_args_list if c[0][0] == "canvases.edit"]
+        assert len(edit_calls) == 2
+        # First edit is content replace
+        assert edit_calls[0][1]["json"]["changes"][0]["operation"] == "replace"
+        # Second edit is rename
+        assert edit_calls[1][1]["json"]["changes"][0]["operation"] == "rename"
+        assert edit_calls[1][1]["json"]["changes"][0]["title_content"]["markdown"] == "My Canvas"
+
+    async def test_canvas_create_fallback_no_existing(self):
         client, web = self._make_client()
         web.api_call = AsyncMock(side_effect=Exception("fail"))
         web.files_list = AsyncMock(return_value={"files": []})
@@ -223,6 +242,23 @@ class TestSlackClient:
         client, web = self._make_client()
         web.api_call = AsyncMock(side_effect=Exception("rate_limited"))
         ok = await client.canvas_sync("F_ABC", "# Updated")
+        assert ok is False
+
+    async def test_canvas_rename_success(self):
+        client, web = self._make_client()
+        web.api_call = AsyncMock(return_value={"ok": True})
+        ok = await client.canvas_rename("F_ABC", "New Title")
+        assert ok is True
+        call_args = web.api_call.call_args
+        assert call_args[0][0] == "canvases.edit"
+        change = call_args[1]["json"]["changes"][0]
+        assert change["operation"] == "rename"
+        assert change["title_content"]["markdown"] == "New Title"
+
+    async def test_canvas_rename_failure_returns_false(self):
+        client, web = self._make_client()
+        web.api_call = AsyncMock(side_effect=Exception("not_allowed"))
+        ok = await client.canvas_rename("F_ABC", "New Title")
         assert ok is False
 
     async def test_get_canvas_id_returns_first_file(self):

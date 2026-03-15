@@ -216,7 +216,8 @@ class SlackClient:
 
         On free-plan workspaces ``canvases.create`` without a channel may fail,
         so we always pass ``channel_id``.  If creation fails entirely we fall
-        back to finding an existing canvas via ``get_canvas_id``.
+        back to finding an existing canvas via ``get_canvas_id``, overwriting
+        its content and renaming it.
 
         Returns the canvas file ID, or ``None`` if all attempts fail.
         """
@@ -236,8 +237,12 @@ class SlackClient:
         except Exception as e:
             logger.warning("canvases.create failed: %s — attempting fallback", e)
 
-        # Fallback: maybe one was already created (or auto-created by Slack)
-        return await self.get_canvas_id()
+        # Fallback: find existing canvas, overwrite content and rename
+        existing_id = await self.get_canvas_id()
+        if existing_id:
+            await self.canvas_sync(existing_id, markdown)
+            await self.canvas_rename(existing_id, title)
+        return existing_id
 
     async def canvas_sync(self, canvas_id: str, markdown: str) -> bool:
         """Update a canvas with new markdown content (best-effort).
@@ -264,6 +269,32 @@ class SlackClient:
             return True
         except Exception as e:
             logger.debug("canvas_sync failed for %s: %s", canvas_id, e)
+            return False
+
+    async def canvas_rename(self, canvas_id: str, title: str) -> bool:
+        """Rename a canvas title (best-effort).
+
+        Returns ``True`` on success, ``False`` on failure (never raises).
+        """
+        try:
+            await self._web.api_call(
+                "canvases.edit",
+                json={
+                    "canvas_id": canvas_id,
+                    "changes": [
+                        {
+                            "operation": "rename",
+                            "title_content": {
+                                "type": "markdown",
+                                "markdown": title,
+                            },
+                        }
+                    ],
+                },
+            )
+            return True
+        except Exception as e:
+            logger.debug("canvas_rename failed for %s: %s", canvas_id, e)
             return False
 
     async def get_canvas_id(self) -> str | None:

@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 _SYNC_DEBOUNCE_S = 60.0
 _DIRTY_DELAY_S = 2.0
+_BACKOFF_THRESHOLD = 3
+_BACKOFF_INTERVAL_S = 300.0
 
 
 class CanvasStore:
@@ -42,6 +44,7 @@ class CanvasStore:
         self._registry = registry
         self._markdown = markdown
         self._dirty = False
+        self._consecutive_failures = 0
         self._write_lock = asyncio.Lock()
         self._sync_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
@@ -137,20 +140,40 @@ class CanvasStore:
             self._dirty = False
         ok = await self._client.canvas_sync(self._canvas_id, md)
         if not ok:
+            self._consecutive_failures += 1
             # Safe without _write_lock: this only escalates False→True (never
             # clears the flag).  A concurrent write() would have already set
             # _dirty=True under the lock, so this re-mark is idempotent.
             self._dirty = True
-            logger.debug("Canvas sync to Slack failed for session %s", self._session_id)
+            if self._consecutive_failures >= _BACKOFF_THRESHOLD:
+                logger.error(
+                    "Canvas sync failed %d times for session %s, backing off to %ds",
+                    self._consecutive_failures,
+                    self._session_id,
+                    _BACKOFF_INTERVAL_S,
+                )
+            else:
+                logger.debug("Canvas sync to Slack failed for session %s", self._session_id)
         else:
+            self._consecutive_failures = 0
             logger.debug("Canvas synced to Slack for session %s", self._session_id)
 
     async def _sync_loop(self) -> None:
-        """Background loop that periodically flushes dirty state to Slack."""
+        """Background loop that periodically flushes dirty state to Slack.
+
+        Uses ``_SYNC_DEBOUNCE_S`` as the normal interval.  After
+        ``_BACKOFF_THRESHOLD`` consecutive failures, switches to
+        ``_BACKOFF_INTERVAL_S`` until a sync succeeds.
+        """
         try:
             while not self._stop_event.is_set():
+                interval = (
+                    _BACKOFF_INTERVAL_S
+                    if self._consecutive_failures >= _BACKOFF_THRESHOLD
+                    else _SYNC_DEBOUNCE_S
+                )
                 try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=_SYNC_DEBOUNCE_S)
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
                     break  # stop_event was set
                 except TimeoutError:
                     pass
