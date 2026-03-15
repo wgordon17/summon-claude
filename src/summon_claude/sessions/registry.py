@@ -470,7 +470,8 @@ class SessionRegistry:
         db = self._check_connected()
         async with db.execute(
             "SELECT canvas_id, canvas_markdown FROM sessions"
-            " WHERE slack_channel_id = ? ORDER BY started_at DESC LIMIT 1",
+            " WHERE slack_channel_id = ? AND canvas_id IS NOT NULL"
+            " ORDER BY started_at DESC LIMIT 1",
             (channel_id,),
         ) as cursor:
             row = await cursor.fetchone()

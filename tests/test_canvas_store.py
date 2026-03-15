@@ -141,6 +141,42 @@ class TestReplaceSectionHelper:
         assert "Sub content" not in result
         assert "Other" in result
 
+    def test_heading_with_hash_prefix_not_found_no_double_prefix(self):
+        """Passing '## Status' should not create '## ## Status'."""
+        md = "# Title\n\nContent"
+        result = _replace_section(md, "## Status", "New")
+        assert "## Status" in result
+        assert "## ## Status" not in result
+        assert "New" in result
+
+    def test_heading_with_triple_hash_prefix_not_found(self):
+        """Passing '### Detail' should not create '## ### Detail'."""
+        md = "# Title\n\nContent"
+        result = _replace_section(md, "### Detail", "New")
+        assert "## Detail" in result
+        assert "### Detail" not in result
+        assert "## ### Detail" not in result
+
+    def test_heading_with_hash_prefix_found(self):
+        """Passing '## Status' should still match an existing '## Status' heading."""
+        md = "# Title\n\n## Status\n\nOld\n"
+        result = _replace_section(md, "## Status", "New")
+        assert "New" in result
+        assert "Old" not in result
+
+    def test_empty_body_clears_section(self):
+        md = "# Title\n\n## Status\n\nOld content\n\n## Notes\n\nKeep\n"
+        result = _replace_section(md, "Status", "")
+        assert "Old content" not in result
+        assert "## Status" in result
+        assert "Keep" in result
+
+    def test_multiline_body(self):
+        md = "# Title\n\n## Status\n\nOld\n"
+        result = _replace_section(md, "Status", "Line 1\nLine 2\nLine 3")
+        assert "Line 1\nLine 2\nLine 3" in result
+        assert "Old" not in result
+
 
 class TestCanvasStoreRestore:
     async def test_restore_returns_store_when_canvas_exists(self, canvas_registry):

@@ -720,6 +720,22 @@ class TestCanvasMethods:
         assert canvas_id is None
         assert md is None
 
+    async def test_get_canvas_by_channel_skips_null_canvas(self, registry):
+        """Newer session with no canvas should not shadow older session with canvas."""
+        # Older session with canvas
+        await registry.register("sess-old", 111, "/tmp")
+        await registry.update_status("sess-old", "active", slack_channel_id="C_SHARED")
+        await registry.update_canvas("sess-old", "F_OLD", "# Old canvas")
+
+        # Newer session in same channel but errored before canvas creation
+        await registry.register("sess-new", 222, "/tmp")
+        await registry.update_status("sess-new", "errored", slack_channel_id="C_SHARED")
+        # sess-new has no canvas_id (NULL)
+
+        canvas_id, md = await registry.get_canvas_by_channel("C_SHARED")
+        assert canvas_id == "F_OLD"
+        assert md == "# Old canvas"
+
     async def test_canvas_id_in_updatable_fields(self):
         assert "canvas_id" in SessionRegistry._UPDATABLE_FIELDS
         assert "canvas_markdown" in SessionRegistry._UPDATABLE_FIELDS

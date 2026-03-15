@@ -132,7 +132,10 @@ class CanvasStore:
             self._dirty = False
         ok = await self._client.canvas_sync(self._canvas_id, md)
         if not ok:
-            self._dirty = True  # re-mark for retry
+            # Safe without _write_lock: this only escalates False→True (never
+            # clears the flag).  A concurrent write() would have already set
+            # _dirty=True under the lock, so this re-mark is idempotent.
+            self._dirty = True
             logger.debug("Canvas sync to Slack failed for session %s", self._session_id)
         else:
             logger.debug("Canvas synced to Slack for session %s", self._session_id)
@@ -177,8 +180,9 @@ def _replace_section(markdown: str, heading: str, new_body: str) -> str:
             break
 
     if start_idx is None:
-        # Heading not found — append new section at end
-        suffix = f"\n\n## {heading}\n{new_body}"
+        # Heading not found — append new section at end.
+        # heading_stripped has any leading '#' removed, so we always create h2.
+        suffix = f"\n\n## {heading_stripped}\n{new_body}"
         return markdown.rstrip() + suffix
 
     # Find the end of the section (next heading of same or higher level)
