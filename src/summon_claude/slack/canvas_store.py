@@ -68,12 +68,17 @@ class CanvasStore:
     async def update_section(self, heading: str, content: str) -> None:
         """Replace the body of a markdown section identified by heading.
 
-        The section runs from the heading line to the next heading of equal
-        or higher level (or end of document).  The heading line itself is
-        preserved; only the body is replaced.
+        *heading* is matched by text only (e.g. ``"Status"``, not
+        ``"## Status"``).  Any leading ``#`` characters are stripped.
+        If the heading is not found, a new h2 section is appended.
+
+        Raises ``ValueError`` if *heading* is empty after stripping.
         """
+        normalized = heading.strip().lstrip("#").strip()
+        if not normalized:
+            raise ValueError(f"heading must contain non-whitespace text, got {heading!r}")
         async with self._write_lock:
-            self._markdown = _replace_section(self._markdown, heading, content)
+            self._markdown = _replace_section(self._markdown, normalized, content)
             self._dirty = True
         await self._persist()
 

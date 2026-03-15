@@ -95,6 +95,45 @@ class TestCanvasStoreUpdateSection:
         assert "Old status" not in result
         assert "Some notes" in result
 
+    async def test_update_section_strips_hash_prefix(self, canvas_registry):
+        """Passing '## Status' to update_section should match 'Status'."""
+        client = _make_mock_client()
+        md = "# Title\n\n## Status\n\nOld\n"
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+            markdown=md,
+        )
+        await store.update_section("## Status", "New")
+        result = store.read()
+        assert "New" in result
+        assert "Old" not in result
+        assert "## ## Status" not in result
+
+    async def test_update_section_rejects_empty_heading(self, canvas_registry):
+        client = _make_mock_client()
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+        )
+        with pytest.raises(ValueError, match="non-whitespace text"):
+            await store.update_section("", "content")
+
+    async def test_update_section_rejects_hash_only_heading(self, canvas_registry):
+        client = _make_mock_client()
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+        )
+        with pytest.raises(ValueError, match="non-whitespace text"):
+            await store.update_section("###", "content")
+
     async def test_update_section_missing_heading_appends(self, canvas_registry):
         client = _make_mock_client()
         md = "# Title\n\nContent"
