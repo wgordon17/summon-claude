@@ -129,12 +129,12 @@ class TestVerifyShortCode:
 
 class TestGenerateSpawnToken:
     async def test_generates_valid_token(self, registry):
-        result = await generate_spawn_token(registry, "U123", "/tmp")
+        result = await generate_spawn_token(registry, "U123", "/tmp", spawn_source="cli")
         assert isinstance(result, SpawnAuth)
         assert len(result.token) == 32
         assert result.target_user_id == "U123"
         assert result.cwd == "/tmp"
-        assert result.spawn_source == "session"
+        assert result.spawn_source == "cli"
 
     async def test_cli_source(self, registry):
         result = await generate_spawn_token(registry, "U123", "/tmp", spawn_source="cli")
@@ -145,7 +145,7 @@ class TestGenerateSpawnToken:
 
 class TestVerifySpawnToken:
     async def test_valid_roundtrip(self, registry):
-        auth = await generate_spawn_token(registry, "U123", "/tmp")
+        auth = await generate_spawn_token(registry, "U123", "/tmp", spawn_source="cli")
         result = await verify_spawn_token(registry, auth.token)
         assert result is not None
         assert result.target_user_id == "U123"
@@ -155,8 +155,10 @@ class TestVerifySpawnToken:
             registry,
             "U123",
             "/tmp",
+            "session",
             parent_session_id="parent-sess-1",
             parent_channel_id="C_PARENT",
+            parent_cwd="/tmp",
         )
         result = await verify_spawn_token(registry, auth.token)
         assert result is not None
@@ -173,7 +175,7 @@ class TestVerifySpawnToken:
     async def test_expired_token(self, registry):
         # Generate token with very short TTL
         with patch("summon_claude.sessions.auth._SPAWN_TOKEN_TTL_SECONDS", 0):
-            auth = await generate_spawn_token(registry, "U123", "/tmp")
+            auth = await generate_spawn_token(registry, "U123", "/tmp", spawn_source="cli")
         # Wait briefly for it to expire
         await asyncio.sleep(0.1)
         result = await verify_spawn_token(registry, auth.token)
@@ -183,53 +185,68 @@ class TestVerifySpawnToken:
 class TestGenerateSpawnTokenValidation:
     async def test_rejects_empty_target_user_id(self, registry):
         with pytest.raises(ValueError, match="target_user_id"):
-            await generate_spawn_token(registry, "", "/tmp")
+            await generate_spawn_token(registry, "", "/tmp", "cli")
 
     async def test_rejects_whitespace_target_user_id(self, registry):
         with pytest.raises(ValueError, match="target_user_id"):
-            await generate_spawn_token(registry, "   ", "/tmp")
+            await generate_spawn_token(registry, "   ", "/tmp", "cli")
 
     async def test_rejects_empty_cwd(self, registry):
         with pytest.raises(ValueError, match="cwd"):
-            await generate_spawn_token(registry, "U123", "")
+            await generate_spawn_token(registry, "U123", "", "cli")
 
     async def test_rejects_relative_cwd(self, registry):
         with pytest.raises(ValueError, match="cwd"):
-            await generate_spawn_token(registry, "U123", "relative/path")
+            await generate_spawn_token(registry, "U123", "relative/path", "cli")
 
     async def test_rejects_empty_spawn_source(self, registry):
         with pytest.raises(ValueError, match="spawn_source"):
-            await generate_spawn_token(registry, "U123", "/tmp", spawn_source="")
+            await generate_spawn_token(registry, "U123", "/tmp", "")
 
     async def test_rejects_whitespace_spawn_source(self, registry):
         with pytest.raises(ValueError, match="spawn_source"):
-            await generate_spawn_token(registry, "U123", "/tmp", spawn_source="   ")
+            await generate_spawn_token(registry, "U123", "/tmp", "   ")
+
+    async def test_rejects_invalid_spawn_source(self, registry):
+        with pytest.raises(ValueError, match="must be one of"):
+            await generate_spawn_token(registry, "U123", "/tmp", "other")
+
+    def test_valid_spawn_sources_pinned(self):
+        """Guard test: pin the set of valid spawn sources."""
+        from summon_claude.sessions.auth import _VALID_SPAWN_SOURCES
+
+        assert {"session", "cli"} == _VALID_SPAWN_SOURCES
 
     async def test_parent_cwd_rejects_breakout(self, registry):
         """CWD outside parent_cwd is rejected."""
         with pytest.raises(ValueError, match="not within parent"):
             await generate_spawn_token(
-                registry, "U123", "/other/path", parent_cwd="/home/user/proj"
+                registry, "U123", "/other/path", "session", parent_cwd="/home/user/proj"
             )
 
     async def test_parent_cwd_allows_descendant(self, registry):
         """CWD under parent_cwd is allowed."""
         result = await generate_spawn_token(
-            registry, "U123", "/home/user/proj/sub", parent_cwd="/home/user/proj"
+            registry, "U123", "/home/user/proj/sub", "session", parent_cwd="/home/user/proj"
         )
         assert result.cwd == "/home/user/proj/sub"
 
     async def test_parent_cwd_allows_same_dir(self, registry):
         """CWD equal to parent_cwd is allowed."""
         result = await generate_spawn_token(
-            registry, "U123", "/home/user/proj", parent_cwd="/home/user/proj"
+            registry, "U123", "/home/user/proj", "session", parent_cwd="/home/user/proj"
         )
         assert result.cwd == "/home/user/proj"
 
-    async def test_parent_cwd_none_skips_check(self, registry):
-        """When parent_cwd is None (default), no ancestor check is done."""
-        result = await generate_spawn_token(registry, "U123", "/completely/different/path")
+    async def test_parent_cwd_none_skips_check_for_cli(self, registry):
+        """CLI-originated spawns skip the ancestor check when parent_cwd is None."""
+        result = await generate_spawn_token(registry, "U123", "/completely/different/path", "cli")
         assert result.cwd == "/completely/different/path"
+
+    async def test_session_spawn_requires_parent_cwd(self, registry):
+        """Session-originated spawns MUST provide parent_cwd."""
+        with pytest.raises(ValueError, match="parent_cwd is required"):
+            await generate_spawn_token(registry, "U123", "/tmp", "session")
 
     async def test_parent_cwd_symlink_escape_rejected(self, registry, tmp_path):
         """Symlink-based escape is blocked by resolve()."""
@@ -241,4 +258,6 @@ class TestGenerateSpawnTokenValidation:
         link.symlink_to(escape_target)
 
         with pytest.raises(ValueError, match="not within parent"):
-            await generate_spawn_token(registry, "U123", str(link), parent_cwd=str(parent))
+            await generate_spawn_token(
+                registry, "U123", str(link), "session", parent_cwd=str(parent)
+            )

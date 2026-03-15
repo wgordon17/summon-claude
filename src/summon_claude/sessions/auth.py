@@ -14,6 +14,7 @@ from summon_claude.sessions.registry import _MAX_FAILED_ATTEMPTS, SessionRegistr
 logger = logging.getLogger(__name__)
 
 _TOKEN_TTL_MINUTES = 5
+_VALID_SPAWN_SOURCES = frozenset({"session", "cli"})
 _SPAWN_TOKEN_TTL_SECONDS = 30
 
 
@@ -126,7 +127,8 @@ async def generate_spawn_token(
     registry: SessionRegistry,
     target_user_id: str,
     cwd: str,
-    spawn_source: str = "session",
+    spawn_source: str,
+    *,
     parent_session_id: str | None = None,
     parent_channel_id: str | None = None,
     parent_cwd: str | None = None,
@@ -144,6 +146,10 @@ async def generate_spawn_token(
         raise ValueError("cwd must be a non-empty absolute path")
     if not spawn_source or not spawn_source.strip():
         raise ValueError("spawn_source must be non-empty")
+    if spawn_source not in _VALID_SPAWN_SOURCES:
+        raise ValueError(f"spawn_source must be one of {sorted(_VALID_SPAWN_SOURCES)}")
+    if spawn_source == "session" and parent_cwd is None:
+        raise ValueError("parent_cwd is required for session-originated spawn tokens")
     if parent_cwd is not None:
         resolved_parent = Path(parent_cwd).resolve()  # noqa: ASYNC240
         resolved_child = Path(cwd).resolve()  # noqa: ASYNC240
