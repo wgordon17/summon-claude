@@ -182,8 +182,126 @@ class TestSessionStart:
         assert result["is_error"] is True
         assert "does not exist" in result["content"][0]["text"]
 
-    async def test_creates_via_daemon_ipc(self, tools, tmp_path):
+    async def test_cwd_breakout_rejected(self, tools, tmp_path):
+        """CWD outside the calling session's directory is rejected."""
+        # tools fixture has cwd="/home/user/proj"; tmp_path is NOT under it
+        result = await tools["session_start"].handler(
+            {"name": "test-session", "cwd": str(tmp_path)}
+        )
+        assert result["is_error"] is True
+        assert "must be within" in result["content"][0]["text"]
+
+    async def test_cwd_parent_dir_rejected(self, populated_registry, tmp_path):
+        """CWD that is a parent of the session's directory is rejected."""
+        # Build a real parent/child dir so the parent passes is_dir()
+        # but fails the ancestor check (parent is ABOVE the session's CWD).
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        child = parent / "child"
+        child.mkdir()
+
+        tools_child = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(child),  # session lives in child/
+            )
+        }
+        # Try to spawn in parent/ — exists, but is ABOVE session's CWD
+        result = await tools_child["session_start"].handler(
+            {"name": "test-session", "cwd": str(parent)}
+        )
+        assert result["is_error"] is True
+        assert "must be within" in result["content"][0]["text"]
+
+    async def test_cwd_subdirectory_allowed(self, populated_registry, tmp_path):
+        """CWD that is a subdirectory of the session's directory is allowed."""
         from summon_claude.sessions.auth import SpawnAuth
+
+        # Create a subdir under a controlled parent so Path.is_dir() passes
+        parent = tmp_path / "proj"
+        parent.mkdir()
+        subdir = parent / "sub"
+        subdir.mkdir()
+
+        # Build tools with cwd=parent so subdir is a valid descendant
+        tools_sub = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(parent),
+            )
+        }
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(subdir),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="new-session-id")
+
+        with (
+            patch("summon_claude.sessions.auth.generate_spawn_token", mock_spawn),
+            patch("summon_claude.cli.daemon_client.create_session_with_spawn_token", mock_ipc),
+        ):
+            result = await tools_sub["session_start"].handler(
+                {"name": "test-sub", "cwd": str(subdir)}
+            )
+        assert not result.get("is_error"), result
+
+    async def test_cwd_symlink_escape_rejected(self, populated_registry, tmp_path):
+        """Symlink pointing outside caller's CWD is rejected after resolution."""
+        parent = tmp_path / "proj"
+        parent.mkdir()
+        escape_target = tmp_path / "escape"
+        escape_target.mkdir()
+        link = parent / "sneaky"
+        link.symlink_to(escape_target)
+
+        tools_link = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(parent),
+            )
+        }
+
+        result = await tools_link["session_start"].handler(
+            {"name": "test-escape", "cwd": str(link)}
+        )
+        assert result["is_error"] is True
+        assert "must be within" in result["content"][0]["text"]
+
+    async def test_creates_via_daemon_ipc(self, populated_registry, tmp_path):
+        from summon_claude.sessions.auth import SpawnAuth
+
+        # Build tools with tmp_path as CWD so the default CWD passes the
+        # ancestor check (no explicit cwd arg -> uses the session's own CWD).
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+            )
+        }
 
         mock_spawn = AsyncMock(
             return_value=SpawnAuth(
@@ -202,10 +320,8 @@ class TestSessionStart:
             patch("summon_claude.sessions.auth.generate_spawn_token", mock_spawn),
             patch("summon_claude.cli.daemon_client.create_session_with_spawn_token", mock_ipc),
         ):
-            result = await tools["session_start"].handler(
-                {"name": "test-session", "cwd": str(tmp_path)}
-            )
-        assert not result.get("is_error")
+            result = await local_tools["session_start"].handler({"name": "test-session"})
+        assert not result.get("is_error"), result
         assert "new-session-id" in result["content"][0]["text"]
 
 

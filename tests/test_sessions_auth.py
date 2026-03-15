@@ -204,3 +204,41 @@ class TestGenerateSpawnTokenValidation:
     async def test_rejects_whitespace_spawn_source(self, registry):
         with pytest.raises(ValueError, match="spawn_source"):
             await generate_spawn_token(registry, "U123", "/tmp", spawn_source="   ")
+
+    async def test_parent_cwd_rejects_breakout(self, registry):
+        """CWD outside parent_cwd is rejected."""
+        with pytest.raises(ValueError, match="not within parent"):
+            await generate_spawn_token(
+                registry, "U123", "/other/path", parent_cwd="/home/user/proj"
+            )
+
+    async def test_parent_cwd_allows_descendant(self, registry):
+        """CWD under parent_cwd is allowed."""
+        result = await generate_spawn_token(
+            registry, "U123", "/home/user/proj/sub", parent_cwd="/home/user/proj"
+        )
+        assert result.cwd == "/home/user/proj/sub"
+
+    async def test_parent_cwd_allows_same_dir(self, registry):
+        """CWD equal to parent_cwd is allowed."""
+        result = await generate_spawn_token(
+            registry, "U123", "/home/user/proj", parent_cwd="/home/user/proj"
+        )
+        assert result.cwd == "/home/user/proj"
+
+    async def test_parent_cwd_none_skips_check(self, registry):
+        """When parent_cwd is None (default), no ancestor check is done."""
+        result = await generate_spawn_token(registry, "U123", "/completely/different/path")
+        assert result.cwd == "/completely/different/path"
+
+    async def test_parent_cwd_symlink_escape_rejected(self, registry, tmp_path):
+        """Symlink-based escape is blocked by resolve()."""
+        parent = tmp_path / "proj"
+        parent.mkdir()
+        escape_target = tmp_path / "escape"
+        escape_target.mkdir()
+        link = parent / "sneaky"
+        link.symlink_to(escape_target)
+
+        with pytest.raises(ValueError, match="not within parent"):
+            await generate_spawn_token(registry, "U123", str(link), parent_cwd=str(parent))

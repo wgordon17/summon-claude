@@ -168,6 +168,26 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
                 "is_error": True,
             }
 
+        # CWD ancestor constraint: target must be equal to or a descendant
+        # of the calling session's CWD.  Resolve symlinks first to prevent
+        # escape via crafted symlinks.
+        resolved_parent = Path(cwd).resolve()  # noqa: ASYNC240
+        resolved_target = Path(target_cwd).resolve()  # noqa: ASYNC240
+        if not resolved_target.is_relative_to(resolved_parent):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Error: cwd must be within the calling session's "
+                            f"directory ({cwd}). Cannot spawn sessions in "
+                            f"parent or unrelated directories."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+
         model = args.get("model")
 
         try:
@@ -184,6 +204,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
                 spawn_source="session",
                 parent_session_id=session_id,
                 parent_channel_id=channel_id,
+                parent_cwd=cwd,
             )
 
             options = SessionOptions(

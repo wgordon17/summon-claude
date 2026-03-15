@@ -7,6 +7,7 @@ import logging
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from summon_claude.sessions.registry import _MAX_FAILED_ATTEMPTS, SessionRegistry
 
@@ -128,14 +129,26 @@ async def generate_spawn_token(
     spawn_source: str = "session",
     parent_session_id: str | None = None,
     parent_channel_id: str | None = None,
+    parent_cwd: str | None = None,
 ) -> SpawnAuth:
-    """Generate a spawn token for pre-authenticated session creation."""
+    """Generate a spawn token for pre-authenticated session creation.
+
+    When *parent_cwd* is supplied the child *cwd* must resolve to a path
+    equal to or beneath it.  This is defence-in-depth — callers should
+    validate first, but this catches breakout attempts even if a caller
+    forgets.
+    """
     if not target_user_id or not target_user_id.strip():
         raise ValueError("target_user_id must be non-empty")
     if not cwd or not cwd.startswith("/"):
         raise ValueError("cwd must be a non-empty absolute path")
     if not spawn_source or not spawn_source.strip():
         raise ValueError("spawn_source must be non-empty")
+    if parent_cwd is not None:
+        resolved_parent = Path(parent_cwd).resolve()  # noqa: ASYNC240
+        resolved_child = Path(cwd).resolve()  # noqa: ASYNC240
+        if not resolved_child.is_relative_to(resolved_parent):
+            raise ValueError(f"cwd '{cwd}' is not within parent directory '{parent_cwd}'")
     token = secrets.token_hex(16)  # 32-char hex, 128-bit entropy
     expires_at = datetime.now(UTC) + timedelta(seconds=_SPAWN_TOKEN_TTL_SECONDS)
     await registry.store_spawn_token(
