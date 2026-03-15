@@ -228,18 +228,29 @@ def cmd_start(
     update_thread.start()
 
     resolved_cwd = str(pathlib.Path(cwd).resolve()) if cwd else str(pathlib.Path.cwd())
-    resolved_name = name or f"{pathlib.Path(resolved_cwd).name}-{secrets.token_hex(3)}"
+    if not pathlib.Path(resolved_cwd).is_dir():
+        click.echo(f"Error: working directory does not exist: {resolved_cwd}", err=True)
+        sys.exit(1)
+    base_name = pathlib.Path(resolved_cwd).name
 
-    try:
-        short_code = asyncio.run(
-            async_start(config, resolved_cwd, resolved_name, model, effort, resume)
-        )
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    # Auto-generated names retry on collision; explicit names fail immediately.
+    max_attempts = 1 if name else 3
+    short_code = ""
+    for attempt in range(max_attempts):
+        resolved_name = name or f"{base_name}-{secrets.token_hex(3)}"
+        try:
+            short_code = asyncio.run(
+                async_start(config, resolved_cwd, resolved_name, model, effort, resume)
+            )
+            break
+        except ValueError as e:
+            if attempt < max_attempts - 1:
+                continue
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
 
     _print_auth_banner(short_code)
 
