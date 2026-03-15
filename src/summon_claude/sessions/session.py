@@ -277,6 +277,7 @@ class SessionOptions:
     cwd: str
     name: str
     model: str | None = None
+    effort: str = "high"
     resume: str | None = None
 
 
@@ -326,6 +327,7 @@ class SummonSession:
         self._cwd = options.cwd
         self._name = options.name
         self._model = options.model
+        self._effort = options.effort
         self._resume = options.resume
 
         self._auth: SessionAuth | None = auth
@@ -719,6 +721,7 @@ class SummonSession:
             can_use_tool=rt.permission_handler.handle,
             mcp_servers={"summon-slack": slack_mcp},
             model=self._model,
+            effort=self._effort,
         )
 
         streamer = ResponseStreamer(
@@ -1082,6 +1085,7 @@ class SummonSession:
             cost_usd=self._total_cost,
             start_time=self._session_start_time,
             model=self._model,
+            effort=self._effort,
             session_id=self._session_id,
             metadata={"models": self._available_models},
         )
@@ -1359,6 +1363,7 @@ class SummonSession:
                     cost_usd=self._total_cost,
                     start_time=self._session_start_time,
                     model=self._model,
+                    effort=self._effort,
                     session_id=self._session_id,
                     metadata={"models": self._available_models},
                 )

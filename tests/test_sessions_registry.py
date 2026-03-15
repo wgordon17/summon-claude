@@ -690,3 +690,76 @@ class TestSpawnTokens:
         await registry.register("sess-uid", 1234, "/tmp", authenticated_user_id="U123")
         session = await registry.get_session("sess-uid")
         assert session["authenticated_user_id"] == "U123"
+
+
+class TestIsNameActive:
+    async def test_no_active_session_with_name(self, registry):
+        result = await registry.is_name_active("nonexistent")
+        assert result is False
+
+    async def test_active_session_with_name(self, registry):
+        await registry.register("sess-na-1", 111, "/tmp", "my-name")
+        result = await registry.is_name_active("my-name")
+        assert result is True
+
+    async def test_pending_auth_session_with_name(self, registry):
+        await registry.register("sess-na-2", 111, "/tmp", "pending-name")
+        # pending_auth is an active status
+        result = await registry.is_name_active("pending-name")
+        assert result is True
+
+    async def test_completed_session_name_is_not_active(self, registry):
+        await registry.register("sess-na-3", 111, "/tmp", "done-name")
+        await registry.update_status("sess-na-3", "completed")
+        result = await registry.is_name_active("done-name")
+        assert result is False
+
+    async def test_errored_session_name_is_not_active(self, registry):
+        await registry.register("sess-na-4", 111, "/tmp", "err-name")
+        await registry.update_status("sess-na-4", "errored")
+        result = await registry.is_name_active("err-name")
+        assert result is False
+
+
+class TestRegisterNameUniqueness:
+    async def test_register_rejects_duplicate_active_name(self, registry):
+        await registry.register("sess-dup-1", 111, "/tmp", "unique-name")
+        with pytest.raises(ValueError, match="active session with name"):
+            await registry.register("sess-dup-2", 222, "/tmp", "unique-name")
+
+    async def test_register_allows_name_after_completion(self, registry):
+        await registry.register("sess-reuse-1", 111, "/tmp", "reusable")
+        await registry.update_status("sess-reuse-1", "completed")
+        # Should not raise — name is freed
+        await registry.register("sess-reuse-2", 222, "/tmp", "reusable")
+        session = await registry.get_session("sess-reuse-2")
+        assert session["session_name"] == "reusable"
+
+    async def test_register_allows_none_name(self, registry):
+        await registry.register("sess-no-name-1", 111, "/tmp")
+        await registry.register("sess-no-name-2", 222, "/tmp")
+        # Both should succeed — None names don't trigger uniqueness check
+
+
+class TestResolveSessionByName:
+    async def test_resolve_by_session_name(self, registry):
+        await registry.register("sess-name-r1", 111, "/tmp", "my-project-abc123")
+        session, matches = await registry.resolve_session("my-project-abc123")
+        assert session is not None
+        assert session["session_id"] == "sess-name-r1"
+
+    async def test_resolve_by_name_ambiguous(self, registry):
+        await registry.register("sess-name-r2", 111, "/tmp", "shared-name")
+        await registry.update_status("sess-name-r2", "completed")
+        await registry.register("sess-name-r3", 222, "/tmp", "shared-name")
+        await registry.update_status("sess-name-r3", "completed")
+        session, matches = await registry.resolve_session("shared-name")
+        assert session is None
+        assert len(matches) == 2
+
+    async def test_resolve_prefers_id_over_name(self, registry):
+        """Exact ID match should take priority over name match."""
+        await registry.register("sess-name-r4", 111, "/tmp", "some-other-name")
+        session, matches = await registry.resolve_session("sess-name-r4")
+        assert session is not None
+        assert session["session_id"] == "sess-name-r4"

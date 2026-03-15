@@ -229,6 +229,16 @@ class SessionRegistry:
             raise RuntimeError("SessionRegistry not connected. Use as async context manager.")
         return self._db
 
+    async def is_name_active(self, name: str) -> bool:
+        """Check if any active session (pending_auth/active) uses this name."""
+        db = self._check_connected()
+        async with db.execute(
+            "SELECT 1 FROM sessions WHERE session_name = ?"
+            " AND status IN ('pending_auth', 'active') LIMIT 1",
+            (name,),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
     async def register(
         self,
         session_id: str,
@@ -242,6 +252,11 @@ class SessionRegistry:
         """Insert a new session with status pending_auth."""
         db = self._check_connected()
         async with self._lock:
+            if name and await self.is_name_active(name):
+                raise ValueError(
+                    f"An active session with name {name!r} already exists. "
+                    "Use --name to specify a different name."
+                )
             await db.execute(
                 """
                 INSERT INTO sessions
@@ -334,8 +349,8 @@ class SessionRegistry:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def resolve_session(self, identifier: str) -> tuple[dict | None, list[dict]]:
-        """Resolve a session by ID prefix or channel name.
+    async def resolve_session(self, identifier: str) -> tuple[dict | None, list[dict]]:  # noqa: PLR0911
+        """Resolve a session by ID prefix, session name, or channel name.
 
         Returns ``(session, matches)`` where *session* is the unique match
         (or ``None``) and *matches* is the list of candidates when ambiguous.
@@ -359,7 +374,18 @@ class SessionRegistry:
             if len(rows) > 1:
                 return None, rows
 
-        # 3. Channel name match
+        # 3. Session name match
+        async with db.execute(
+            "SELECT * FROM sessions WHERE session_name = ? ORDER BY started_at DESC",
+            (identifier,),
+        ) as cursor:
+            name_rows = [dict(r) for r in await cursor.fetchall()]
+            if len(name_rows) == 1:
+                return name_rows[0], name_rows
+            if len(name_rows) > 1:
+                return None, name_rows
+
+        # 4. Channel name match
         async with db.execute(
             "SELECT * FROM sessions WHERE slack_channel_name = ? ORDER BY started_at DESC LIMIT 1",
             (identifier,),
