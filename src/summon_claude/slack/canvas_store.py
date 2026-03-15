@@ -163,6 +163,10 @@ class CanvasStore:
 def _replace_section(markdown: str, heading: str, new_body: str) -> str:
     """Replace the body under *heading* while preserving the heading line.
 
+    *heading* is matched by text only — any leading ``#`` characters are
+    stripped before matching.  If the heading is not found, a new ``##``
+    (h2) section is appended at the end of the document.
+
     Finds the heading (any ``#`` level), then replaces everything between it
     and the next heading of equal or higher level (or EOF) with *new_body*.
     """

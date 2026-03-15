@@ -48,7 +48,8 @@ class TestTemplateFormatting:
         assert "Session Timeline" in result
 
     def test_global_pm_template_has_no_cwd(self):
-        # global-pm template should only need model, not cwd
-        result = GLOBAL_PM_CANVAS_TEMPLATE.format(model="opus-4", cwd="/tmp")
+        """Global PM template should format with model only — no cwd in output."""
+        assert "{cwd}" not in GLOBAL_PM_CANVAS_TEMPLATE
+        result = GLOBAL_PM_CANVAS_TEMPLATE.format(model="opus-4")
         assert "opus-4" in result
         assert "Active Sessions" in result

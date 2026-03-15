@@ -242,7 +242,7 @@ class SlackClient:
     async def canvas_sync(self, canvas_id: str, markdown: str) -> bool:
         """Update a canvas with new markdown content (best-effort).
 
-        Replaces all content with a single ``replace_all`` operation.
+        Replaces all content with a single ``replace`` operation.
         Returns ``True`` on success, ``False`` on failure (never raises).
         """
         try:
