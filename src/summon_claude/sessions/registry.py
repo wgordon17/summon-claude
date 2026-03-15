@@ -389,12 +389,12 @@ class SessionRegistry:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def list_children(self, parent_session_id: str) -> list[dict]:
+    async def list_children(self, parent_session_id: str, *, limit: int = 50) -> list[dict]:
         """List sessions spawned by a given parent session."""
         db = self._check_connected()
         async with db.execute(
-            "SELECT * FROM sessions WHERE parent_session_id = ? ORDER BY started_at DESC",
-            (parent_session_id,),
+            "SELECT * FROM sessions WHERE parent_session_id = ? ORDER BY started_at DESC LIMIT ?",
+            (parent_session_id, limit),
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]

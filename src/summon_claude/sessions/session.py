@@ -324,7 +324,7 @@ class SummonSession:
         parent_channel_id: str | None = None,
     ) -> None:
         self._config = config
-        self._options = options
+        self._pm_profile = options.pm_profile
         self._session_id = session_id
         self._cwd = options.cwd
         self._name = options.name
@@ -706,11 +706,34 @@ class SummonSession:
         self, rt: _SessionRuntime, router: ThreadRouter
     ) -> None:
         """Listen for Slack messages and forward them to Claude."""
-        is_pm = self._options.pm_profile
+        is_pm = self._pm_profile
 
-        # Channel scoping: regular sessions can read only their own channel.
-        # PM sessions get unrestricted access (dynamic resolver added by Global PM plan).
-        channel_scope = None if is_pm else lambda: {rt.client.channel_id}
+        # Channel scoping: every session type gets an explicit async resolver.
+        # Regular sessions: own channel only.
+        # PM sessions: own channel + channels of sessions they spawned.
+        if is_pm:
+            _own_cid = rt.client.channel_id
+            _reg = rt.registry
+            _sid = self._session_id
+
+            async def _pm_channel_scope() -> set[str]:
+                channels = {_own_cid}
+                children = await _reg.list_children(_sid)
+                for child in children:
+                    cid = child.get("slack_channel_id")
+                    if cid:
+                        channels.add(cid)
+                return channels
+
+            channel_scope = _pm_channel_scope
+        else:
+            _own_cid = rt.client.channel_id
+
+            async def _session_channel_scope() -> set[str]:
+                return {_own_cid}
+
+            channel_scope = _session_channel_scope
+
         slack_mcp = create_summon_mcp_server(
             rt.client,
             allowed_channels=channel_scope,

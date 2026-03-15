@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from summon_claude.slack.client import HistoryResult, SlackClient
 from summon_claude.slack.mcp import create_summon_mcp_server, create_summon_mcp_tools
+
+
+def _channels(*ids: str) -> Callable[[], Awaitable[set[str]]]:
+    """Create an async channel resolver for testing."""
+
+    async def _resolver() -> set[str]:
+        return set(ids)
+
+    return _resolver
 
 
 def make_mock_client() -> SlackClient:
@@ -50,14 +60,12 @@ def mock_client() -> SlackClient:
 
 @pytest.fixture
 def tools(mock_client) -> dict:
-    return {t.name: t for t in create_summon_mcp_tools(mock_client)}
+    return {t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123"))}
 
 
 @pytest.fixture
 def reading_tools(mock_client) -> dict:
-    return {
-        t.name: t for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123"})
-    }
+    return {t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123"))}
 
 
 class TestUploadFile:
@@ -218,10 +226,7 @@ class TestUpdateMessage:
         assert "ts" in result["content"][0]["text"].lower()
 
     async def test_other_channel_denied(self, mock_client):
-        scoped_tools = {
-            t.name: t
-            for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123"})
-        }
+        scoped_tools = {t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123"))}
         result = await scoped_tools["slack_update_message"].handler(
             {"ts": "1234567890.123456", "text": "updated", "channel": "C_FORBIDDEN"}
         )
@@ -238,7 +243,7 @@ class TestUpdateMessage:
 
 class TestMCPServerCreation:
     def test_returns_valid_config(self, mock_client):
-        config = create_summon_mcp_server(mock_client)
+        config = create_summon_mcp_server(mock_client, _channels("C123"))
         assert config["name"] == "summon-slack"
         assert config["type"] == "sdk"
         assert config["instance"] is not None
@@ -478,22 +483,18 @@ class TestGetContextTool:
 class TestChannelEnforcement:
     async def test_custom_allowed_channels(self, mock_client):
         custom_tools = {
-            t.name: t
-            for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123", "C456"})
+            t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123", "C456"))
         }
         result = await custom_tools["slack_read_history"].handler({"channel": "C456"})
         assert not result.get("is_error")
 
     async def test_default_is_session_channel(self, mock_client):
-        default_tools = {t.name: t for t in create_summon_mcp_tools(mock_client)}
+        default_tools = {t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123"))}
         result = await default_tools["slack_read_history"].handler({"channel": "C123"})
         assert not result.get("is_error")
 
     async def test_denied_does_not_leak_id(self, mock_client):
-        tools = {
-            t.name: t
-            for t in create_summon_mcp_tools(mock_client, allowed_channels=lambda: {"C123"})
-        }
+        tools = {t.name: t for t in create_summon_mcp_tools(mock_client, _channels("C123"))}
         result = await tools["slack_read_history"].handler({"channel": "C_SECRET"})
         assert result["is_error"] is True
         assert "C_SECRET" not in result["content"][0]["text"]
@@ -676,9 +677,7 @@ class TestAISummarization:
         """Verify cwd is threaded from create_summon_mcp_tools to _ai_summarize."""
         tools_with_cwd = {
             t.name: t
-            for t in create_summon_mcp_tools(
-                mock_client, allowed_channels=lambda: {"C123"}, cwd="/project/dir"
-            )
+            for t in create_summon_mcp_tools(mock_client, _channels("C123"), cwd="/project/dir")
         }
         with pytest.MonkeyPatch.context() as mp:
             mock_summarize = AsyncMock(return_value="summary")
@@ -778,13 +777,13 @@ class TestAISummarizeFunction:
             os.environ.pop("CLAUDECODE", None)
 
 
-class TestBackwardCompatibility:
-    def test_existing_tools_with_allowed_channels_none(self, mock_client):
-        tools = create_summon_mcp_tools(mock_client)
+class TestToolInventory:
+    def test_all_expected_tools_present(self, mock_client):
+        tools = create_summon_mcp_tools(mock_client, _channels("C123"))
         names = {t.name for t in tools}
         assert "slack_upload_file" in names
         assert "slack_create_thread" in names
 
     def test_total_tool_count(self, mock_client):
-        tools = create_summon_mcp_tools(mock_client)
+        tools = create_summon_mcp_tools(mock_client, _channels("C123"))
         assert len(tools) == 8

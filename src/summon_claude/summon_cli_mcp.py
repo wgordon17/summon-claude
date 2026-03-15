@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 _SESSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 
-_SENSITIVE_FIELDS = frozenset({"pid", "error_message"})
+_SENSITIVE_FIELDS = frozenset({"pid", "error_message", "authenticated_user_id"})
 
 
 def _sanitize_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -36,6 +37,10 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
     authenticated_user_id: str,
     channel_id: str,
     cwd: str,
+    *,
+    _generate_spawn_token: Callable[..., Awaitable[Any]] | None = None,
+    _ipc_create_session: Callable[..., Awaitable[str]] | None = None,
+    _ipc_stop_session: Callable[..., Awaitable[bool]] | None = None,
 ) -> list[SdkMcpTool]:
     """Create MCP tool instances for session lifecycle management.
 
@@ -45,6 +50,9 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
         authenticated_user_id: For spawn token generation and scope guards.
         channel_id: For spawn token's parent_channel_id.
         cwd: Calling session's working directory, default for spawned sessions.
+        _generate_spawn_token: Override for generate_spawn_token (testing).
+        _ipc_create_session: Override for daemon IPC create (testing).
+        _ipc_stop_session: Override for daemon IPC stop (testing).
     """
 
     @tool(
@@ -84,7 +92,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
             lines = []
             for s in sanitized:
                 name = s.get("session_name") or "unnamed"
-                sid = s["session_id"][:8]
+                sid = s["session_id"]
                 status = s.get("status", "?")
                 channel = s.get("slack_channel_name") or s.get("slack_channel_id") or "—"
                 turns = s.get("total_turns", 0)
@@ -191,13 +199,23 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
         model = args.get("model")
 
         try:
-            from summon_claude.cli.daemon_client import (  # noqa: PLC0415
-                create_session_with_spawn_token as ipc_create,
-            )
-            from summon_claude.sessions.auth import generate_spawn_token  # noqa: PLC0415
             from summon_claude.sessions.session import SessionOptions  # noqa: PLC0415
 
-            spawn_auth = await generate_spawn_token(
+            gen_token = _generate_spawn_token
+            if gen_token is None:
+                from summon_claude.sessions.auth import generate_spawn_token  # noqa: PLC0415
+
+                gen_token = generate_spawn_token
+
+            ipc_create = _ipc_create_session
+            if ipc_create is None:
+                from summon_claude.cli.daemon_client import (  # noqa: PLC0415
+                    create_session_with_spawn_token,
+                )
+
+                ipc_create = create_session_with_spawn_token
+
+            spawn_auth = await gen_token(
                 registry=registry,
                 target_user_id=authenticated_user_id,
                 cwd=target_cwd,
@@ -292,9 +310,13 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
                     "is_error": True,
                 }
 
-            from summon_claude.cli.daemon_client import (  # noqa: PLC0415
-                stop_session as ipc_stop,
-            )
+            ipc_stop = _ipc_stop_session
+            if ipc_stop is None:
+                from summon_claude.cli.daemon_client import (  # noqa: PLC0415
+                    stop_session,
+                )
+
+                ipc_stop = stop_session
 
             found = await ipc_stop(target_id)
             if not found:

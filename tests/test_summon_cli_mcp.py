@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,13 +13,6 @@ from summon_claude.summon_cli_mcp import (
     create_summon_cli_mcp_server,
     create_summon_cli_mcp_tools,
 )
-
-
-@pytest.fixture
-async def registry(temp_db_path: Path) -> SessionRegistry:
-    reg = SessionRegistry(db_path=temp_db_path)
-    async with reg:
-        yield reg
 
 
 @pytest.fixture
@@ -136,6 +128,12 @@ class TestSessionList:
         for field in _SENSITIVE_FIELDS:
             assert f"{field}=" not in text
 
+    async def test_includes_full_session_id(self, tools):
+        result = await tools["session_list"].handler({"filter": "active"})
+        text = result["content"][0]["text"]
+        assert "parent-1111" in text
+        assert "child-2222" in text
+
 
 class TestSessionInfo:
     async def test_found(self, tools):
@@ -193,8 +191,6 @@ class TestSessionStart:
 
     async def test_cwd_parent_dir_rejected(self, populated_registry, tmp_path):
         """CWD that is a parent of the session's directory is rejected."""
-        # Build a real parent/child dir so the parent passes is_dir()
-        # but fails the ancestor check (parent is ABOVE the session's CWD).
         parent = tmp_path / "parent"
         parent.mkdir()
         child = parent / "child"
@@ -207,10 +203,9 @@ class TestSessionStart:
                 session_id="parent-1111",
                 authenticated_user_id="U_OWNER",
                 channel_id="C100",
-                cwd=str(child),  # session lives in child/
+                cwd=str(child),
             )
         }
-        # Try to spawn in parent/ — exists, but is ABOVE session's CWD
         result = await tools_child["session_start"].handler(
             {"name": "test-session", "cwd": str(parent)}
         )
@@ -221,23 +216,10 @@ class TestSessionStart:
         """CWD that is a subdirectory of the session's directory is allowed."""
         from summon_claude.sessions.auth import SpawnAuth
 
-        # Create a subdir under a controlled parent so Path.is_dir() passes
         parent = tmp_path / "proj"
         parent.mkdir()
         subdir = parent / "sub"
         subdir.mkdir()
-
-        # Build tools with cwd=parent so subdir is a valid descendant
-        tools_sub = {
-            t.name: t
-            for t in create_summon_cli_mcp_tools(
-                registry=populated_registry,
-                session_id="parent-1111",
-                authenticated_user_id="U_OWNER",
-                channel_id="C100",
-                cwd=str(parent),
-            )
-        }
 
         mock_spawn = AsyncMock(
             return_value=SpawnAuth(
@@ -252,13 +234,20 @@ class TestSessionStart:
         )
         mock_ipc = AsyncMock(return_value="new-session-id")
 
-        with (
-            patch("summon_claude.sessions.auth.generate_spawn_token", mock_spawn),
-            patch("summon_claude.cli.daemon_client.create_session_with_spawn_token", mock_ipc),
-        ):
-            result = await tools_sub["session_start"].handler(
-                {"name": "test-sub", "cwd": str(subdir)}
+        tools_sub = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(parent),
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
             )
+        }
+
+        result = await tools_sub["session_start"].handler({"name": "test-sub", "cwd": str(subdir)})
         assert not result.get("is_error"), result
 
     async def test_cwd_symlink_escape_rejected(self, populated_registry, tmp_path):
@@ -290,19 +279,6 @@ class TestSessionStart:
     async def test_creates_via_daemon_ipc(self, populated_registry, tmp_path):
         from summon_claude.sessions.auth import SpawnAuth
 
-        # Build tools with tmp_path as CWD so the default CWD passes the
-        # ancestor check (no explicit cwd arg -> uses the session's own CWD).
-        local_tools = {
-            t.name: t
-            for t in create_summon_cli_mcp_tools(
-                registry=populated_registry,
-                session_id="parent-1111",
-                authenticated_user_id="U_OWNER",
-                channel_id="C100",
-                cwd=str(tmp_path),
-            )
-        }
-
         mock_spawn = AsyncMock(
             return_value=SpawnAuth(
                 token="tok123",
@@ -316,11 +292,20 @@ class TestSessionStart:
         )
         mock_ipc = AsyncMock(return_value="new-session-id")
 
-        with (
-            patch("summon_claude.sessions.auth.generate_spawn_token", mock_spawn),
-            patch("summon_claude.cli.daemon_client.create_session_with_spawn_token", mock_ipc),
-        ):
-            result = await local_tools["session_start"].handler({"name": "test-session"})
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "test-session"})
         assert not result.get("is_error"), result
         assert "new-session-id" in result["content"][0]["text"]
 
@@ -350,13 +335,34 @@ class TestSessionStop:
         result = await tools["session_stop"].handler({})
         assert result["is_error"] is True
 
-    async def test_stops_via_daemon_ipc(self, tools):
+    async def test_stops_via_daemon_ipc(self, populated_registry):
         mock_ipc = AsyncMock(return_value=True)
-        with patch("summon_claude.cli.daemon_client.stop_session", mock_ipc):
-            result = await tools["session_stop"].handler({"session_id": "child-2222"})
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd="/home/user/proj",
+                _ipc_stop_session=mock_ipc,
+            )
+        }
+        result = await local_tools["session_stop"].handler({"session_id": "child-2222"})
         assert not result.get("is_error")
         assert "Stopped" in result["content"][0]["text"]
         mock_ipc.assert_called_once_with("child-2222")
+
+
+class TestSensitiveFields:
+    def test_sensitive_fields_includes_authenticated_user_id(self):
+        assert "authenticated_user_id" in _SENSITIVE_FIELDS
+
+    def test_sensitive_fields_includes_pid(self):
+        assert "pid" in _SENSITIVE_FIELDS
+
+    def test_sensitive_fields_includes_error_message(self):
+        assert "error_message" in _SENSITIVE_FIELDS
 
 
 class TestListChildren:
@@ -367,6 +373,10 @@ class TestListChildren:
 
     async def test_no_children(self, populated_registry):
         children = await populated_registry.list_children("other-3333")
+        assert children == []
+
+    async def test_limit_respected(self, populated_registry):
+        children = await populated_registry.list_children("parent-1111", limit=0)
         assert children == []
 
 
