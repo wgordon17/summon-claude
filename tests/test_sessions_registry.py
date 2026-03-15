@@ -720,6 +720,12 @@ class TestWorkflowDefaults:
         result = await registry.get_workflow_defaults()
         assert result == ""
 
+    async def test_set_workflow_defaults_empty_string(self, registry):
+        await registry.set_workflow_defaults("Non-empty.")
+        await registry.set_workflow_defaults("")
+        result = await registry.get_workflow_defaults()
+        assert result == ""
+
 
 class TestProjectWorkflow:
     async def test_get_project_workflow_no_projects_table(self, registry):
@@ -747,6 +753,74 @@ class TestEffectiveWorkflow:
 
     async def test_effective_workflow_empty_when_neither_set(self, registry):
         result = await registry.get_effective_workflow("nonexistent")
+        assert result == ""
+
+    async def test_effective_workflow_falls_through_empty_defaults(self, registry):
+        """Setting defaults to empty string means effective returns empty."""
+        await registry.set_workflow_defaults("")
+        result = await registry.get_effective_workflow("nonexistent")
+        assert result == ""
+
+    async def test_effective_workflow_project_overrides_global(self, registry):
+        """Per-project instructions take precedence over global defaults."""
+        db = registry.db
+        await db.execute(
+            "CREATE TABLE projects ("
+            "  project_id TEXT PRIMARY KEY,"
+            "  workflow_instructions TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        await db.execute(
+            "INSERT INTO projects (project_id, workflow_instructions)"
+            " VALUES ('proj-1', 'Project-level.')"
+        )
+        await db.commit()
+        await registry.set_workflow_defaults("Global fallback.")
+        result = await registry.get_effective_workflow("proj-1")
+        assert result == "Project-level."
+
+    async def test_effective_workflow_empty_project_falls_through(self, registry):
+        """Empty per-project instructions fall through to global defaults."""
+        db = registry.db
+        await db.execute(
+            "CREATE TABLE projects ("
+            "  project_id TEXT PRIMARY KEY,"
+            "  workflow_instructions TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        await db.execute(
+            "INSERT INTO projects (project_id, workflow_instructions) VALUES ('proj-1', '')"
+        )
+        await db.commit()
+        await registry.set_workflow_defaults("Global fallback.")
+        result = await registry.get_effective_workflow("proj-1")
+        assert result == "Global fallback."
+
+    async def test_effective_workflow_missing_project_falls_through(self, registry):
+        """Project not in table falls through to global defaults."""
+        db = registry.db
+        await db.execute(
+            "CREATE TABLE projects ("
+            "  project_id TEXT PRIMARY KEY,"
+            "  workflow_instructions TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        await db.commit()
+        await registry.set_workflow_defaults("Global fallback.")
+        result = await registry.get_effective_workflow("no-such-project")
+        assert result == "Global fallback."
+
+    async def test_effective_workflow_neither_set_with_projects_table(self, registry):
+        """Returns empty when projects table exists but nothing is configured."""
+        db = registry.db
+        await db.execute(
+            "CREATE TABLE projects ("
+            "  project_id TEXT PRIMARY KEY,"
+            "  workflow_instructions TEXT NOT NULL DEFAULT ''"
+            ")"
+        )
+        await db.commit()
+        result = await registry.get_effective_workflow("proj-1")
         assert result == ""
 
 

@@ -597,8 +597,10 @@ class SessionRegistry:
             await db.execute(
                 "INSERT INTO workflow_defaults (id, instructions, updated_at)"
                 " VALUES (1, ?, ?)"
-                " ON CONFLICT(id) DO UPDATE SET instructions = ?, updated_at = ?",
-                (instructions, now, instructions, now),
+                " ON CONFLICT(id) DO UPDATE"
+                " SET instructions = excluded.instructions,"
+                " updated_at = excluded.updated_at",
+                (instructions, now),
             )
             await db.commit()
 
@@ -661,11 +663,25 @@ class SessionRegistry:
         """Return effective workflow instructions for a project.
 
         Returns per-project override if non-empty, otherwise global defaults.
+        Uses a single query when the projects table exists.
         """
-        project = await self.get_project_workflow(project_id)
-        if project:
-            return project
-        return await self.get_workflow_defaults()
+        db = self._check_connected()
+        try:
+            async with db.execute(
+                "SELECT COALESCE("
+                "  NULLIF((SELECT workflow_instructions FROM projects"
+                "          WHERE project_id = ?), ''),"
+                "  (SELECT instructions FROM workflow_defaults WHERE id = 1),"
+                "  ''"
+                ")",
+                (project_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else ""
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                return await self.get_workflow_defaults()
+            raise
 
     # --- Audit log methods ---
 
