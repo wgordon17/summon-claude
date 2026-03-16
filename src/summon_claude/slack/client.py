@@ -90,9 +90,10 @@ class SlackClient:
         text: str,
         *,
         blocks: list[dict[str, Any]] | None = None,
+        channel: str | None = None,
     ) -> None:
         """Update an existing message."""
-        kwargs: dict[str, Any] = {"channel": self.channel_id, "ts": ts, "text": text}
+        kwargs: dict[str, Any] = {"channel": channel or self.channel_id, "ts": ts, "text": text}
         if blocks:
             kwargs["blocks"] = blocks
         await self._web.chat_update(**kwargs)

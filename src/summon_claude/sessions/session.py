@@ -66,6 +66,7 @@ from summon_claude.slack.canvas_templates import get_canvas_template
 from summon_claude.slack.client import SlackClient
 from summon_claude.slack.mcp import create_summon_mcp_server
 from summon_claude.slack.router import ThreadRouter
+from summon_claude.summon_cli_mcp import create_summon_cli_mcp_server
 
 if TYPE_CHECKING:
     from summon_claude.event_dispatcher import EventDispatcher
@@ -320,6 +321,7 @@ class SessionOptions:
     model: str | None = None
     effort: str = "high"
     resume: str | None = None
+    pm_profile: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,6 +382,7 @@ class SummonSession:
         parent_channel_id: str | None = None,
     ) -> None:
         self._config = config
+        self._pm_profile = options.pm_profile
         self._session_id = session_id
         self._cwd = options.cwd
         self._name = options.name
@@ -805,15 +808,60 @@ class SummonSession:
         logger.info("Canvas initialized: %s for session %s", canvas_id, self._session_id)
         return store
 
-    async def _run_session_tasks(  # noqa: PLR0912
+    async def _run_session_tasks(  # noqa: PLR0912, PLR0915
         self, rt: _SessionRuntime, router: ThreadRouter
     ) -> None:
         """Create SDK client, then run preprocessor + response consumer concurrently."""
+        is_pm = self._pm_profile
+
+        # Channel scoping: every session type gets an explicit async resolver.
+        # Regular sessions: own channel only.
+        # PM sessions: own channel + channels of sessions they spawned.
+        if is_pm:
+            _own_cid = rt.client.channel_id
+            _reg = rt.registry
+            _sid = self._session_id
+            _owner = self._authenticated_user_id
+
+            async def _pm_channel_scope() -> set[str]:
+                channels = {_own_cid}
+                children = await _reg.list_children(_sid, limit=500)
+                for child in children:
+                    if child.get("authenticated_user_id") != _owner:
+                        continue
+                    cid = child.get("slack_channel_id")
+                    if cid:
+                        channels.add(cid)
+                return channels
+
+            channel_scope = _pm_channel_scope
+        else:
+            _own_cid = rt.client.channel_id
+
+            async def _session_channel_scope() -> set[str]:
+                return {_own_cid}
+
+            channel_scope = _session_channel_scope
+
         slack_mcp = create_summon_mcp_server(
             rt.client,
-            allowed_channels=lambda: {rt.client.channel_id},
+            allowed_channels=channel_scope,
             cwd=self._cwd,
         )
+        mcp_servers: dict = {"summon-slack": slack_mcp}
+
+        if is_pm:
+            assert self._authenticated_user_id is not None, (
+                "_run_message_loop reached without authenticated_user_id"
+            )
+            cli_mcp = create_summon_cli_mcp_server(
+                registry=rt.registry,
+                session_id=self._session_id,
+                authenticated_user_id=self._authenticated_user_id,
+                channel_id=rt.client.channel_id,
+                cwd=self._cwd,
+            )
+            mcp_servers["summon-cli"] = cli_mcp
 
         options = ClaudeAgentOptions(
             cwd=self._cwd,
@@ -823,7 +871,7 @@ class SummonSession:
             setting_sources=["user", "project"],
             plugins=discover_installed_plugins(),
             can_use_tool=rt.permission_handler.handle,
-            mcp_servers={"summon-slack": slack_mcp},
+            mcp_servers=mcp_servers,
             model=self._model,
             # TODO: if config gains thinking_budget_tokens, use
             # ThinkingConfigEnabled(budget_tokens=N) when enable_thinking

@@ -60,7 +60,7 @@ def make_auth(**overrides) -> SessionAuth:
 
 
 def make_session(session_id: str = "test-session", **overrides) -> SummonSession:
-    opt_fields = ("cwd", "name", "model", "effort", "resume")
+    opt_fields = ("cwd", "name", "model", "effort", "resume", "pm_profile")
     opts_kw = {k: overrides.pop(k) for k in list(overrides) if k in opt_fields}
     auth_fields = ("short_code", "expires_at")
     auth_kw = {k: overrides.pop(k) for k in list(overrides) if k in auth_fields}
@@ -1039,3 +1039,53 @@ class TestContextWarningReset:
         assert session._context_warned is True
         session._context_warned = False
         assert session._context_warned is False
+
+
+class TestMCPRegistration:
+    """Verify that _run_session_tasks creates the right MCP servers."""
+
+    async def _capture_mcp_servers(self, pm_profile: bool = False) -> dict:
+        """Run _run_session_tasks just far enough to capture the ClaudeAgentOptions."""
+        session = make_session(pm_profile=pm_profile)
+        session._authenticated_user_id = "U_TEST"
+        session._shutdown_event.set()  # immediately exit the message loop
+
+        mock_registry = AsyncMock()
+        rt = make_rt(mock_registry)
+
+        captured = {}
+
+        class _CaptureError(Exception):
+            pass
+
+        def spy_init(self_sdk, options):
+            captured["mcp_servers"] = options.mcp_servers
+            raise _CaptureError("captured")
+
+        with (
+            patch("summon_claude.sessions.session.ClaudeSDKClient.__init__", spy_init),
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+            patch("summon_claude.sessions.session.discover_plugin_skills", return_value=[]),
+            pytest.raises(_CaptureError),
+        ):
+            await session._run_session_tasks(rt, AsyncMock())
+
+        return captured
+
+    async def test_regular_session_has_only_slack_mcp(self):
+        result = await self._capture_mcp_servers(pm_profile=False)
+        assert "summon-slack" in result["mcp_servers"]
+        assert "summon-cli" not in result["mcp_servers"]
+
+    async def test_pm_session_has_both_mcps(self):
+        result = await self._capture_mcp_servers(pm_profile=True)
+        assert "summon-slack" in result["mcp_servers"]
+        assert "summon-cli" in result["mcp_servers"]
+
+    def test_session_options_pm_profile_default(self):
+        opts = SessionOptions(cwd="/tmp", name="test")
+        assert opts.pm_profile is False
+
+    def test_session_options_pm_profile_true(self):
+        opts = SessionOptions(cwd="/tmp", name="test", pm_profile=True)
+        assert opts.pm_profile is True
