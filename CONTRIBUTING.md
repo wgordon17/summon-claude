@@ -319,30 +319,35 @@ src/summon_claude/
 ├── config.py              # SummonConfig (pydantic-settings) with validation
 ├── daemon.py              # Unix daemon with PID/lock, IPC framing
 ├── event_dispatcher.py    # Routes Slack events to sessions by channel
+├── summon_cli_mcp.py      # MCP tools for session lifecycle management (session_list, _info, _start, _stop)
 ├── cli/
 │   ├── __init__.py        # Click wiring, root group, setup_logging
+│   ├── config.py          # Config subcommands (show, set, path, edit, check, google-auth)
+│   ├── daemon_client.py   # Typed async client for daemon Unix socket API
+│   ├── db.py              # DB subcommand implementations (status, reset, vacuum, purge)
 │   ├── formatting.py      # Output formatting (echo, format_json, print_session_table)
 │   ├── helpers.py         # Session resolution (resolve_session, pick_session)
+│   ├── interactive.py     # Interactive terminal selection with TTY-aware fallback
+│   ├── session.py         # Session subcommand implementations (list, info, logs, cleanup)
 │   ├── start.py           # async_start() implementation
 │   ├── stop.py            # async_stop() implementation
-│   ├── session.py         # Session subcommand implementations
-│   ├── db.py              # DB subcommand implementations
-│   ├── config.py          # Config subcommands (show, set, path, edit, check)
-│   ├── daemon_client.py   # Typed async client for daemon Unix socket API
 │   └── update_check.py    # PyPI update checker with 24h cache
 ├── sessions/
-│   ├── session.py         # Session orchestrator (Claude SDK + Slack)
-│   ├── manager.py         # Session lifecycle, IPC control plane
-│   ├── response.py        # Response streaming, text splitting, turn summaries
-│   ├── permissions.py     # Tool permission handling + Slack buttons
 │   ├── auth.py            # Session auth tokens and short codes
-│   ├── commands.py        # !-prefixed command dispatch and aliasing
-│   ├── context.py         # Context window usage tracking
-│   ├── migrations.py      # Schema versioning and migration functions
-│   └── registry.py        # SQLite session storage (WAL mode)
+│   ├── commands.py        # !-prefixed command dispatch, aliasing, plugin skill registration
+│   ├── context.py         # Context window usage tracking via JSONL transcript parsing
+│   ├── manager.py         # Session lifecycle, IPC control plane
+│   ├── migrations.py      # Schema versioning and migration functions (single source of truth)
+│   ├── permissions.py     # Tool permission handling + Slack buttons
+│   ├── registry.py        # SQLite session storage (WAL mode)
+│   ├── response.py        # Response streaming, turn threads, emoji lifecycle, turn summaries
+│   └── session.py         # Session orchestrator (Claude SDK + Slack + pre-send architecture)
 └── slack/
     ├── bolt.py            # Bolt app, rate limiter, health monitor
-    ├── client.py          # Channel-bound Slack output client
-    ├── router.py          # Thread-aware message routing
-    └── mcp.py             # MCP tools for Claude-Slack interaction
+    ├── canvas_store.py    # SQLite-backed canvas markdown state with background Slack sync
+    ├── canvas_templates.py # Canvas markdown templates for different agent profiles
+    ├── client.py          # Channel-bound Slack output client (post, update, react, canvas)
+    ├── formatting.py      # Markdown-to-Slack-mrkdwn conversion
+    ├── mcp.py             # MCP tools for Claude to read and interact with Slack
+    └── router.py          # Thread-aware message routing (main, turn threads, subagent threads)
 ```
