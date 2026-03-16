@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import pathlib
+import secrets
 import sys
 import threading
 
@@ -178,6 +179,12 @@ def cmd_version(ctx: click.Context, output: str) -> None:
 )
 @click.option("--name", default=None, help="Session name (used for Slack channel naming)")
 @click.option("--model", default=None, help="Model override (default: from config)")
+@click.option(
+    "--effort",
+    type=click.Choice(["low", "medium", "high", "max"]),
+    default=None,
+    help="Effort level (default: high, or SUMMON_DEFAULT_EFFORT)",
+)
 @click.pass_context
 def cmd_start(
     ctx: click.Context,
@@ -185,6 +192,7 @@ def cmd_start(
     resume: str | None,
     name: str | None,
     model: str | None,
+    effort: str | None,
 ) -> None:
     """Start a new summon session (thin client — delegates to the daemon)."""
     import shutil  # noqa: PLC0415
@@ -220,13 +228,29 @@ def cmd_start(
     update_thread.start()
 
     resolved_cwd = str(pathlib.Path(cwd).resolve()) if cwd else str(pathlib.Path.cwd())
-    resolved_name = name or pathlib.Path(resolved_cwd).name
-
-    try:
-        short_code = asyncio.run(async_start(config, resolved_cwd, resolved_name, model, resume))
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
+    if not pathlib.Path(resolved_cwd).is_dir():
+        click.echo(f"Error: working directory does not exist: {resolved_cwd}", err=True)
         sys.exit(1)
+    base_name = pathlib.Path(resolved_cwd).name
+
+    # Auto-generated names retry on collision; explicit names fail immediately.
+    max_attempts = 1 if name else 3
+    short_code = ""
+    for attempt in range(max_attempts):
+        resolved_name = name or f"{base_name}-{secrets.token_hex(3)}"
+        try:
+            short_code = asyncio.run(
+                async_start(config, resolved_cwd, resolved_name, model, effort, resume)
+            )
+            break
+        except ValueError as e:
+            if attempt < max_attempts - 1:
+                continue
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
 
     _print_auth_banner(short_code)
 
@@ -242,7 +266,7 @@ def cmd_start(
 
 
 @cli.command("stop")
-@click.argument("session_id", required=False, default=None)
+@click.argument("session", metavar="SESSION", required=False, default=None)
 @click.option(
     "--all",
     "-a",
@@ -252,9 +276,9 @@ def cmd_start(
     help="Stop all active sessions",
 )
 @click.pass_context
-def cmd_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
-    """Stop a session (or all sessions) via the daemon."""
-    asyncio.run(async_stop(ctx, session_id, stop_all))
+def cmd_stop(ctx: click.Context, session: str | None, stop_all: bool) -> None:
+    """Stop a session (by name or ID) or all sessions via the daemon."""
+    asyncio.run(async_stop(ctx, session, stop_all))
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +300,7 @@ def cmd_session() -> None:
     default=False,
     help="Show all recent sessions (not just active)",
 )
+@click.option("--name", default=None, help="Filter sessions by name")
 @click.option(
     "-o",
     "--output",
@@ -284,13 +309,13 @@ def cmd_session() -> None:
     help="Output format",
 )
 @click.pass_context
-def session_list(ctx: click.Context, show_all: bool, output: str) -> None:
+def session_list(ctx: click.Context, show_all: bool, name: str | None, output: str) -> None:
     """List sessions. Shows active sessions by default; use --all for all recent."""
-    asyncio.run(async_session_list(ctx, show_all, output))
+    asyncio.run(async_session_list(ctx, show_all, output, name=name))
 
 
 @cmd_session.command("info")
-@click.argument("session_id")
+@click.argument("session", metavar="SESSION")
 @click.option(
     "-o",
     "--output",
@@ -299,18 +324,18 @@ def session_list(ctx: click.Context, show_all: bool, output: str) -> None:
     help="Output format",
 )
 @click.pass_context
-def session_info(ctx: click.Context, session_id: str, output: str) -> None:
-    """Show detailed information for a specific session."""
-    asyncio.run(session_info_impl(ctx, session_id, output))
+def session_info(ctx: click.Context, session: str, output: str) -> None:
+    """Show detailed information for a session (by name or ID)."""
+    asyncio.run(session_info_impl(ctx, session, output))
 
 
 @cmd_session.command("logs")
-@click.argument("session_id", required=False, default=None)
+@click.argument("session", metavar="SESSION", required=False, default=None)
 @click.option("--tail", "-n", default=50, help="Number of lines to show (default: 50)")
 @click.pass_context
-def session_logs(ctx: click.Context, session_id: str | None, tail: int) -> None:
-    """Show session logs. Pass SESSION_ID for a specific session, or list available logs."""
-    asyncio.run(session_logs_impl(ctx, session_id, tail))
+def session_logs(ctx: click.Context, session: str | None, tail: int) -> None:
+    """Show session logs. Pass a session name or ID, or list available logs."""
+    asyncio.run(session_logs_impl(ctx, session, tail))
 
 
 @cmd_session.command("cleanup")

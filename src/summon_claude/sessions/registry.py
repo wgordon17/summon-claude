@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 )
 """
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
@@ -109,12 +109,22 @@ async def _migrate_2_to_3(db: aiosqlite.Connection) -> None:
     await db.execute(_CREATE_WORKFLOW_DEFAULTS)
 
 
+async def _migrate_3_to_4(db: aiosqlite.Connection) -> None:
+    """Add partial unique index on active session names."""
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_active_session_name "
+        "ON sessions (session_name) "
+        "WHERE session_name IS NOT NULL AND status IN ('pending_auth', 'active')"
+    )
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the existing DDL already produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
     0: None,  # baseline — no-op
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
+    3: _migrate_3_to_4,
 }
 
 _MAX_FAILED_ATTEMPTS = 5
@@ -213,6 +223,11 @@ class SessionRegistry:
         await self._db.execute(_CREATE_SPAWN_TOKENS)
         await self._db.execute(_CREATE_WORKFLOW_DEFAULTS)
         await self._db.execute(_CREATE_SCHEMA_VERSION)
+        await self._db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_active_session_name "
+            "ON sessions (session_name) "
+            "WHERE session_name IS NOT NULL AND status IN ('pending_auth', 'active')"
+        )
         await self._db.commit()
 
         # Fresh DB (empty schema_version table): DDL already created the
@@ -245,6 +260,16 @@ class SessionRegistry:
             raise RuntimeError("SessionRegistry not connected. Use as async context manager.")
         return self._db
 
+    async def is_name_active(self, name: str) -> bool:
+        """Check if any active session (pending_auth/active) uses this name."""
+        db = self._check_connected()
+        async with db.execute(
+            "SELECT 1 FROM sessions WHERE session_name = ?"
+            " AND status IN ('pending_auth', 'active') LIMIT 1",
+            (name,),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
     async def register(
         self,
         session_id: str,
@@ -258,26 +283,39 @@ class SessionRegistry:
         """Insert a new session with status pending_auth."""
         db = self._check_connected()
         async with self._lock:
-            await db.execute(
-                """
-                INSERT INTO sessions
-                    (session_id, pid, status, session_name, cwd, model,
-                     started_at, last_activity_at,
-                     parent_session_id, authenticated_user_id)
-                VALUES (?, ?, 'pending_auth', ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    session_id,
-                    pid,
-                    name,
-                    cwd,
-                    model,
-                    _now(),
-                    _now(),
-                    parent_session_id,
-                    authenticated_user_id,
-                ),
-            )
+            if name and await self.is_name_active(name):
+                raise ValueError(
+                    f"An active session with name {name!r} already exists. "
+                    "Use --name to specify a different name."
+                )
+            try:
+                await db.execute(
+                    """
+                    INSERT INTO sessions
+                        (session_id, pid, status, session_name, cwd, model,
+                         started_at, last_activity_at,
+                         parent_session_id, authenticated_user_id)
+                    VALUES (?, ?, 'pending_auth', ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        pid,
+                        name,
+                        cwd,
+                        model,
+                        _now(),
+                        _now(),
+                        parent_session_id,
+                        authenticated_user_id,
+                    ),
+                )
+            except Exception as exc:
+                if "UNIQUE constraint failed: sessions.session_name" in str(exc):
+                    raise ValueError(
+                        f"An active session with name {name!r} already exists. "
+                        "Use --name to specify a different name."
+                    ) from exc
+                raise
             await db.commit()
 
     _VALID_STATUSES: frozenset[str] = frozenset({"pending_auth", "active", "completed", "errored"})
@@ -350,8 +388,8 @@ class SessionRegistry:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def resolve_session(self, identifier: str) -> tuple[dict | None, list[dict]]:
-        """Resolve a session by ID prefix or channel name.
+    async def resolve_session(self, identifier: str) -> tuple[dict | None, list[dict]]:  # noqa: PLR0911
+        """Resolve a session by ID prefix, session name, or channel name.
 
         Returns ``(session, matches)`` where *session* is the unique match
         (or ``None``) and *matches* is the list of candidates when ambiguous.
@@ -375,7 +413,28 @@ class SessionRegistry:
             if len(rows) > 1:
                 return None, rows
 
-        # 3. Channel name match
+        # 3. Session name match — active wins (uniqueness-constrained)
+        async with db.execute(
+            "SELECT * FROM sessions WHERE session_name = ?"
+            " AND status IN ('pending_auth', 'active') LIMIT 1",
+            (identifier,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                d = dict(row)
+                return d, [d]
+
+        # 4. Session name match — most recent historical
+        async with db.execute(
+            "SELECT * FROM sessions WHERE session_name = ? ORDER BY started_at DESC LIMIT 1",
+            (identifier,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                d = dict(row)
+                return d, [d]
+
+        # 5. Channel name match
         async with db.execute(
             "SELECT * FROM sessions WHERE slack_channel_name = ? ORDER BY started_at DESC LIMIT 1",
             (identifier,),

@@ -51,6 +51,23 @@ class TestSummonConfigDefaults:
         cfg = _make_config()
         assert cfg.max_inline_chars == 2500
 
+    def test_default_effort(self):
+        cfg = _make_config()
+        assert cfg.default_effort == "high"
+
+    def test_default_effort_can_be_set(self):
+        cfg = _make_config(default_effort="low")
+        assert cfg.default_effort == "low"
+
+    def test_default_effort_all_valid_values(self):
+        for level in ("low", "medium", "high", "max"):
+            cfg = _make_config(default_effort=level)
+            assert cfg.default_effort == level
+
+    def test_default_effort_rejects_invalid(self):
+        with pytest.raises(ValueError, match="SUMMON_DEFAULT_EFFORT"):
+            _make_config(default_effort="ultra")
+
 
 class TestSummonConfigValidate:
     def test_valid_config_passes(self):

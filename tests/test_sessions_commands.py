@@ -346,6 +346,20 @@ class TestStatusHandler:
         assert result.text is not None
         assert "unknown" in result.text
 
+    async def test_status_contains_effort(self, make_context):
+        """Status should contain effort level when set."""
+        context = make_context(effort="max")
+        result = await dispatch("status", [], context)
+        assert result.text is not None
+        assert "Effort: `max`" in result.text
+
+    async def test_status_default_effort(self, make_context):
+        """Status should show default effort level."""
+        context = make_context()
+        result = await dispatch("status", [], context)
+        assert result.text is not None
+        assert "Effort: `high`" in result.text
+
 
 class TestEndHandler:
     """Test the !end command handler."""
@@ -412,6 +426,45 @@ class TestModelLocal:
         context = make_context(metadata={"models": [{"value": "opus", "displayName": "Opus"}]})
         result = await dispatch("model", ["opus"], context)
         assert result.metadata.get("set_model") == "opus"
+
+
+class TestEffortHandler:
+    """Test the !effort local handler."""
+
+    async def test_effort_no_args_shows_current(self, make_context):
+        """!effort with no args should show current effort and available levels."""
+        context = make_context(effort="high")
+        result = await dispatch("effort", [], context)
+        assert result.text is not None
+        assert "`high`" in result.text
+        assert "low" in result.text
+        assert "max" in result.text
+
+    async def test_effort_valid_level_returns_metadata(self, make_context):
+        """!effort low should trigger effort switch via metadata."""
+        context = make_context()
+        result = await dispatch("effort", ["low"], context)
+        assert result.metadata.get("set_effort") == "low"
+
+    async def test_effort_invalid_level_errors(self, make_context):
+        """!effort invalid should return error."""
+        context = make_context()
+        result = await dispatch("effort", ["invalid"], context)
+        assert result.text is not None
+        assert "Unknown effort" in result.text
+        assert "set_effort" not in result.metadata
+
+    async def test_effort_max(self, make_context):
+        """!effort max should be accepted."""
+        context = make_context()
+        result = await dispatch("effort", ["max"], context)
+        assert result.metadata.get("set_effort") == "max"
+
+    async def test_effort_case_insensitive(self, make_context):
+        """!effort HIGH should normalize to lowercase."""
+        context = make_context()
+        result = await dispatch("effort", ["HIGH"], context)
+        assert result.metadata.get("set_effort") == "high"
 
 
 class TestClearHandler:

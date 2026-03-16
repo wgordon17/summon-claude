@@ -10,15 +10,15 @@ from summon_claude.cli.interactive import format_session_option, interactive_sel
 from summon_claude.daemon import is_daemon_running
 
 
-async def async_stop(ctx: click.Context, session_id: str | None, stop_all: bool) -> None:
+async def async_stop(ctx: click.Context, session: str | None, stop_all: bool) -> None:
     if not is_daemon_running():
         click.echo("Daemon is not running.")
         return
 
     try:
-        if not session_id and not stop_all:
+        if not session and not stop_all:
             if not is_interactive(ctx):
-                click.echo("Provide SESSION_ID or --all.", err=True)
+                click.echo("Provide a session name/ID or --all.", err=True)
                 ctx.exit(1)
                 return
             try:
@@ -31,9 +31,9 @@ async def async_stop(ctx: click.Context, session_id: str | None, stop_all: bool)
                 click.echo("No active sessions.")
                 return
             if len(active) == 1:
-                session = active[0]
-                resolved_id = session["session_id"]
-                label = session.get("session_name") or resolved_id[:8]
+                match = active[0]
+                resolved_id = match["session_id"]
+                label = match.get("session_name") or resolved_id[:8]
                 click.echo(f"Auto-selecting {label} ({resolved_id[:8]})")
             else:
                 options = [format_session_option(s) for s in active]
@@ -53,11 +53,11 @@ async def async_stop(ctx: click.Context, session_id: str | None, stop_all: bool)
             for sid, found in results:
                 click.echo(f"Stop requested for {sid}: {'sent' if found else 'not found'}")
         else:
-            session = await resolve_or_pick(session_id, ctx)  # type: ignore[arg-type]
-            if not session:
+            resolved = await resolve_or_pick(session, ctx)  # type: ignore[arg-type]
+            if not resolved:
                 ctx.exit(1)
                 return
-            await stop_and_report(session["session_id"], suggest_cleanup=True)
+            await stop_and_report(resolved["session_id"], suggest_cleanup=True)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         ctx.exit(1)

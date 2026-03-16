@@ -316,6 +316,7 @@ class SessionOptions:
     cwd: str
     name: str
     model: str | None = None
+    effort: str = "high"
     resume: str | None = None
 
 
@@ -381,6 +382,7 @@ class SummonSession:
         self._cwd = options.cwd
         self._name = options.name
         self._model = options.model
+        self._effort = options.effort
         self._resume = options.resume
 
         self._auth: SessionAuth | None = auth
@@ -784,6 +786,7 @@ class SummonSession:
                 if self._config.enable_thinking
                 else ThinkingConfigDisabled()
             ),
+            effort=self._effort,
         )
 
         streamer = ResponseStreamer(
@@ -1276,6 +1279,33 @@ class SummonSession:
             except Exception as e2:
                 logger.debug("Failed to post compact error: %s", e2)
 
+    async def _execute_effort(self, rt: _SessionRuntime, level: str, thread_ts: str | None) -> None:
+        """Execute /effort via SDK to change effort mid-session."""
+        try:
+            if self._claude:
+                await self._claude.query(f"/effort {level}")
+                async for _ in self._claude.receive_response():
+                    pass  # drain silent command response
+                self._effort = level
+                await rt.client.post(
+                    f":zap: Effort set to `{level}`.",
+                    thread_ts=thread_ts,
+                )
+            else:
+                await rt.client.post(
+                    ":warning: SDK client not available.",
+                    thread_ts=thread_ts,
+                )
+        except Exception as e:
+            logger.warning("set_effort(%s) failed: %s", level, e)
+            try:
+                await rt.client.post(
+                    f":warning: Failed to set effort: {e}",
+                    thread_ts=thread_ts,
+                )
+            except Exception as e2:
+                logger.debug("Failed to post effort error: %s", e2)
+
     async def _dispatch_command(  # noqa: PLR0912, PLR0915
         self,
         rt: _SessionRuntime,
@@ -1291,6 +1321,7 @@ class SummonSession:
             cost_usd=self._total_cost,
             start_time=self._session_start_time,
             model=self._model,
+            effort=self._effort,
             session_id=self._session_id,
             metadata={"models": self._available_models},
         )
@@ -1346,6 +1377,12 @@ class SummonSession:
                     )
             else:
                 result = CommandResult(text=":warning: SDK client not available.")
+
+        # Handle !effort — switch effort via SDK /effort command
+        new_effort = result.metadata.get("set_effort")
+        if new_effort:
+            await self._execute_effort(rt, new_effort, thread_ts)
+            return
 
         # Handle !clear — post visual delineation then fall through to passthrough
         if result.metadata.get("clear"):
@@ -1595,6 +1632,7 @@ class SummonSession:
                     cost_usd=self._total_cost,
                     start_time=self._session_start_time,
                     model=self._model,
+                    effort=self._effort,
                     session_id=self._session_id,
                     metadata={"models": self._available_models},
                 )
@@ -1617,6 +1655,9 @@ class SummonSession:
                             self._model = new_model
                         except Exception as e:
                             logger.warning("set_model(%s) failed: %s", new_model, e)
+                    new_effort = result.metadata.get("set_effort")
+                    if new_effort:
+                        await self._execute_effort(rt, new_effort, thread_ts)
                     if result.metadata.get("clear"):
                         await self._post_clear_delineation(rt)
                     if result.metadata.get("compact"):

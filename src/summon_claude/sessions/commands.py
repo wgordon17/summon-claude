@@ -32,6 +32,7 @@ class CommandContext:
     cost_usd: float = 0.0
     start_time: datetime | None = None
     model: str | None = None
+    effort: str = "high"
     session_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -140,6 +141,7 @@ async def _handle_status(_args: list[str], ctx: CommandContext) -> CommandResult
     lines = [
         "*Session Status*",
         f"  Model: `{model_display}`",
+        f"  Effort: `{ctx.effort}`",
         f"  Session ID: `{ctx.session_id}`",
         f"  Turns: {ctx.turns}",
         f"  Cost: ${ctx.cost_usd:.4f}",
@@ -187,6 +189,25 @@ async def _handle_model(args: list[str], ctx: CommandContext) -> CommandResult:
     return CommandResult(
         text=f":gear: Switching to `{requested}`...",
         metadata={"set_model": requested},
+    )
+
+
+async def _handle_effort(args: list[str], ctx: CommandContext) -> CommandResult:
+    valid = ("low", "medium", "high", "max")
+    if not args:
+        return CommandResult(
+            text=f"*Current effort:* `{ctx.effort}`\n"
+            f"*Available:* {', '.join(f'`{v}`' for v in valid)}"
+        )
+    requested = args[0].lower()
+    if requested not in valid:
+        return CommandResult(
+            text=f":warning: Unknown effort `{requested}`. "
+            f"Available: {', '.join(f'`{v}`' for v in valid)}"
+        )
+    return CommandResult(
+        text=f":gear: Switching effort to `{requested}`...",
+        metadata={"set_effort": requested},
     )
 
 
@@ -239,6 +260,11 @@ COMMAND_ACTIONS: dict[str, CommandDef] = {
     "model": CommandDef(
         description="Switch or display the active model",
         handler=_handle_model,
+        max_args=1,
+    ),
+    "effort": CommandDef(
+        description="Switch or display the effort level",
+        handler=_handle_effort,
         max_args=1,
     ),
     "compact": CommandDef(

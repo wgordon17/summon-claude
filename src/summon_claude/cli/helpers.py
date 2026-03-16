@@ -10,7 +10,7 @@ from summon_claude.sessions.registry import SessionRegistry
 
 
 async def resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:  # pyright: ignore[reportReturnType]
-    """Look up a session by ID prefix or channel name (async registry query)."""
+    """Look up a session by ID prefix, name, or channel name (async registry query)."""
     async with SessionRegistry() as registry:
         return await registry.resolve_session(identifier)
 
