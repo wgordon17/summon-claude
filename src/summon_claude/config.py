@@ -9,7 +9,9 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import field_validator
@@ -214,6 +216,57 @@ def discover_plugin_skills() -> list[PluginSkill]:
     return results
 
 
+def get_google_credentials_dir() -> Path:
+    """Return the directory for storing Google OAuth credentials.
+
+    Uses ``get_data_dir() / "google-credentials"`` so credentials live
+    under summon's own XDG data directory, not workspace-mcp's default.
+    """
+    return get_data_dir() / "google-credentials"
+
+
+def google_mcp_env() -> dict[str, str]:
+    """Build env var overrides so workspace-mcp uses summon's credential dir.
+
+    Also sets ``GOOGLE_CLIENT_SECRETS_PATH`` if a ``client_secret.json``
+    has been saved in the credentials directory.
+    """
+    creds_dir = get_google_credentials_dir()
+    env: dict[str, str] = {"WORKSPACE_MCP_CREDENTIALS_DIR": str(creds_dir)}
+    json_path = creds_dir / "client_secret.json"
+    if json_path.exists():
+        env["GOOGLE_CLIENT_SECRETS_PATH"] = str(json_path)
+    return env
+
+
+VALID_GOOGLE_SERVICES = frozenset(
+    {
+        "gmail",
+        "drive",
+        "calendar",
+        "docs",
+        "sheets",
+        "chat",
+        "forms",
+        "slides",
+        "tasks",
+        "contacts",
+        "search",
+        "appscript",
+    }
+)
+
+
+def find_workspace_mcp_bin() -> Path:
+    """Locate the ``workspace-mcp`` console-script in the same Python environment.
+
+    Uses ``sys.executable``'s parent directory so the binary is found
+    regardless of installation method (pip, uv, pipx inject, Homebrew
+    formula) without relying on PATH.
+    """
+    return Path(sys.executable).parent / "workspace-mcp"
+
+
 class SummonConfig(BaseSettings):
     """Main configuration loaded from environment variables (SUMMON_ prefix) or .env file."""
 
@@ -248,6 +301,26 @@ class SummonConfig(BaseSettings):
     enable_thinking: bool = True  # Pass ThinkingConfigAdaptive to SDK
     show_thinking: bool = False  # Route ThinkingBlock content to Slack turn thread
 
+    # ------------------------------------------------------------------
+    # Scribe agent settings
+    # ------------------------------------------------------------------
+
+    # Core scribe settings
+    scribe_enabled: bool = False
+    scribe_scan_interval_minutes: int = 5
+    scribe_cwd: str | None = None  # None -> get_data_dir() / "scribe"
+    scribe_model: str | None = None  # None -> inherit default_model
+    scribe_importance_keywords: str = ""  # comma-separated: "urgent,action required,deadline"
+    scribe_quiet_hours: str = ""  # "22:00-07:00" — only level-5 alerts during this window
+
+    # Google Workspace data collector (requires workspace-mcp optional dep)
+    scribe_google_services: str = "gmail,calendar,drive"  # comma-separated service list
+
+    # External Slack data collector
+    scribe_slack_enabled: bool = False
+    scribe_slack_browser: str = "chrome"  # "chrome", "firefox", or "webkit"
+    scribe_slack_monitored_channels: str = ""  # comma-separated channel names
+
     @field_validator("default_effort")
     @classmethod
     def validate_effort_level(cls, v: str) -> str:
@@ -255,6 +328,56 @@ class SummonConfig(BaseSettings):
         valid = {"low", "medium", "high", "max"}
         if v not in valid:
             raise ValueError(f"SUMMON_DEFAULT_EFFORT must be one of {sorted(valid)}, got {v!r}")
+        return v
+
+    @field_validator("scribe_google_services")
+    @classmethod
+    def validate_scribe_google_services(cls, v: str) -> str:
+        """Validate that all service names are recognized by workspace-mcp."""
+        if not v:
+            return v
+        services = [s.strip() for s in v.split(",") if s.strip()]
+        invalid = set(services) - VALID_GOOGLE_SERVICES
+        if invalid:
+            raise ValueError(
+                f"SUMMON_SCRIBE_GOOGLE_SERVICES contains unknown services: {sorted(invalid)}. "
+                f"Valid: {sorted(VALID_GOOGLE_SERVICES)}"
+            )
+        return v
+
+    @field_validator("scribe_scan_interval_minutes")
+    @classmethod
+    def validate_scribe_scan_interval(cls, v: int) -> int:
+        """Scan interval must be at least 1 minute."""
+        if v < 1:
+            raise ValueError("SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES must be at least 1")
+        return v
+
+    @field_validator("scribe_slack_browser")
+    @classmethod
+    def validate_scribe_slack_browser(cls, v: str) -> str:
+        """Validate that browser choice is one of the supported Playwright browsers."""
+        valid = ("chrome", "firefox", "webkit")
+        if v not in valid:
+            raise ValueError(f"SUMMON_SCRIBE_SLACK_BROWSER must be one of {valid!r}, got {v!r}")
+        return v
+
+    @field_validator("scribe_quiet_hours")
+    @classmethod
+    def validate_scribe_quiet_hours(cls, v: str) -> str:
+        """Validate quiet hours format: HH:MM-HH:MM with valid time values, or empty."""
+        if not v:
+            return v
+        parts = v.split("-")
+        if len(parts) != 2:
+            raise ValueError(f"SUMMON_SCRIBE_QUIET_HOURS must be in HH:MM-HH:MM format, got {v!r}")
+        for part in parts:
+            try:
+                datetime.strptime(part, "%H:%M")  # noqa: DTZ007
+            except ValueError:
+                raise ValueError(
+                    f"SUMMON_SCRIBE_QUIET_HOURS must be in HH:MM-HH:MM format, got {v!r}"
+                ) from None
         return v
 
     @field_validator("slack_bot_token")

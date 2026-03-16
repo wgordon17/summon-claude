@@ -24,7 +24,15 @@ import threading
 import click
 
 from summon_claude import __version__
-from summon_claude.cli.config import config_check, config_edit, config_path, config_set, config_show
+from summon_claude.cli.config import (
+    config_check,
+    config_edit,
+    config_path,
+    config_set,
+    config_show,
+    google_auth,
+    google_status,
+)
 from summon_claude.cli.db import async_db_purge, async_db_reset, async_db_status, async_db_vacuum
 from summon_claude.cli.formatting import echo
 from summon_claude.cli.session import (
@@ -446,6 +454,18 @@ def config_set_cmd(ctx: click.Context, key: str, value: str) -> None:
     """Set a configuration value (e.g. SUMMON_SLACK_BOT_TOKEN)."""
     config_path_override = ctx.obj.get("config_path") if ctx.obj else None
     config_set(key, value, config_path_override)
+
+
+@cmd_config.command("google-auth")
+def config_google_auth_cmd() -> None:
+    """Authenticate with Google Workspace for scribe monitoring."""
+    google_auth()
+
+
+@cmd_config.command("google-status")
+def config_google_status_cmd() -> None:
+    """Check Google Workspace authentication status."""
+    google_status()
 
 
 # ---------------------------------------------------------------------------

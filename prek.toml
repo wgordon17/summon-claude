@@ -26,7 +26,7 @@ hooks = [
 [[repos]]
 repo = "local"
 hooks = [
-  { id = "py-lint", name = "Python lint (make py-lint)", entry = "make py-lint", language = "system", files = '\.py$', pass_filenames = false, priority = 0 },
+  { id = "py-lint", name = "Python lint (make py-lint)", entry = "make py-lint", language = "system", files = '\.py$', pass_filenames = false, stages = ["pre-commit", "pre-push"], priority = 0 },
   { id = "py-test-quick", name = "Quick Python tests (make py-test-quick)", entry = "make py-test-quick", language = "system", pass_filenames = false, always_run = true, priority = 10 },
   { id = "py-test", name = "Full Python tests (make py-test)", entry = "make py-test", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"], priority = 10 },
   { id = "py-typecheck", name = "Python type checking (make py-typecheck)", entry = "make py-typecheck", language = "system", files = '\.py$', pass_filenames = false, stages = ["pre-push"], priority = 0 },
