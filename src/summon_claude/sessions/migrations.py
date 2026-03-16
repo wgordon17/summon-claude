@@ -15,7 +15,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,17 @@ async def _migrate_3_to_4(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_4_to_5(db: aiosqlite.Connection) -> None:
+    """Add canvas_id and canvas_markdown to sessions table."""
+    for col in ("canvas_id TEXT", "canvas_markdown TEXT"):
+        try:
+            await db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+            logger.debug("Column %s already exists, skipping", col)
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the baseline DDL in _connect() produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
@@ -63,6 +74,7 @@ _MIGRATIONS: dict[int, Any] = {
     1: _migrate_1_to_2,
     2: _migrate_2_to_3,
     3: _migrate_3_to_4,
+    4: _migrate_4_to_5,
 }
 
 

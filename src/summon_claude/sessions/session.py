@@ -61,6 +61,8 @@ from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.sessions.response import ResponseStreamer, StreamResult
 from summon_claude.sessions.response import split_text as _split_text
+from summon_claude.slack.canvas_store import CanvasStore
+from summon_claude.slack.canvas_templates import get_canvas_template
 from summon_claude.slack.client import SlackClient
 from summon_claude.slack.mcp import create_summon_mcp_server
 from summon_claude.slack.router import ThreadRouter
@@ -429,6 +431,7 @@ class SummonSession:
         # Session state
         self._last_heartbeat_time: float = 0.0
         self._channel_id: str | None = None  # set after channel creation
+        self._canvas_store: CanvasStore | None = None
 
     # ------------------------------------------------------------------
     # Public API (called by SessionManager / BoltRouter)
@@ -602,7 +605,7 @@ class SummonSession:
                     logger.info("Waiting for authentication... %.0fs remaining", remaining)
                 next_countdown += _AUTH_COUNTDOWN_INTERVAL_S
 
-    async def _run_session(self, registry: SessionRegistry) -> None:  # noqa: PLR0915
+    async def _run_session(self, registry: SessionRegistry) -> None:  # noqa: PLR0912, PLR0915
         """Create channel, register with dispatcher, connect Claude, run message loop."""
         # In daemon mode, web_client is pre-provided by SessionManager.
         # Standalone/test mode: create a fresh AsyncWebClient.
@@ -666,6 +669,14 @@ class SummonSession:
         except Exception as e:
             logger.debug("Failed to set initial topic: %s", e)
 
+        # --- Canvas initialization (non-fatal) ---
+        try:
+            canvas_store = await self._init_canvas(client, registry)
+            self._canvas_store = canvas_store
+        except Exception as e:
+            logger.warning("Canvas initialization failed (non-fatal): %s", e)
+            self._canvas_store = None
+
         # Notify the authenticating user
         if self._authenticated_user_id:
             try:
@@ -715,6 +726,13 @@ class SummonSession:
             except (asyncio.CancelledError, Exception) as e:
                 logger.debug("Heartbeat task cleanup: %s", e)
 
+            # Stop canvas sync before shutdown
+            if self._canvas_store is not None:
+                try:
+                    await self._canvas_store.stop_sync()
+                except Exception as e:
+                    logger.debug("Canvas sync stop failed: %s", e)
+
             current_task = asyncio.current_task()
             if current_task is not None and current_task.cancelling() > 0:
                 # uncancel() allows the _shutdown() awaits below to complete even if
@@ -757,6 +775,35 @@ class SummonSession:
         raise RuntimeError(
             f"Could not create channel after {self._CHANNEL_CREATE_RETRIES} attempts"
         ) from last_err
+
+    async def _init_canvas(
+        self, client: SlackClient, registry: SessionRegistry
+    ) -> CanvasStore | None:
+        """Create a channel canvas and start background sync.
+
+        Canvas failure is non-fatal — returns ``None`` on any error.
+        """
+        template = get_canvas_template("agent")
+        markdown = template.format(model=self._model or "unknown", cwd=self._cwd)
+
+        canvas_id = await client.canvas_create(markdown, title=f"{self._name} — Session Canvas")
+        if not canvas_id:
+            logger.warning("Could not create canvas for session %s", self._session_id)
+            return None
+
+        # Persist immediately to SQLite
+        await registry.update_canvas(self._session_id, canvas_id, markdown)
+
+        store = CanvasStore(
+            session_id=self._session_id,
+            canvas_id=canvas_id,
+            client=client,
+            registry=registry,
+            markdown=markdown,
+        )
+        store.start_sync()
+        logger.info("Canvas initialized: %s for session %s", canvas_id, self._session_id)
+        return store
 
     async def _run_session_tasks(  # noqa: PLR0912
         self, rt: _SessionRuntime, router: ThreadRouter

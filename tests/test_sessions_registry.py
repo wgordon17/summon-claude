@@ -101,6 +101,8 @@ class TestUpdatableFields:
             "ended_at",
             "error_message",
             "model",
+            "canvas_id",
+            "canvas_markdown",
         }
         assert expected == SessionRegistry._UPDATABLE_FIELDS
 
@@ -1005,3 +1007,59 @@ class TestResolveSessionByName:
         session, matches = await registry.resolve_session("sess-name-r4")
         assert session is not None
         assert session["session_id"] == "sess-name-r4"
+
+
+class TestCanvasMethods:
+    async def test_update_and_get_canvas(self, registry):
+        await registry.register("sess-canvas", 111, "/tmp")
+        await registry.update_canvas("sess-canvas", "F_CANVAS_1", "# Hello\nWorld")
+        canvas_id, md = await registry.get_canvas("sess-canvas")
+        assert canvas_id == "F_CANVAS_1"
+        assert md == "# Hello\nWorld"
+
+    async def test_get_canvas_missing_session(self, registry):
+        canvas_id, md = await registry.get_canvas("nonexistent")
+        assert canvas_id is None
+        assert md is None
+
+    async def test_get_canvas_by_channel(self, registry):
+        await registry.register("sess-cc", 111, "/tmp")
+        await registry.update_status("sess-cc", "active", slack_channel_id="C_CANVAS")
+        await registry.update_canvas("sess-cc", "F_CANVAS_2", "# Status\nOK")
+        canvas_id, md = await registry.get_canvas_by_channel("C_CANVAS")
+        assert canvas_id == "F_CANVAS_2"
+        assert md == "# Status\nOK"
+
+    async def test_get_canvas_by_channel_missing(self, registry):
+        canvas_id, md = await registry.get_canvas_by_channel("C_MISSING")
+        assert canvas_id is None
+        assert md is None
+
+    async def test_get_canvas_by_channel_skips_null_canvas(self, registry):
+        """Newer session with no canvas should not shadow older session with canvas."""
+        # Older session with canvas
+        await registry.register("sess-old", 111, "/tmp")
+        await registry.update_status("sess-old", "active", slack_channel_id="C_SHARED")
+        await registry.update_canvas("sess-old", "F_OLD", "# Old canvas")
+
+        # Newer session in same channel but errored before canvas creation
+        await registry.register("sess-new", 222, "/tmp")
+        await registry.update_status("sess-new", "errored", slack_channel_id="C_SHARED")
+        # sess-new has no canvas_id (NULL)
+
+        canvas_id, md = await registry.get_canvas_by_channel("C_SHARED")
+        assert canvas_id == "F_OLD"
+        assert md == "# Old canvas"
+
+    async def test_canvas_id_in_updatable_fields(self):
+        assert "canvas_id" in SessionRegistry._UPDATABLE_FIELDS
+        assert "canvas_markdown" in SessionRegistry._UPDATABLE_FIELDS
+
+    async def test_update_canvas_via_update_status(self, registry):
+        await registry.register("sess-cvs", 111, "/tmp")
+        await registry.update_status(
+            "sess-cvs", "active", canvas_id="F_C1", canvas_markdown="# Test"
+        )
+        session = await registry.get_session("sess-cvs")
+        assert session["canvas_id"] == "F_C1"
+        assert session["canvas_markdown"] == "# Test"

@@ -234,3 +234,109 @@ class SlackClient:
             thread = thread_result.messages
 
         return {"messages": messages, "thread": thread, "target_ts": message_ts}
+
+    # --- Canvas methods ---
+
+    async def canvas_create(self, markdown: str, *, title: str = "Session Canvas") -> str | None:
+        """Create a canvas in the channel and return its file ID.
+
+        On free-plan workspaces ``canvases.create`` without a channel may fail,
+        so we always pass ``channel_id``.  If creation fails entirely we fall
+        back to finding an existing canvas via ``get_canvas_id``, overwriting
+        its content and renaming it.
+
+        Returns the canvas file ID, or ``None`` if all attempts fail.
+        """
+        try:
+            resp = await self._web.api_call(
+                "canvases.create",
+                json={
+                    "title": title,
+                    "document_content": {"type": "markdown", "markdown": markdown},
+                    "channel_id": self.channel_id,
+                },
+            )
+            canvas_id: str | None = resp.get("canvas_id")
+            if canvas_id:
+                logger.info("Canvas created: %s in channel %s", canvas_id, self.channel_id)
+                return canvas_id
+        except Exception as e:
+            logger.warning("canvases.create failed: %s — attempting fallback", e)
+
+        # Fallback: find existing canvas, overwrite content and rename
+        existing_id = await self.get_canvas_id()
+        if existing_id:
+            await self.canvas_sync(existing_id, markdown)
+            await self.canvas_rename(existing_id, title)
+        return existing_id
+
+    async def canvas_sync(self, canvas_id: str, markdown: str) -> bool:
+        """Update a canvas with new markdown content (best-effort).
+
+        Replaces all content with a single ``replace`` operation.
+        Returns ``True`` on success, ``False`` on failure (never raises).
+        """
+        try:
+            await self._web.api_call(
+                "canvases.edit",
+                json={
+                    "canvas_id": canvas_id,
+                    "changes": [
+                        {
+                            "operation": "replace",
+                            "document_content": {
+                                "type": "markdown",
+                                "markdown": markdown,
+                            },
+                        }
+                    ],
+                },
+            )
+            return True
+        except Exception as e:
+            logger.debug("canvas_sync failed for %s: %s", canvas_id, e)
+            return False
+
+    async def canvas_rename(self, canvas_id: str, title: str) -> bool:
+        """Rename a canvas title (best-effort).
+
+        Returns ``True`` on success, ``False`` on failure (never raises).
+        """
+        try:
+            await self._web.api_call(
+                "canvases.edit",
+                json={
+                    "canvas_id": canvas_id,
+                    "changes": [
+                        {
+                            "operation": "rename",
+                            "title_content": {
+                                "type": "markdown",
+                                "markdown": title,
+                            },
+                        }
+                    ],
+                },
+            )
+            return True
+        except Exception as e:
+            logger.debug("canvas_rename failed for %s: %s", canvas_id, e)
+            return False
+
+    async def get_canvas_id(self) -> str | None:
+        """Discover an existing canvas in the channel via files.list.
+
+        Returns the first canvas file ID found, or ``None``.
+        """
+        try:
+            resp = await self._web.files_list(
+                channel=self.channel_id,
+                types="spaces",
+                count=1,
+            )
+            files = resp.get("files", [])
+            if files:
+                return files[0].get("id")
+        except Exception as e:
+            logger.debug("files.list canvas discovery failed: %s", e)
+        return None
