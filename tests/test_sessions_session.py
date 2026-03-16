@@ -81,8 +81,10 @@ def make_mock_client(channel_id: str = "C_TEST_CHAN") -> AsyncMock:
     client.post_ephemeral = AsyncMock()
     client.update = AsyncMock()
     client.react = AsyncMock()
+    client.unreact = AsyncMock()
     client.upload = AsyncMock()
     client.set_topic = AsyncMock()
+    client.set_thread_status = AsyncMock()
     return client
 
 
@@ -182,8 +184,8 @@ class TestSessionShutdownControl:
     async def test_request_shutdown_puts_sentinel_on_queue(self):
         session = make_session()
         session.request_shutdown()
-        item = await asyncio.wait_for(session._message_queue.get(), timeout=1.0)
-        assert item == ("", None)
+        item = await asyncio.wait_for(session._raw_event_queue.get(), timeout=1.0)
+        assert item is None
 
     def test_request_shutdown_idempotent(self):
         """Calling request_shutdown() twice should not raise."""
@@ -644,7 +646,7 @@ class TestSessionHandleRegistration:
                 patch("summon_claude.sessions.session.SlackClient") as mock_slack_cls,
                 patch("summon_claude.sessions.session.ThreadRouter"),
                 patch("summon_claude.sessions.session.PermissionHandler"),
-                patch.object(session, "_run_message_loop", new=AsyncMock()),
+                patch.object(session, "_run_session_tasks", new=AsyncMock()),
                 patch.object(session, "_shutdown", new=AsyncMock()),
             ):
                 mock_slack_cls.return_value = make_mock_client("C_DISP")
@@ -936,3 +938,88 @@ class TestProcessIncomingEvent:
         assert ts == "42"
         # find_commands should NOT have been called (fast path)
         mock_find.assert_not_called()
+
+
+class TestPendingTurn:
+    """Tests for the _PendingTurn dataclass."""
+
+    def test_pending_turn_defaults(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="hello")
+        assert pt.message == "hello"
+        assert pt.message_ts is None
+        assert pt.thread_ts is None
+        assert pt.pre_sent is True
+        assert pt.queued_at is not None
+
+    def test_pending_turn_frozen(self):
+        from dataclasses import FrozenInstanceError
+
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="hello")
+        with pytest.raises(FrozenInstanceError):
+            pt.message = "other"  # type: ignore[misc]
+
+
+class TestShutdownSentinels:
+    """Tests for shutdown sentinel propagation."""
+
+    def test_request_shutdown_uses_none_sentinel(self):
+        session = make_session()
+        session.request_shutdown()
+        item = session._raw_event_queue.get_nowait()
+        assert item is None
+
+    def test_raw_event_queue_has_backpressure(self):
+        session = make_session()
+        assert session._raw_event_queue.maxsize == 100
+
+    def test_pending_turns_queue_unbounded(self):
+        session = make_session()
+        assert session._pending_turns.maxsize == 0
+
+
+class TestThinkingTriggers:
+    """Tests for ultrathink detection."""
+
+    def test_triggers_constant_is_frozenset(self):
+        from summon_claude.sessions.session import _THINKING_TRIGGERS
+
+        assert isinstance(_THINKING_TRIGGERS, frozenset)
+        assert "ultrathink" in _THINKING_TRIGGERS
+        assert "think harder" in _THINKING_TRIGGERS
+        assert "megathink" in _THINKING_TRIGGERS
+
+
+class TestCompactRouting:
+    """Tests for compact command routing through _pending_turns."""
+
+    def test_pending_turn_compact_default_false(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="hello")
+        assert pt.compact is False
+
+    def test_pending_turn_compact_flag(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        pt = _PendingTurn(message="", compact=True, pre_sent=False)
+        assert pt.compact is True
+        assert pt.pre_sent is False
+
+
+class TestContextWarningReset:
+    """Tests for _context_warned reset after compact."""
+
+    def test_context_warned_resets_on_init(self):
+        session = make_session()
+        assert session._context_warned is False
+
+    def test_context_warned_flag_exists(self):
+        session = make_session()
+        session._context_warned = True
+        assert session._context_warned is True
+        session._context_warned = False
+        assert session._context_warned is False

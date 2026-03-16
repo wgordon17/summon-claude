@@ -108,6 +108,32 @@ class SlackClient:
         except Exception as e:
             logger.debug("Failed to add reaction :%s: — %s", emoji, e)
 
+    async def unreact(self, ts: str, emoji: str) -> None:
+        """Remove a reaction from a message."""
+        try:
+            await self._web.reactions_remove(
+                channel=self.channel_id,
+                timestamp=ts,
+                name=emoji.strip(":"),
+            )
+        except Exception as e:
+            logger.debug("Failed to remove reaction :%s: — %s", emoji, e)
+
+    async def set_thread_status(self, thread_ts: str, status: str) -> None:
+        """Set assistant thread status indicator (typing-style).
+
+        Auto-clears when bot sends a reply. Send empty string to clear explicitly.
+        Requires chat:write scope (as of March 2026).
+        """
+        try:
+            await self._web.assistant_threads_setStatus(
+                channel_id=self.channel_id,
+                thread_ts=thread_ts,
+                status=status,
+            )
+        except Exception as e:
+            logger.debug("Failed to set thread status — %s", e)
+
     async def upload(
         self,
         content: str,

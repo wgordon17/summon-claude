@@ -17,7 +17,7 @@ from summon_claude.sessions.session import SessionIdFilter, _session_id_var
 
 class TestQueueBackpressure:
     def test_queue_has_maxsize_100(self):
-        """SummonSession._message_queue must have maxsize=100 for backpressure."""
+        """SummonSession._raw_event_queue must have maxsize=100 for backpressure."""
         from summon_claude.sessions.auth import SessionAuth
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
@@ -26,7 +26,7 @@ class TestQueueBackpressure:
         auth = MagicMock(spec=SessionAuth)
         session = SummonSession(config=config, options=options, auth=auth, session_id="test-bp")
 
-        assert session._message_queue.maxsize == 100
+        assert session._raw_event_queue.maxsize == 100
 
     async def test_queue_raises_full_at_limit(self):
         """Queue raises QueueFull when maxsize is exceeded with put_nowait."""

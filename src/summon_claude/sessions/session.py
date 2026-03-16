@@ -1,6 +1,6 @@
 """Session orchestrator — ties Claude SDK + Slack + permissions + streaming together."""
 
-# pyright: reportArgumentType=false, reportReturnType=false, reportAttributeAccessIssue=false
+# pyright: reportArgumentType=false, reportReturnType=false, reportAttributeAccessIssue=false, reportCallIssue=false
 # slack_sdk and claude_agent_sdk don't ship type stubs
 
 from __future__ import annotations
@@ -14,12 +14,19 @@ import os
 import queue
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    TextBlock,
+    ThinkingConfigAdaptive,
+    ThinkingConfigDisabled,
+)
 from slack_sdk.http_retry.builtin_async_handlers import (
     AsyncRateLimitErrorRetryHandler,
     AsyncServerErrorRetryHandler,
@@ -44,10 +51,15 @@ from summon_claude.sessions.commands import (
 from summon_claude.sessions.commands import (
     dispatch as dispatch_command,
 )
-from summon_claude.sessions.context import ContextUsage
+from summon_claude.sessions.context import (
+    ContextUsage,
+    compute_context_usage,
+    derive_transcript_path,
+    get_last_step_usage,
+)
 from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.sessions.registry import SessionRegistry
-from summon_claude.sessions.response import ResponseStreamer
+from summon_claude.sessions.response import ResponseStreamer, StreamResult
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.client import SlackClient
 from summon_claude.slack.mcp import create_summon_mcp_server
@@ -124,7 +136,28 @@ _AUTH_COUNTDOWN_INTERVAL_S = 15.0  # log countdown every 15 seconds
 _QUEUE_POLL_INTERVAL_S = 1.0
 _MAX_USER_MESSAGE_CHARS = 10_000
 _CLEANUP_TIMEOUT_S = 10.0
+_CONTEXT_WARNING_THRESHOLD = 75.0  # Warn user when context exceeds this %
 _MAX_CHANNEL_NAME_LEN = 80
+
+# Words/phrases that trigger extended thinking (ultrathink) in the Claude CLI.
+# When detected, a :brain: reaction is added to the user's message (permanent).
+_THINKING_TRIGGERS = frozenset(
+    {
+        "ultrathink",
+        "think harder",
+        "think intensely",
+        "think longer",
+        "think really hard",
+        "think super hard",
+        "think very hard",
+        "megathink",
+        "think hard",
+        "think deeply",
+        "think a lot",
+        "think more",
+        "think about it",
+    }
+)
 
 # Patterns that may appear in exception messages and should not be stored in the audit log
 _SECRET_PATTERN = re.compile(r"xox[a-z]-[A-Za-z0-9\-]+|xapp-[A-Za-z0-9\-]+|sk-ant-[A-Za-z0-9\-]+")
@@ -133,11 +166,17 @@ _SYSTEM_PROMPT = {
     "type": "preset",
     "preset": "claude_code",
     "append": (
-        "You are running via summon-claude, bridged to a Slack channel. "
-        "The user interacts through Slack messages. "
+        "You are running headlessly via summon-claude, bridged to a private Slack channel. "
+        "There is no terminal, no visible desktop, and no interactive UI. "
+        "The user interacts through Slack messages — all your replies, tool use, "
+        "and thinking are captured and routed to Slack automatically. "
+        "UI-based tools (non-headless browsers, GUI editors, desktop apps) "
+        "will not be visible to the user. "
         "Use standard markdown formatting "
         "(e.g. **bold**, *italic*, [text](url), ```code```). "
-        "Your output will be automatically converted for Slack display."
+        "Your output will be automatically converted for Slack display. "
+        "The user can use !commands (e.g. !help, !status, !stop, !end) "
+        "for session control."
     ),
 }
 
@@ -281,6 +320,22 @@ class SessionOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class _PendingTurn:
+    """A preprocessed user message ready for the response consumer.
+
+    Created by the preprocessor after running ``_process_incoming_event``
+    and (optionally) calling ``query()`` on the SDK.
+    """
+
+    message: str
+    message_ts: str | None = None  # User's original Slack message ts (for reactions)
+    thread_ts: str | None = None  # Thread context
+    pre_sent: bool = True  # Whether query() was already called by preprocessor
+    queued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    compact: bool = False  # If True, consumer runs _execute_compact instead of normal turn
+
+
+@dataclass(frozen=True, slots=True)
 class _SessionRuntime:
     registry: SessionRegistry
     client: SlackClient
@@ -296,7 +351,7 @@ class SummonSession:
     """Orchestrates a Claude Code session bridged to a Slack channel.
 
     In the daemon architecture this class runs as an asyncio task inside the
-    daemon process.  Slack events arrive via ``_message_queue`` (populated by
+    daemon process.  Slack events arrive via ``_raw_event_queue`` (populated by
     ``EventDispatcher``) rather than being received directly by a per-session
     ``AsyncSocketModeHandler``.
 
@@ -338,11 +393,12 @@ class SummonSession:
         # Pre-cached bot user ID from BoltRouter.start() — avoids a per-session auth_test() call
         self._bot_user_id = bot_user_id
 
-        # Message queue: Slack user messages -> Claude (populated by EventDispatcher)
+        # Raw event queue: Slack events from EventDispatcher -> preprocessor
         # maxsize=100 provides backpressure — EventDispatcher drops events when full
-        self._message_queue: asyncio.Queue[dict | tuple[str, str | None]] = asyncio.Queue(
-            maxsize=100
-        )
+        self._raw_event_queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=100)
+
+        # Pending turns: preprocessed messages ready for response consumer
+        self._pending_turns: asyncio.Queue[_PendingTurn | None] = asyncio.Queue()
 
         # Shutdown signal
         self._shutdown_event = asyncio.Event()
@@ -366,6 +422,7 @@ class SummonSession:
         # Turn abort infrastructure
         self._current_turn_task: asyncio.Task | None = None
         self._abort_event = asyncio.Event()
+        self._context_warned: bool = False
 
         # Session state
         self._last_heartbeat_time: float = 0.0
@@ -390,9 +447,9 @@ class SummonSession:
         if not self._shutdown_event.is_set():
             logger.info("Session %s: shutdown requested", self._session_id)
             self._shutdown_event.set()
-            # Unblock the message queue poll
+            # Unblock the raw event queue poll
             try:
-                self._message_queue.put_nowait(("", None))
+                self._raw_event_queue.put_nowait(None)
             except asyncio.QueueFull:
                 logger.debug("Shutdown sentinel dropped (queue full); shutdown_event is set")
 
@@ -418,7 +475,7 @@ class SummonSession:
         In the daemon architecture:
         - No Bolt app or socket handler is created here.
         - Authentication is signalled externally via ``authenticate()``.
-        - Events arrive via ``_message_queue`` populated by ``EventDispatcher``.
+        - Events arrive via ``_raw_event_queue`` populated by ``EventDispatcher``.
         """
         # Set contextvar so all log records in this task carry session_id
         _session_id_var.set(self._session_id)
@@ -637,7 +694,7 @@ class SummonSession:
             handle = SessionHandle(
                 session_id=self._session_id,
                 channel_id=channel_id,
-                message_queue=self._message_queue,
+                message_queue=self._raw_event_queue,
                 permission_handler=permission_handler,
                 abort_callback=self._abort_current_turn,
                 authenticated_user_id=self._authenticated_user_id or "",
@@ -648,7 +705,7 @@ class SummonSession:
 
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(rt))
         try:
-            await self._run_message_loop(rt, router)
+            await self._run_session_tasks(rt, router)
         finally:
             heartbeat_task.cancel()
             try:
@@ -699,10 +756,10 @@ class SummonSession:
             f"Could not create channel after {self._CHANNEL_CREATE_RETRIES} attempts"
         ) from last_err
 
-    async def _run_message_loop(  # noqa: PLR0912, PLR0915
+    async def _run_session_tasks(  # noqa: PLR0912
         self, rt: _SessionRuntime, router: ThreadRouter
     ) -> None:
-        """Listen for Slack messages and forward them to Claude."""
+        """Create SDK client, then run preprocessor + response consumer concurrently."""
         slack_mcp = create_summon_mcp_server(
             rt.client,
             allowed_channels=lambda: {rt.client.channel_id},
@@ -719,11 +776,21 @@ class SummonSession:
             can_use_tool=rt.permission_handler.handle,
             mcp_servers={"summon-slack": slack_mcp},
             model=self._model,
+            # TODO: if config gains thinking_budget_tokens, use
+            # ThinkingConfigEnabled(budget_tokens=N) when enable_thinking
+            # is True + budget set; adaptive remains the default.
+            thinking=(
+                ThinkingConfigAdaptive()
+                if self._config.enable_thinking
+                else ThinkingConfigDisabled()
+            ),
         )
 
         streamer = ResponseStreamer(
             router=router,
             user_id=self._authenticated_user_id,
+            show_thinking=self._config.show_thinking,
+            max_inline_chars=self._config.max_inline_chars,
         )
 
         async with ClaudeSDKClient(options) as claude:
@@ -754,32 +821,14 @@ class SummonSession:
                 except Exception as e:
                     logger.debug("Could not discover plugin skills: %s", e)
 
-                while not self._shutdown_event.is_set():
-                    try:
-                        item = await asyncio.wait_for(
-                            self._message_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
-                        )
-                    except TimeoutError:
-                        continue
-
-                    # Items are either raw Slack event dicts (from EventDispatcher)
-                    # or internal tuples (sentinel / slash passthrough from _dispatch_command)
-                    if isinstance(item, dict):
-                        # Raw Slack event — run full preprocessing pipeline
-                        result = await self._process_incoming_event(item, rt)
-                        if result is None:
-                            # Filtered out (subtype, empty, permission input handled, etc.)
-                            continue
-                        user_message, _ = result
-                    else:
-                        # Internal tuple: (text, thread_ts) from _dispatch_command passthrough
-                        # or ("", None) shutdown sentinel
-                        user_message, _ = item
-
-                    if not user_message:
-                        continue
-
-                    await self._handle_user_message(rt, claude, streamer, user_message)
+                try:
+                    async with asyncio.TaskGroup() as tg:
+                        tg.create_task(self._run_preprocessor(rt, claude))
+                        tg.create_task(self._run_response_consumer(rt, claude, streamer))
+                except ExceptionGroup as eg:
+                    for exc in eg.exceptions:
+                        logger.error("Session task failed: %s", exc, exc_info=exc)
+                    raise eg.exceptions[0] from eg
             finally:
                 # Post session summary while the client is still open
                 if self._total_turns > 0:
@@ -793,89 +842,141 @@ class SummonSession:
                         logger.warning("Session summary failed: %s", e)
                 self._claude = None
 
-    async def _handle_user_message(  # noqa: PLR0915
+    async def _run_preprocessor(self, rt: _SessionRuntime, claude: ClaudeSDKClient) -> None:
+        """Dequeue raw Slack events, preprocess, call query(), enqueue _PendingTurn.
+
+        Runs concurrently with ``_run_response_consumer``. Calling ``query()``
+        immediately on receipt eliminates inter-turn latency — the SDK queues
+        messages internally while the previous ``receive_response()`` is still
+        streaming.
+        """
+        try:
+            while not self._shutdown_event.is_set():
+                try:
+                    item = await asyncio.wait_for(
+                        self._raw_event_queue.get(), timeout=_QUEUE_POLL_INTERVAL_S
+                    )
+                except TimeoutError:
+                    continue
+
+                # None sentinel = shutdown
+                if item is None:
+                    return
+
+                # Raw Slack event dict — run full preprocessing pipeline
+                result = await self._process_incoming_event(item, rt, claude=claude)
+                if result is None:
+                    # Filtered out (subtype, empty, permission input handled, etc.)
+                    continue
+                user_message, thread_ts = result
+
+                if not user_message:
+                    continue
+
+                # Pre-send: call query() immediately so SDK queues it
+                message_ts = item.get("ts")
+
+                # Emoji lifecycle: acknowledge receipt
+                if message_ts:
+                    await rt.client.react(message_ts, "inbox_tray")
+                    # Check for ultrathink triggers (permanent :brain: reaction)
+                    text_lower = user_message.lower()
+                    if any(t in text_lower for t in _THINKING_TRIGGERS):
+                        await rt.client.react(message_ts, "brain")
+
+                pre_sent = False
+                try:
+                    await claude.query(user_message)
+                    pre_sent = True
+                except Exception as e:
+                    logger.warning("Pre-send query() failed: %s — consumer will retry", e)
+
+                pending = _PendingTurn(
+                    message=user_message,
+                    message_ts=message_ts,
+                    thread_ts=thread_ts,
+                    pre_sent=pre_sent,
+                )
+                await self._pending_turns.put(pending)
+        finally:
+            # Always unblock consumer — even on crash
+            with contextlib.suppress(Exception):
+                self._pending_turns.put_nowait(None)
+
+    async def _run_response_consumer(
         self,
         rt: _SessionRuntime,
         claude: ClaudeSDKClient,
         streamer: ResponseStreamer,
-        message: str,
     ) -> None:
-        """Forward a single user message to Claude and stream the response."""
-        logger.info("Forwarding message to Claude (%d chars)", len(message))
+        """Dequeue _PendingTurn and stream responses from Claude.
+
+        Only calls ``receive_response()`` — the preprocessor already called
+        ``query()`` (unless ``pre_sent=False``, in which case we call it here).
+
+        Compact commands are also routed through this consumer to prevent
+        concurrent ``receive_response()`` calls on the SDK client.
+        """
+        while True:
+            pending = await self._pending_turns.get()
+            if pending is None:
+                return
+
+            if pending.compact:
+                instructions = pending.message if pending.message else None
+                await self._execute_compact(
+                    rt, instructions, pending.thread_ts, pre_sent=pending.pre_sent
+                )
+            else:
+                await self._handle_user_message(rt, claude, streamer, pending)
+
+    async def _handle_user_message(  # noqa: PLR0912, PLR0915
+        self,
+        rt: _SessionRuntime,
+        claude: ClaudeSDKClient,
+        streamer: ResponseStreamer,
+        pending: _PendingTurn,
+    ) -> None:
+        """Consume a preprocessed turn: stream the response from Claude."""
+        logger.info(
+            "Processing turn (%d chars, pre_sent=%s)", len(pending.message), pending.pre_sent
+        )
 
         # Reset abort event for this turn
         self._abort_event.clear()
+        emoji_finalized = False
 
         async def _do_turn() -> None:
+            nonlocal emoji_finalized
             self._total_turns += 1
-            await streamer.start_turn(self._total_turns)
-            await claude.query(message)
+
+            # Emoji lifecycle: swap inbox_tray -> gear (processing)
+            if pending.message_ts:
+                await rt.client.unreact(pending.message_ts, "inbox_tray")
+                await rt.client.react(pending.message_ts, "gear")
+
+            await streamer.start_turn(self._total_turns, user_snippet=pending.message)
+            # If preprocessor couldn't pre-send, call query() now
+            if not pending.pre_sent:
+                await claude.query(pending.message)
             stream_result = await streamer.stream_with_flush(claude.receive_response())
             if stream_result:
-                if stream_result.model:
-                    self._model = stream_result.model
-                # Capture claude_session_id on the first turn (ResultMessage
-                # always includes it, unlike get_server_info which may not).
-                claude_sid = stream_result.result.session_id
-                if claude_sid and not self._claude_session_id:
-                    self._claude_session_id = claude_sid
-                    await rt.registry.update_status(
-                        self._session_id, "active", claude_session_id=claude_sid
-                    )
-                    logger.info("Captured Claude session ID: %s", claude_sid[:16])
-                    try:
-                        await rt.client.post(
-                            f"Claude session: `{claude_sid[:16]}...`",
-                            blocks=[
-                                {
-                                    "type": "context",
-                                    "elements": [
-                                        {
-                                            "type": "mrkdwn",
-                                            "text": (
-                                                f":brain: Claude session ID: `{claude_sid[:16]}...`"
-                                            ),
-                                        }
-                                    ],
-                                }
-                            ],
-                        )
-                    except Exception:
-                        logger.warning("Failed to post Claude session ID to Slack", exc_info=True)
-                cost = stream_result.result.total_cost_usd or 0.0
-                self._total_cost += cost
-                await rt.registry.record_turn(self._session_id, cost)
-                if stream_result.context is not None:
-                    self._last_context = stream_result.context
-                if stream_result.model is not None:
-                    self._last_model_seen = stream_result.model
-                summary = streamer.finalize_turn(context=self._last_context)
-                await streamer.update_turn_summary(summary)
-                # Only update topic if model or branch changed
-                try:
-                    current_model = self._last_model_seen or self._model
-                    git_branch = await _get_git_branch(self._cwd)
-                    if (
-                        current_model != self._last_topic_model
-                        or git_branch != self._last_topic_branch
-                    ):
-                        topic = _format_topic(
-                            model=current_model, cwd=self._cwd, git_branch=git_branch
-                        )
-                        await rt.client.set_topic(topic)
-                        self._last_topic_model = current_model
-                        self._last_topic_branch = git_branch
-                except Exception:
-                    logger.warning("Post-turn topic update failed", exc_info=True)
+                await self._finalize_turn_result(rt, streamer, stream_result)
+
+            # Emoji lifecycle: gear -> white_check_mark (success)
+            if pending.message_ts:
+                await rt.client.unreact(pending.message_ts, "gear")
+                await rt.client.react(pending.message_ts, "white_check_mark")
+                emoji_finalized = True
 
         self._current_turn_task = asyncio.create_task(_do_turn())
         abort_wait = asyncio.create_task(self._abort_event.wait())
         try:
-            done, pending = await asyncio.wait(
+            done, wait_pending = await asyncio.wait(
                 {self._current_turn_task, abort_wait},
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
+            for task in wait_pending:
                 task.cancel()
                 try:
                     await task
@@ -888,6 +989,11 @@ class SummonSession:
                     raise exc
             elif self._abort_event.is_set():
                 logger.info("Turn aborted by user")
+                # Emoji lifecycle: gear -> octagonal_sign (abort)
+                if pending.message_ts and not emoji_finalized:
+                    await rt.client.unreact(pending.message_ts, "gear")
+                    await rt.client.react(pending.message_ts, "octagonal_sign")
+                    emoji_finalized = True
         except asyncio.CancelledError:
             if self._current_turn_task and not self._current_turn_task.done():
                 self._current_turn_task.cancel()
@@ -898,6 +1004,11 @@ class SummonSession:
             raise
         except Exception as e:
             logger.exception("Error during Claude response: %s", e)
+            # Emoji lifecycle: gear -> warning (error)
+            if pending.message_ts and not emoji_finalized:
+                await rt.client.unreact(pending.message_ts, "gear")
+                await rt.client.react(pending.message_ts, "warning")
+                emoji_finalized = True
             error_type = type(e).__name__
             await rt.registry.log_event(
                 "session_errored",
@@ -914,7 +1025,97 @@ class SummonSession:
             except Exception as e2:
                 logger.warning("Failed to post error notification: %s", e2)
         finally:
+            # Safety net: clean up gear if turn ended without proper emoji transition
+            if pending.message_ts and not emoji_finalized:
+                await rt.client.unreact(pending.message_ts, "gear")
             self._current_turn_task = None
+
+    async def _finalize_turn_result(
+        self,
+        rt: _SessionRuntime,
+        streamer: ResponseStreamer,
+        stream_result: StreamResult,
+    ) -> None:
+        """Process a completed turn: capture session ID, update context, topic."""
+        if stream_result.model:
+            self._model = stream_result.model
+        claude_sid = stream_result.result.session_id
+        if claude_sid and not self._claude_session_id:
+            self._claude_session_id = claude_sid
+            await rt.registry.update_status(
+                self._session_id, "active", claude_session_id=claude_sid
+            )
+            logger.info("Captured Claude session ID: %s", claude_sid[:16])
+            try:
+                await rt.client.post(
+                    f"Claude session: `{claude_sid[:16]}...`",
+                    blocks=[
+                        {
+                            "type": "context",
+                            "elements": [
+                                {
+                                    "type": "mrkdwn",
+                                    "text": f":brain: Claude session ID: `{claude_sid[:16]}...`",
+                                }
+                            ],
+                        }
+                    ],
+                )
+            except Exception:
+                logger.warning("Failed to post Claude session ID to Slack", exc_info=True)
+        cost = stream_result.result.total_cost_usd or 0.0
+        self._total_cost += cost
+        await rt.registry.record_turn(self._session_id, cost)
+        if stream_result.model is not None:
+            self._last_model_seen = stream_result.model
+
+        # Compute accurate context from JSONL transcript (not cumulative usage)
+        if self._claude_session_id:
+            tp = derive_transcript_path(self._cwd, self._claude_session_id)
+            transcript_usage = get_last_step_usage(tp)
+            if transcript_usage:
+                self._last_context = compute_context_usage(transcript_usage, self._last_model_seen)
+
+        summary = streamer.finalize_turn(context=self._last_context)
+        await streamer.update_turn_summary(summary)
+
+        # Post turn footer with cost + context
+        cost_str = f"${cost:.4f}"
+        if self._last_context:
+            footer = (
+                f":checkered_flag: {cost_str} \u00b7 {self._last_context.percentage:.0f}% context"
+            )
+        else:
+            footer = f":checkered_flag: {cost_str}"
+        await streamer.post_turn_footer(footer)
+
+        # Proactive context warning
+        if (
+            self._last_context
+            and self._last_context.percentage > _CONTEXT_WARNING_THRESHOLD
+            and not self._context_warned
+        ):
+            try:
+                await rt.client.post(
+                    f":warning: Context is getting large "
+                    f"(~{self._last_context.percentage:.0f}% used). "
+                    "Consider running `!compact` to free up space."
+                )
+            except Exception:
+                logger.debug("Failed to post context warning", exc_info=True)
+            self._context_warned = True
+
+        # Only update topic if model or branch changed
+        try:
+            current_model = self._last_model_seen or self._model
+            git_branch = await _get_git_branch(self._cwd)
+            if current_model != self._last_topic_model or git_branch != self._last_topic_branch:
+                topic = _format_topic(model=current_model, cwd=self._cwd, git_branch=git_branch)
+                await rt.client.set_topic(topic)
+                self._last_topic_model = current_model
+                self._last_topic_branch = git_branch
+        except Exception:
+            logger.warning("Post-turn topic update failed", exc_info=True)
 
     async def _heartbeat_loop(self, rt: _SessionRuntime) -> None:
         """Update registry heartbeat every 30 seconds."""
@@ -1026,13 +1227,19 @@ class SummonSession:
             logger.warning("Failed to post clear delineation: %s", e)
 
     async def _execute_compact(
-        self, rt: _SessionRuntime, instructions: str | None, thread_ts: str | None
+        self,
+        rt: _SessionRuntime,
+        instructions: str | None,
+        thread_ts: str | None,
+        *,
+        pre_sent: bool = False,
     ) -> None:
         """Execute /compact via SDK and post feedback to Slack."""
         compact_query = "/compact" + (f" {instructions}" if instructions else "")
         try:
             if self._claude:
-                await self._claude.query(compact_query)
+                if not pre_sent:
+                    await self._claude.query(compact_query)
                 pre_tokens = None
                 async for msg in self._claude.receive_response():
                     if (
@@ -1048,6 +1255,7 @@ class SummonSession:
                         f" (was ~{pre_tokens:,} tokens). Summary preserved.",
                         thread_ts=thread_ts,
                     )
+                    self._context_warned = False
                 else:
                     await rt.client.post(
                         ":warning: Compact may not have completed.",
@@ -1075,6 +1283,7 @@ class SummonSession:
         args: list[str],
         user_id: str,
         thread_ts: str | None,
+        claude: ClaudeSDKClient | None = None,
     ) -> None:
         """Dispatch a !-prefixed command and post the result as a threaded reply."""
         ctx = CommandContext(
@@ -1108,7 +1317,7 @@ class SummonSession:
                     logger.warning("Failed to post shutdown message: %s", e)
             self._shutdown_event.set()
             try:
-                self._message_queue.put_nowait(("", None))
+                self._raw_event_queue.put_nowait(None)
             except asyncio.QueueFull:
                 logger.debug("Shutdown sentinel dropped (queue full); shutdown_event is set")
             return
@@ -1142,9 +1351,25 @@ class SummonSession:
         if result.metadata.get("clear"):
             await self._post_clear_delineation(rt)
 
-        # Handle !compact — execute via SDK and report results
+        # Handle !compact — pre-send and route through consumer for receive_response()
         if result.metadata.get("compact"):
-            await self._execute_compact(rt, result.metadata.get("instructions"), thread_ts)
+            instructions = result.metadata.get("instructions") or ""
+            compact_query = "/compact" + (f" {instructions}" if instructions else "")
+            pre_sent = False
+            if claude:
+                try:
+                    await claude.query(compact_query)
+                    pre_sent = True
+                except Exception as e:
+                    logger.warning("Pre-send query() for compact failed: %s", e)
+            await self._pending_turns.put(
+                _PendingTurn(
+                    message=instructions,
+                    thread_ts=thread_ts,
+                    pre_sent=pre_sent,
+                    compact=True,
+                )
+            )
             return
 
         # Pass-through: translate !cmd args -> /cmd args and enqueue
@@ -1159,7 +1384,15 @@ class SummonSession:
                 )
             except Exception as e:
                 logger.warning("Failed to post passthrough ack: %s", e)
-            await self._message_queue.put((slash_message, None))
+            # Pre-send: call query() and enqueue as _PendingTurn
+            pre_sent = False
+            if claude:
+                try:
+                    await claude.query(slash_message)
+                    pre_sent = True
+                except Exception as e:
+                    logger.warning("Pre-send query() for passthrough failed: %s", e)
+            await self._pending_turns.put(_PendingTurn(message=slash_message, pre_sent=pre_sent))
             return
 
         # Post the response text in thread (with splitting for long responses)
@@ -1239,6 +1472,7 @@ class SummonSession:
         self,
         event: dict,  # type: ignore[type-arg]
         rt: _SessionRuntime,
+        claude: ClaudeSDKClient | None = None,
     ) -> tuple[str, str | None] | None:
         """Process a raw Slack message event from the EventDispatcher queue.
 
@@ -1330,7 +1564,9 @@ class SummonSession:
                 return None
 
             # LOCAL or PASSTHROUGH — route through existing _dispatch_command
-            await self._dispatch_command(rt, match.name, standalone_args, user_id, thread_ts)
+            await self._dispatch_command(
+                rt, match.name, standalone_args, user_id, thread_ts, claude=claude
+            )
             return None
 
         # Mid-message: multiple commands or command not at start
@@ -1367,7 +1603,7 @@ class SummonSession:
                     if result.metadata.get("shutdown"):
                         self._shutdown_event.set()
                         try:
-                            self._message_queue.put_nowait(("", None))
+                            self._raw_event_queue.put_nowait(None)
                         except asyncio.QueueFull:
                             pass
                         return None
@@ -1384,8 +1620,22 @@ class SummonSession:
                     if result.metadata.get("clear"):
                         await self._post_clear_delineation(rt)
                     if result.metadata.get("compact"):
-                        await self._execute_compact(
-                            rt, result.metadata.get("instructions"), thread_ts
+                        instructions = result.metadata.get("instructions") or ""
+                        compact_query = "/compact" + (f" {instructions}" if instructions else "")
+                        pre_sent = False
+                        if claude:
+                            try:
+                                await claude.query(compact_query)
+                                pre_sent = True
+                            except Exception as e:
+                                logger.warning("Pre-send compact failed: %s", e)
+                        await self._pending_turns.put(
+                            _PendingTurn(
+                                message=instructions,
+                                thread_ts=thread_ts,
+                                pre_sent=pre_sent,
+                                compact=True,
+                            )
                         )
                         annotations.insert(0, f"`!{match.raw_name}` — compacting context...")
                     elif result.text:

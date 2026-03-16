@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _1M = 1_000_000
 _200K = 200_000
@@ -83,3 +89,52 @@ def compute_context_usage(usage: dict[str, Any] | None, model: str | None) -> Co
             context_window = _1M
     pct = (total / context_window) * 100 if context_window > 0 else 0.0
     return ContextUsage(input_tokens=total, context_window=context_window, percentage=pct)
+
+
+_TAIL_BYTES = 65536  # 64KB tail read for efficient transcript parsing
+
+
+def derive_transcript_path(cwd: str, session_id: str) -> Path:
+    """Derive the JSONL transcript path from cwd and Claude session ID.
+
+    Claude Code stores transcripts at:
+    ``~/.claude/projects/{path_hash}/sessions/{session_id}.jsonl``
+    where ``path_hash`` is the SHA-256 hex digest of the absolute cwd path.
+    """
+    path_hash = hashlib.sha256(cwd.encode()).hexdigest()
+    return Path.home() / ".claude" / "projects" / path_hash / "sessions" / f"{session_id}.jsonl"
+
+
+def get_last_step_usage(transcript_path: Path) -> dict[str, Any] | None:
+    """Read the last API step's usage from the JSONL transcript.
+
+    Performs an efficient tail read (last 64KB) to avoid reading the
+    entire file, which can be several MB for long sessions.
+
+    Skips entries with ``parentToolUseId`` (subagent steps) and returns
+    the last top-level step's ``usage`` dict.
+    """
+    if not transcript_path.is_file():
+        return None
+    try:
+        with transcript_path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - _TAIL_BYTES))
+            if f.tell() > 0:
+                f.readline()  # Skip partial first line
+            last_usage = None
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if entry.get("parentToolUseId"):
+                    continue
+                usage = entry.get("message", {}).get("usage")
+                if usage and usage.get("input_tokens") is not None:
+                    last_usage = usage
+        return last_usage
+    except Exception as e:
+        logger.debug("Failed to read transcript %s: %s", transcript_path, e)
+        return None

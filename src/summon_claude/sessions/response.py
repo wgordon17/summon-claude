@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import difflib
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,11 +21,12 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
 
-from summon_claude.sessions.context import ContextUsage, compute_context_usage
+from summon_claude.sessions.context import ContextUsage
 from summon_claude.slack.router import ThreadRouter
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,9 @@ _TOOL_PATH_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 _BASH_PREVIEW_CHARS = 120
+
+# Characters that break mrkdwn formatting when embedded in italic/bold text
+_MRKDWN_SPECIAL_RE = re.compile(r"[*_~`<>]")
 
 
 def get_tool_primary_arg(tool_name: str, input_data: dict[str, Any]) -> str:
@@ -129,7 +134,7 @@ class _TurnState:
     """Mutable per-turn routing state, reset on each ``stream_with_flush`` call."""
 
     has_seen_tool_use: bool = False
-    text_after_tools: str = ""
+    last_intermediate_text: str = ""
     posted_conclusion: bool = False
     posted_text_to_main: bool = False
     main_ts: str | None = None
@@ -141,14 +146,16 @@ class _TurnState:
     # Turn lifecycle fields
     tool_call_count: int = 0
     files_touched: list[str] = field(default_factory=list)
+    user_snippet: str = ""
+    turn_thread_ts: str | None = None
+    thinking_buffer: str = ""
 
 
 @dataclass
 class StreamResult:
-    """Result of a stream_with_flush call, including context usage info."""
+    """Result of a stream_with_flush call."""
 
     result: ResultMessage
-    context: ContextUsage | None
     model: str | None
 
 
@@ -170,9 +177,13 @@ class ResponseStreamer:
         self,
         router: ThreadRouter,
         user_id: str | None = None,
+        show_thinking: bool = False,
+        max_inline_chars: int = 2500,
     ) -> None:
         self._router = router
         self._user_id = user_id
+        self._show_thinking = show_thinking
+        self._max_inline_chars = max_inline_chars
 
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
@@ -181,13 +192,24 @@ class ResponseStreamer:
 
     # --- Turn lifecycle ---
 
-    async def start_turn(self, turn_number: int) -> str:
+    async def start_turn(self, turn_number: int, user_snippet: str | None = None) -> str:
         """Create turn thread starter message, return thread_ts."""
         self._current_turn_number = turn_number
-        ref = await self._router.post_to_main(
-            f"\U0001f527 Turn {turn_number}: Processing...",
-        )
+        if user_snippet:
+            # Truncate, strip newlines, remove mrkdwn special chars
+            snippet = user_snippet.replace("\n", " ")[:60]
+            snippet = _MRKDWN_SPECIAL_RE.sub("", snippet)
+            self._turn.user_snippet = snippet
+            header = f"\U0001f527 Turn {turn_number}: re: _{snippet}_..."
+        else:
+            header = f"\U0001f527 Turn {turn_number}: Processing..."
+        ref = await self._router.post_to_main(header)
         self._router.set_active_thread(ref.ts, ref)
+        self._turn.turn_thread_ts = ref.ts
+
+        # Set initial thread status
+        await self._set_status("Thinking...")
+
         return ref.ts
 
     def finalize_turn(self, context: ContextUsage | None = None) -> str:
@@ -197,10 +219,14 @@ class ResponseStreamer:
     async def update_turn_summary(self, summary: str) -> None:
         """Update the current turn's thread starter message with a summary."""
         if self._router.active_thread_ref:
-            await self._router.update(
-                self._router.active_thread_ref.ts,
-                f"\U0001f527 Turn {self._current_turn_number}: {summary}",
-            )
+            if self._turn.user_snippet:
+                text = (
+                    f"\U0001f527 Turn {self._current_turn_number}: "
+                    f"re: _{self._turn.user_snippet}_ | {summary}"
+                )
+            else:
+                text = f"\U0001f527 Turn {self._current_turn_number}: {summary}"
+            await self._router.update(self._router.active_thread_ref.ts, text)
 
     def _generate_turn_summary(self, context: ContextUsage | None = None) -> str:
         """Build a concise summary string for the turn starter message."""
@@ -228,11 +254,19 @@ class ResponseStreamer:
                 if "/" in path and path not in self._turn.files_touched:
                     self._turn.files_touched.append(path)
 
+    async def _set_status(self, status: str) -> None:
+        """Set the thread status indicator (best-effort)."""
+        if self._turn.turn_thread_ts:
+            await self._router.client.set_thread_status(self._turn.turn_thread_ts, status)
+
     # --- Streaming ---
 
     async def stream_with_flush(self, messages: AsyncIterator) -> StreamResult | None:
         """Stream with a background flush task for periodic Slack updates."""
-        self._turn = _TurnState()
+        # Preserve fields set by start_turn() across the per-stream reset
+        saved_snippet = self._turn.user_snippet
+        saved_thread_ts = self._turn.turn_thread_ts
+        self._turn = _TurnState(user_snippet=saved_snippet, turn_thread_ts=saved_thread_ts)
         result: ResultMessage | None = None
         stop_flush = asyncio.Event()
 
@@ -258,14 +292,16 @@ class ResponseStreamer:
                 await flush_task
 
         # Final flush
+        if self._turn.thinking_buffer:
+            await self._flush_thinking()
         if self._turn.buffer:
             await self._flush_buffer()
         if result:
-            await self._flush_conclusion_to_main()
             await self._post_result_summary(result)
+            # Clear thread status at turn end
+            await self._set_status("")
             model = self._turn.resolved_model
-            context = compute_context_usage(result.usage, model)
-            return StreamResult(result=result, context=context, model=model)
+            return StreamResult(result=result, model=model)
 
         return None
 
@@ -276,9 +312,13 @@ class ResponseStreamer:
         parent_id = message.parent_tool_use_id
 
         for block in message.content:
-            if isinstance(block, TextBlock):
+            if isinstance(block, ThinkingBlock):
+                await self._handle_thinking_block(block)
+            elif isinstance(block, TextBlock):
+                await self._flush_thinking()
                 await self._handle_text_block(block, parent_id)
             elif isinstance(block, ToolUseBlock):
+                await self._flush_thinking()
                 await self._handle_tool_use_block(block, parent_id)
             elif isinstance(block, ToolResultBlock):
                 await self._handle_tool_result_block(block, parent_id)
@@ -289,11 +329,13 @@ class ResponseStreamer:
             await self._flush_buffer()
             await self._post_to_subagent(parent_id, block.text)
         elif self._turn.has_seen_tool_use:
-            # Flush any pending pre-tool text before switching to conclusion mode
+            # Flush any pending pre-tool text before switching
             await self._flush_buffer()
-            # Accumulate conclusion text for main channel only — do NOT add to buffer
-            # This prevents duplication: text_after_tools goes to main via _flush_conclusion_to_main
-            self._turn.text_after_tools += block.text
+            # Eager: post immediately to turn thread for real-time visibility
+            await self._router.post_to_active_thread(block.text)
+            # Track for conclusion: final segment goes to main with @mention
+            self._turn.last_intermediate_text += block.text
+            # No _set_status — thread post auto-clears, next block sets its own
         else:
             self._turn.posting_to_thread = False
             await self._append_text(block.text)
@@ -311,23 +353,59 @@ class ResponseStreamer:
             await self._router.start_subagent_thread(block.id, description)
 
         await self._post_tool_use(block, parent_id)
+        # Set status AFTER posting — thread post auto-clears any previous status,
+        # so this persists during actual tool execution until the result arrives.
+        await self._set_status(f"Running {block.name}...")
 
     async def _handle_tool_result_block(
         self, block: ToolResultBlock, parent_id: str | None
     ) -> None:
         """Route a ToolResultBlock to the correct thread."""
         await self._post_tool_result(block, parent_id)
+        # No _set_status — thread post auto-clears "Running {tool}...",
+        # and the next block (tool use or text) arrives quickly.
+
+    async def _handle_thinking_block(self, block: ThinkingBlock) -> None:
+        """Handle a ThinkingBlock — accumulate if showing, always update status."""
+        await self._set_status("Thinking deeply...")
+        if self._show_thinking:
+            self._turn.thinking_buffer += block.thinking
+
+    async def _flush_thinking(self) -> None:
+        """Flush accumulated thinking content to the turn thread."""
+        if not self._turn.thinking_buffer:
+            return
+        text = self._turn.thinking_buffer
+        self._turn.thinking_buffer = ""
+        if len(text) > self._max_inline_chars:
+            await self._router.upload_to_active_thread(text, "thinking.md")
+        else:
+            prefix = ":thought_balloon: "
+            chunk_limit = 3000 - len(prefix)  # Slack context element limit
+            chunks = split_text(text, chunk_limit)
+            for chunk in chunks:
+                blocks = [
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"{prefix}{chunk}",
+                            }
+                        ],
+                    }
+                ]
+                await self._router.post_to_active_thread("Thinking...", blocks=blocks)
+        # No _set_status — thread post auto-clears, next block sets its own
 
     async def _flush_conclusion_to_main(self) -> None:
-        """Flush post-tool text to the main channel as the conclusion."""
-        if self._turn.text_after_tools.strip():
-            text = self._turn.text_after_tools
-            self._turn.text_after_tools = ""
+        """Flush accumulated intermediate text to the main channel as conclusion."""
+        if self._turn.last_intermediate_text.strip():
+            text = self._turn.last_intermediate_text
+            self._turn.last_intermediate_text = ""
             self._turn.posted_conclusion = True
-            # Post conclusion text to main channel
             chunks = split_text(text, _MAX_MESSAGE_CHARS)
             for i, chunk in enumerate(chunks):
-                # Ping the user on the first conclusion chunk only
                 post_text = f"<@{self._user_id}> {chunk}" if i == 0 and self._user_id else chunk
                 ref = await self._router.post_to_main(post_text)
                 self._turn.last_message_ts = ref.ts
@@ -432,45 +510,29 @@ class ResponseStreamer:
                 self._turn.thread_ts = None
 
     async def _post_result_summary(self, result: ResultMessage) -> None:
-        """Post session summary after Claude finishes a turn."""
-        # Only post result.result if we didn't already post the same content
-        # via buffer flush (pre-tool text) or _flush_conclusion_to_main (post-tool text).
-        already_posted = self._turn.posted_conclusion or self._turn.posted_text_to_main
-        if result.result and not already_posted:
+        """Flush conclusion text and/or result.result to main channel."""
+        if self._turn.last_intermediate_text.strip():
+            await self._flush_conclusion_to_main()
+            return
+
+        if self._turn.posted_text_to_main:
+            return
+
+        if result.result:
             await self._router.post_to_main(result.result)
 
-        cost = result.total_cost_usd
-        cost_str = f"${cost:.4f}" if cost is not None else "unknown"
-        turns = result.num_turns
-        turns_str = f"{turns}" if turns is not None else "?"
-
+    async def post_turn_footer(self, footer: str) -> None:
+        """Post a turn footer (cost + context) as a context block to main."""
         blocks: list[dict[str, Any]] = [
             {"type": "divider"},
             {
                 "type": "context",
                 "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": (
-                            f":checkered_flag: Turn complete"
-                            f" | Cost: {cost_str} | Turns: {turns_str}"
-                        ),
-                    }
+                    {"type": "mrkdwn", "text": footer},
                 ],
             },
         ]
-
-        await self._router.post_to_main(f"Turn complete. Cost: {cost_str}", blocks=blocks)
-
-        # Add a reaction to the last text message
-        if self._turn.last_message_ts:
-            try:
-                await self._router.client.react(
-                    self._turn.last_message_ts,
-                    "white_check_mark",
-                )
-            except Exception:
-                logger.warning("Reaction failed", exc_info=True)
+        await self._router.post_to_main(footer, blocks=blocks)
 
     def _make_tool_use_blocks(
         self,

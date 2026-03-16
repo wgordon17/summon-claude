@@ -241,6 +241,10 @@ class SummonConfig(BaseSettings):
     # Content display
     max_inline_chars: int = 2500
 
+    # Thinking display
+    enable_thinking: bool = True  # Pass ThinkingConfigAdaptive to SDK
+    show_thinking: bool = False  # Route ThinkingBlock content to Slack turn thread
+
     @field_validator("slack_bot_token")
     @classmethod
     def validate_bot_token_prefix(cls, v: str) -> str:

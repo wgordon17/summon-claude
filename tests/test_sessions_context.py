@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from summon_claude.sessions.context import ContextUsage, compute_context_usage
+from summon_claude.sessions.context import (
+    ContextUsage,
+    compute_context_usage,
+    derive_transcript_path,
+    get_last_step_usage,
+)
 
 
 class TestComputeContextUsage:
@@ -164,3 +172,68 @@ class TestComputeContextUsage:
         assert result is not None
         assert result.input_tokens == 6000
         assert result.percentage == pytest.approx(3.0)
+
+
+class TestDeriveTranscriptPath:
+    def test_returns_expected_path(self):
+        path = derive_transcript_path("/tmp/test", "session-123")
+        assert str(path).endswith("sessions/session-123.jsonl")
+        assert ".claude/projects/" in str(path)
+
+    def test_path_hash_deterministic(self):
+        p1 = derive_transcript_path("/tmp/test", "s1")
+        p2 = derive_transcript_path("/tmp/test", "s1")
+        assert p1 == p2
+
+    def test_different_cwd_gives_different_hash(self):
+        p1 = derive_transcript_path("/tmp/a", "s1")
+        p2 = derive_transcript_path("/tmp/b", "s1")
+        assert p1 != p2
+
+
+class TestGetLastStepUsage:
+    def test_returns_none_for_missing_file(self, tmp_path):
+        result = get_last_step_usage(tmp_path / "nonexistent.jsonl")
+        assert result is None
+
+    def test_returns_last_usage(self, tmp_path):
+        transcript = tmp_path / "test.jsonl"
+        lines = [
+            {"message": {"usage": {"input_tokens": 1000}}},
+            {"message": {"usage": {"input_tokens": 2000}}},
+            {"message": {"usage": {"input_tokens": 3000}}},
+        ]
+        transcript.write_text("\n".join(json.dumps(line) for line in lines))
+        result = get_last_step_usage(transcript)
+        assert result is not None
+        assert result["input_tokens"] == 3000
+
+    def test_skips_subagent_entries(self, tmp_path):
+        transcript = tmp_path / "test.jsonl"
+        lines = [
+            {"message": {"usage": {"input_tokens": 1000}}},
+            {"parentToolUseId": "tu_1", "message": {"usage": {"input_tokens": 5000}}},
+            {"message": {"usage": {"input_tokens": 2000}}},
+        ]
+        transcript.write_text("\n".join(json.dumps(line) for line in lines))
+        result = get_last_step_usage(transcript)
+        assert result is not None
+        assert result["input_tokens"] == 2000
+
+    def test_handles_large_file_tail_read(self, tmp_path):
+        transcript = tmp_path / "test.jsonl"
+        # Write >64KB of padding followed by the actual usage
+        padding = json.dumps({"data": "x" * 1000}) + "\n"
+        with transcript.open("w") as f:
+            for _ in range(100):
+                f.write(padding)
+            f.write(json.dumps({"message": {"usage": {"input_tokens": 42000}}}))
+        result = get_last_step_usage(transcript)
+        assert result is not None
+        assert result["input_tokens"] == 42000
+
+    def test_handles_empty_file(self, tmp_path):
+        transcript = tmp_path / "test.jsonl"
+        transcript.write_text("")
+        result = get_last_step_usage(transcript)
+        assert result is None

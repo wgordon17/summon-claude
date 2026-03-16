@@ -69,8 +69,10 @@ class TestSlackClient:
         web.chat_postEphemeral = AsyncMock(return_value={})
         web.chat_update = AsyncMock(return_value={})
         web.reactions_add = AsyncMock(return_value={})
+        web.reactions_remove = AsyncMock(return_value={})
         web.files_upload_v2 = AsyncMock(return_value={})
         web.conversations_setTopic = AsyncMock(return_value={})
+        web.assistant_threads_setStatus = AsyncMock(return_value={})
         client = SlackClient(web, "C123")
         return client, web
 
@@ -186,3 +188,45 @@ class TestSlackClient:
         call_kwargs = web.conversations_setTopic.call_args.kwargs
         assert call_kwargs["channel"] == "C123"
         assert call_kwargs["topic"] == "my topic"
+
+    async def test_unreact_calls_api(self):
+        client, web = self._make_client()
+        await client.unreact("1.0", "white_check_mark")
+        web.reactions_remove.assert_called_once()
+        call_kwargs = web.reactions_remove.call_args.kwargs
+        assert call_kwargs["name"] == "white_check_mark"
+        assert call_kwargs["timestamp"] == "1.0"
+        assert call_kwargs["channel"] == "C123"
+
+    async def test_unreact_strips_colons(self):
+        client, web = self._make_client()
+        await client.unreact("1.0", ":thumbsup:")
+        call_kwargs = web.reactions_remove.call_args.kwargs
+        assert call_kwargs["name"] == "thumbsup"
+
+    async def test_unreact_swallows_errors(self):
+        client, web = self._make_client()
+        web.reactions_remove.side_effect = Exception("api error")
+        # Should not raise
+        await client.unreact("1.0", "thumbsup")
+
+    async def test_set_thread_status_calls_api(self):
+        client, web = self._make_client()
+        await client.set_thread_status("1.0", "Thinking...")
+        web.assistant_threads_setStatus.assert_called_once()
+        call_kwargs = web.assistant_threads_setStatus.call_args.kwargs
+        assert call_kwargs["channel_id"] == "C123"
+        assert call_kwargs["thread_ts"] == "1.0"
+        assert call_kwargs["status"] == "Thinking..."
+
+    async def test_set_thread_status_clear(self):
+        client, web = self._make_client()
+        await client.set_thread_status("1.0", "")
+        call_kwargs = web.assistant_threads_setStatus.call_args.kwargs
+        assert call_kwargs["status"] == ""
+
+    async def test_set_thread_status_swallows_errors(self):
+        client, web = self._make_client()
+        web.assistant_threads_setStatus.side_effect = Exception("api error")
+        # Should not raise
+        await client.set_thread_status("1.0", "Thinking...")
