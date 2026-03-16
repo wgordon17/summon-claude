@@ -202,6 +202,8 @@ Use `summon config path` to see which path is active. Use `summon init` to creat
 | `SUMMON_SCRIBE_ENABLED` | `false` | Enable scribe monitoring agent (PM agent system — preview) |
 | `SUMMON_SCRIBE_MODEL` | (inherit) | Model for the scribe agent; defaults to `SUMMON_DEFAULT_MODEL` (PM agent system — preview) |
 | `SUMMON_SCRIBE_GOOGLE_SERVICES` | `gmail,calendar,drive` | Comma-separated Google Workspace services for scribe (PM agent system — preview) |
+| `SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES` | `5` | How often the scribe agent polls for new data (PM agent system — preview) |
+| `SUMMON_SCRIBE_SLACK_ENABLED` | `false` | Enable Slack channel monitoring via browser scraping in scribe (PM agent system — preview) |
 
 A local `.env` in the project directory overrides the config file.
 
