@@ -8,11 +8,8 @@ from datetime import UTC, datetime, timedelta
 import click
 
 from summon_claude.cli.formatting import echo
-from summon_claude.sessions.registry import (
-    CURRENT_SCHEMA_VERSION,
-    SessionRegistry,
-    get_schema_version,
-)
+from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION, get_schema_version
+from summon_claude.sessions.registry import SessionRegistry
 
 
 async def async_db_status(ctx: click.Context) -> None:

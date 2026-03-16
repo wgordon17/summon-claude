@@ -176,23 +176,23 @@ uv run pyright                # Type checking
 
 ### Database Migrations
 
-Schema migrations run automatically when `SessionRegistry` connects — users never need to run a manual step. The migration system lives in `sessions/registry.py`.
+Schema migrations run automatically when `SessionRegistry` connects — users never need to run a manual step. The migration system lives in `sessions/migrations.py`.
 
 **Adding a migration:**
 
-1. Bump `CURRENT_SCHEMA_VERSION`
+1. Bump `CURRENT_SCHEMA_VERSION` in `sessions/migrations.py`
 2. Write an async migration function that takes `db: aiosqlite.Connection`
 3. Add it to `_MIGRATIONS` keyed by the version it migrates *from*
 
 ```python
-CURRENT_SCHEMA_VERSION = 2  # was 1
+CURRENT_SCHEMA_VERSION = 5  # was 4
 
-async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
+async def _migrate_4_to_5(db: aiosqlite.Connection) -> None:
     await db.execute("ALTER TABLE sessions ADD COLUMN tags TEXT")
 
 _MIGRATIONS: dict[int, Any] = {
-    0: None,            # baseline — no-op
-    1: _migrate_1_to_2, # adds tags column
+    ...
+    4: _migrate_4_to_5,
 }
 ```
 
@@ -200,8 +200,7 @@ _MIGRATIONS: dict[int, Any] = {
 - Migrations must be **idempotent** — if the process crashes mid-migration, the same migration reruns on next connect
 - All pending migrations run within a single `BEGIN IMMEDIATE` / `COMMIT` transaction, with `ROLLBACK` on any error
 - `None` means no-op (used for the 0→1 baseline where DDL already matches)
-- **Fresh DBs skip migrations entirely** — the DDL constants create the current schema directly, so only the version is stamped. Migrations only run when upgrading an *existing* DB.
-- Update the DDL constant (e.g., `_CREATE_SESSIONS`) **and** add a migration — the DDL is for fresh installs, the migration is for upgrades
+- **Migrations are the single source of truth** — fresh DBs create v1 baseline tables and run all migrations from v1 to current. Do NOT add schema changes to the DDL constants in `registry.py`
 - `summon db status` shows the current schema version and whether migration was applied
 
 ## Git Workflow
@@ -339,6 +338,7 @@ src/summon_claude/
 │   ├── auth.py            # Session auth tokens and short codes
 │   ├── commands.py        # !-prefixed command dispatch and aliasing
 │   ├── context.py         # Context window usage tracking
+│   ├── migrations.py      # Schema versioning and migration functions
 │   └── registry.py        # SQLite session storage (WAL mode)
 └── slack/
     ├── bolt.py            # Bolt app, rate limiter, health monitor

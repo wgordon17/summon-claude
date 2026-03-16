@@ -7,7 +7,8 @@ import click
 from summon_claude.cli import daemon_client
 from summon_claude.config import SummonConfig
 from summon_claude.daemon import start_daemon
-from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, SessionRegistry
+from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION
+from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.sessions.session import SessionOptions
 
 

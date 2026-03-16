@@ -15,6 +15,10 @@ from typing import Any
 import aiosqlite
 
 from summon_claude.config import get_data_dir
+from summon_claude.sessions.migrations import (
+    CURRENT_SCHEMA_VERSION,
+    run_migrations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +39,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_activity_at TEXT,
     total_cost_usd REAL DEFAULT 0.0,
     total_turns INTEGER DEFAULT 0,
-    error_message TEXT,
-    parent_session_id TEXT,
-    authenticated_user_id TEXT
+    error_message TEXT
 )
 """
 
@@ -75,57 +77,12 @@ CREATE TABLE IF NOT EXISTS spawn_tokens (
 )
 """
 
-_CREATE_WORKFLOW_DEFAULTS = """
-CREATE TABLE IF NOT EXISTS workflow_defaults (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    instructions TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-)
-"""
-
 _CREATE_SCHEMA_VERSION = """
 CREATE TABLE IF NOT EXISTS schema_version (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
 )
 """
-
-CURRENT_SCHEMA_VERSION = 4
-
-
-async def _migrate_1_to_2(db: aiosqlite.Connection) -> None:
-    """Add parent_session_id and authenticated_user_id to sessions table."""
-    for col in ("parent_session_id TEXT", "authenticated_user_id TEXT"):
-        try:
-            await db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" not in str(e).lower():
-                raise
-            logger.debug("Column %s already exists, skipping", col)
-
-
-async def _migrate_2_to_3(db: aiosqlite.Connection) -> None:
-    """Create workflow_defaults table."""
-    await db.execute(_CREATE_WORKFLOW_DEFAULTS)
-
-
-async def _migrate_3_to_4(db: aiosqlite.Connection) -> None:
-    """Add partial unique index on active session names."""
-    await db.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_active_session_name "
-        "ON sessions (session_name) "
-        "WHERE session_name IS NOT NULL AND status IN ('pending_auth', 'active')"
-    )
-
-
-# Mapping from version N to the coroutine that migrates N → N+1.
-# Migration 0→1 is a no-op: the existing DDL already produces schema v1.
-_MIGRATIONS: dict[int, Any] = {
-    0: None,  # baseline — no-op
-    1: _migrate_1_to_2,
-    2: _migrate_2_to_3,
-    3: _migrate_3_to_4,
-}
 
 _MAX_FAILED_ATTEMPTS = 5
 
@@ -145,45 +102,6 @@ def default_db_path() -> Path:
         logger.info("Migrated registry from %s to %s", old_path, new_path)
 
     return new_path
-
-
-async def get_schema_version(db: aiosqlite.Connection) -> int:
-    """Return the current schema version, or 0 if the version table is empty."""
-    async with db.execute("SELECT version FROM schema_version WHERE id = 1") as cursor:
-        row = await cursor.fetchone()
-        return row[0] if row else 0
-
-
-async def _run_migrations(db: aiosqlite.Connection) -> int:
-    """Apply any pending schema migrations and update the version row.
-
-    Returns the schema version that was in place before migration ran.
-    """
-    # Use BEGIN IMMEDIATE to prevent concurrent migration races across processes.
-    await db.execute("BEGIN IMMEDIATE")
-    try:
-        current = await get_schema_version(db)
-
-        if current >= CURRENT_SCHEMA_VERSION:
-            await db.execute("COMMIT")
-            return current
-
-        for version in range(current, CURRENT_SCHEMA_VERSION):
-            migration = _MIGRATIONS.get(version)
-            if migration is not None:
-                await migration(db)
-            logger.info("Applied DB migration %d → %d", version, version + 1)
-
-        # Upsert the version row (PK id=1 enforces single row)
-        await db.execute(
-            "INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)",
-            (CURRENT_SCHEMA_VERSION,),
-        )
-        await db.execute("COMMIT")
-        return current
-    except Exception:
-        await db.execute("ROLLBACK")
-        raise
 
 
 class SessionRegistry:
@@ -221,29 +139,20 @@ class SessionRegistry:
         await self._db.execute(_CREATE_PENDING_AUTH_TOKENS)
         await self._db.execute(_CREATE_AUDIT_LOG)
         await self._db.execute(_CREATE_SPAWN_TOKENS)
-        await self._db.execute(_CREATE_WORKFLOW_DEFAULTS)
         await self._db.execute(_CREATE_SCHEMA_VERSION)
-        await self._db.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_active_session_name "
-            "ON sessions (session_name) "
-            "WHERE session_name IS NOT NULL AND status IN ('pending_auth', 'active')"
-        )
         await self._db.commit()
 
-        # Fresh DB (empty schema_version table): DDL already created the
-        # current schema, so just stamp the version — don't run migrations
-        # which would conflict with columns the DDL already created.
+        # Detect fresh DB before migrations (empty schema_version table).
         async with self._db.execute("SELECT COUNT(*) FROM schema_version") as cur:
             row = await cur.fetchone()
             is_fresh = row[0] == 0  # type: ignore[index]
-        if is_fresh:
-            await self._db.execute(
-                "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, ?)",
-                (CURRENT_SCHEMA_VERSION,),
-            )
-            self.migrated_from = CURRENT_SCHEMA_VERSION
-        else:
-            self.migrated_from = await _run_migrations(self._db)
+
+        # Always run migrations — single source of truth for schema changes.
+        # Fresh DBs start at version 0 (0→1 is a no-op baseline), so all
+        # real migrations run inside the same BEGIN IMMEDIATE transaction.
+        pre_version = await run_migrations(self._db)
+        # Fresh DBs don't report as "migrated" to avoid spurious upgrade messages.
+        self.migrated_from = CURRENT_SCHEMA_VERSION if is_fresh else pre_version
 
     async def _close(self) -> None:
         if self._db:

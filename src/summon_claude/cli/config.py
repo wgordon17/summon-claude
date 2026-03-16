@@ -13,11 +13,8 @@ import sys
 import click
 
 from summon_claude.config import get_config_file, get_data_dir
-from summon_claude.sessions.registry import (
-    CURRENT_SCHEMA_VERSION,
-    SessionRegistry,
-    get_schema_version,
-)
+from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION, get_schema_version
+from summon_claude.sessions.registry import SessionRegistry
 
 logger = logging.getLogger(__name__)
 

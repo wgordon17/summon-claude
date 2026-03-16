@@ -9,7 +9,8 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 from summon_claude.cli import cli
-from summon_claude.sessions.registry import CURRENT_SCHEMA_VERSION, SessionRegistry
+from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION
+from summon_claude.sessions.registry import SessionRegistry
 
 
 async def _create_db(db_path):
