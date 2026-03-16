@@ -100,7 +100,7 @@ The code expires in 5 minutes. Run `summon start` again to get a new one.
 | `summon session list` | Show active sessions (use `--all` for all recent, `--name` to filter) |
 | `summon session info SESSION` | Show detailed view of one session (by name or ID) |
 | `summon stop SESSION` | Stop a session (by name or ID), or `--all` to stop all |
-| `summon session logs [SESSION]` | View session logs (by name or ID, or list available) |
+| `summon session logs [SESSION]` | View session logs (by name or ID, or list available); use `--tail N` / `-n N` to limit to the last N lines |
 | `summon session cleanup` | Mark sessions with dead processes as errored |
 | `summon config show` | Show current config file (tokens masked) |
 | `summon config set KEY VALUE` | Set a single config value |
@@ -241,7 +241,7 @@ A local `.env` in the project directory overrides the config file.
            ┌───────────────┼───────────────┐
            ▼               ▼               ▼
   ┌──────────────┐  ┌─────────────┐  ┌───────────────┐
-  │  SlackClient │  │ ThreadRouter│  │ ResponseStream│
+  │  SlackClient │  │ ThreadRouter│  │ResponseStreamer│
   │  (output)    │  │ (routing)   │  │ (streaming)   │
   └──────┬───────┘  └─────────────┘  └───────────────┘
          │
