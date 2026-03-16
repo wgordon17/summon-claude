@@ -238,16 +238,27 @@ A local `.env` in the project directory overrides the config file.
 
 Messages are organized into threads to keep the main channel clean:
 
-- **Main channel**: Opens with the initial prompt and closes with Claude's final conclusion
-- **Turn threads**: Each Claude turn's tool calls post to a dedicated turn thread with a summary like "🔧 Turn 3: 5 tool calls · session.py, config.py"
-- **Subagent threads**: When Claude spawns subagents, their activity posts to dedicated subagent threads
-- **Permissions**: Permission requests broadcast to all threads with `<!channel>` notifications
+- **Main channel**: Text before any tool use in a turn posts to the main channel. After tool use, Claude's conclusion posts to the main channel with an `@mention` prefix on the first chunk.
+- **Turn threads**: Each Claude turn opens a thread starter message (`🔧 Turn N: re: _snippet_...`). All tool use and tool results stream into this thread. The thread starter updates with a summary on completion (`5 tool calls · session.py, config.py · 42k/200k (21%)`).
+- **Subagent threads**: When Claude uses the `Task` tool, a dedicated subagent thread is created for that agent's activity.
+- **Permissions**: Permission requests post to the active thread with `<!channel>` notification.
 
-This structure keeps the main conversation readable while preserving full context in threads.
+### Slack UX
 
-### Slack Integration
+**Emoji lifecycle on user messages:**
 
-Slack input flows through `BoltRouter` (a single shared Bolt app per daemon), which dispatches events to sessions via `EventDispatcher`. Slack output goes through `SlackClient` (channel-bound posting, reactions, file uploads) and `ThreadRouter` (thread-aware message routing to main channel, turn threads, and subagent threads).
+1. `:inbox_tray:` — added when summon receives the message (pre-send acknowledgement)
+2. `:gear:` — swapped in when Claude starts processing the turn
+3. On turn completion, `:gear:` is replaced by one of:
+   - `:white_check_mark:` — turn completed successfully
+   - `:octagonal_sign:` — turn was aborted via `!stop`
+   - `:warning:` — an error occurred during the turn
+
+**Thinking blocks:** When `SUMMON_ENABLE_THINKING=true` (default), the SDK sends thinking tokens to Claude. If `SUMMON_SHOW_THINKING=true`, thinking content is posted to the turn thread prefixed with `:thought_balloon:`. Large thinking blocks (over `SUMMON_MAX_INLINE_CHARS`) are uploaded as `thinking.md` files.
+
+**Turn headers:** Show a snippet of the user's message, truncated to 60 characters with mrkdwn special characters stripped.
+
+Slack input flows through `BoltRouter` (a single shared Bolt app per daemon), which dispatches events to sessions via `EventDispatcher`. Slack output goes through `SlackClient` (channel-bound posting, reactions, file uploads) and `ThreadRouter` (thread-aware message routing).
 
 ### Modules
 
