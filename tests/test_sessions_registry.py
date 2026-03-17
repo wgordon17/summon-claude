@@ -164,6 +164,20 @@ class TestRecordTurn:
         assert session["total_turns"] == 1
         assert session["total_cost_usd"] == 0.0
 
+    async def test_record_turn_stores_context_pct(self, registry):
+        await registry.register("sess-ctx", 111, "/tmp")
+        await registry.record_turn("sess-ctx", 0.01, context_pct=75.5)
+        session = await registry.get_session("sess-ctx")
+        assert session["context_pct"] == pytest.approx(75.5)
+
+    async def test_record_turn_none_context_pct_preserves_existing(self, registry):
+        await registry.register("sess-ctx2", 111, "/tmp")
+        await registry.record_turn("sess-ctx2", 0.01, context_pct=80.0)
+        await registry.record_turn("sess-ctx2", 0.02)  # No context_pct
+        session = await registry.get_session("sess-ctx2")
+        # context_pct should still be 80.0 (not overwritten to NULL)
+        assert session["context_pct"] == pytest.approx(80.0)
+
 
 class TestListActive:
     async def test_list_active_returns_pending_auth_and_active(self, registry):

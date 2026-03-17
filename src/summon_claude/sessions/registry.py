@@ -278,20 +278,35 @@ class SessionRegistry:
             )
             await db.commit()
 
-    async def record_turn(self, session_id: str, cost_usd: float = 0.0) -> None:
-        """Increment turn count and accumulate cost."""
+    async def record_turn(
+        self, session_id: str, cost_usd: float = 0.0, context_pct: float | None = None
+    ) -> None:
+        """Increment turn count, accumulate cost, and update context usage."""
         db = self._check_connected()
         async with self._lock:
-            await db.execute(
-                """
-                UPDATE sessions
-                SET total_turns = total_turns + 1,
-                    total_cost_usd = total_cost_usd + ?,
-                    last_activity_at = ?
-                WHERE session_id = ?
-                """,
-                (cost_usd, _now(), session_id),
-            )
+            if context_pct is not None:
+                await db.execute(
+                    """
+                    UPDATE sessions
+                    SET total_turns = total_turns + 1,
+                        total_cost_usd = total_cost_usd + ?,
+                        context_pct = ?,
+                        last_activity_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (cost_usd, context_pct, _now(), session_id),
+                )
+            else:
+                await db.execute(
+                    """
+                    UPDATE sessions
+                    SET total_turns = total_turns + 1,
+                        total_cost_usd = total_cost_usd + ?,
+                        last_activity_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (cost_usd, _now(), session_id),
+                )
             await db.commit()
 
     async def get_session(self, session_id: str) -> dict | None:

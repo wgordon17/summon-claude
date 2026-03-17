@@ -146,7 +146,11 @@ _AUTH_COUNTDOWN_INTERVAL_S = 15.0  # log countdown every 15 seconds
 _QUEUE_POLL_INTERVAL_S = 1.0
 _MAX_USER_MESSAGE_CHARS = 10_000
 _CLEANUP_TIMEOUT_S = 10.0
-_CONTEXT_WARNING_THRESHOLD = 75.0  # Warn user when context exceeds this %
+_CONTEXT_AGENT_THRESHOLD = 70.0  # Inject context note into agent messages
+_CONTEXT_WARNING_THRESHOLD = 75.0  # Warn user in Slack
+_CONTEXT_URGENT_THRESHOLD = 90.0  # Urgent warning in Slack
+_CONTEXT_AUTO_COMPACT_THRESHOLD = 95.0  # Auto-trigger compaction
+_MAX_SESSION_RESTARTS = 3  # Circuit breaker for compaction restart loop
 _MAX_CHANNEL_NAME_LEN = 80
 
 # Words/phrases that trigger extended thinking (ultrathink) in the Claude CLI.
@@ -172,7 +176,7 @@ _THINKING_TRIGGERS = frozenset(
 # Patterns that may appear in exception messages and should not be stored in the audit log
 _SECRET_PATTERN = re.compile(r"xox[a-z]-[A-Za-z0-9\-]+|xapp-[A-Za-z0-9\-]+|sk-ant-[A-Za-z0-9\-]+")
 
-_SYSTEM_PROMPT_BASE = (
+_BASE_SYSTEM_APPEND = (
     "You are running headlessly via summon-claude, bridged to a private Slack channel. "
     "There is no terminal, no visible desktop, and no interactive UI. "
     "The user interacts through Slack messages — all your replies, tool use, "
@@ -197,6 +201,62 @@ _CANVAS_PROMPT_SECTION = (
     "'Notes' for key decisions, blockers, and discoveries. "
     "Do not update the '# Session Status' heading (it spans the entire document). "
     "Always prefer summon_canvas_update_section over summon_canvas_write."
+)
+
+# Maximum characters for a compaction summary injected into the system prompt.
+_MAX_COMPACT_SUMMARY_CHARS = 50_000
+
+_COMPACT_PROMPT = (
+    "Your task is to create a detailed summary of our conversation so far. "
+    "This summary will REPLACE the current conversation history — it is the "
+    "sole record of what happened and must enable seamless continuation.\n\n"
+    "Before writing your summary, plan in <analysis> tags "
+    "(private scratchpad — walk through chronologically, note what "
+    "belongs in each section, flag anything you might otherwise forget).\n\n"
+    "Then write your summary in <summary> tags with these MANDATORY sections:\n\n"
+    "## Task Overview\n"
+    "Core request, success criteria, clarifications, constraints.\n\n"
+    "## Current State\n"
+    "What has been accomplished. What is in progress. What remains.\n\n"
+    "## Files & Artifacts\n"
+    "Exact file paths read, created, or modified — include line numbers where "
+    "relevant. Preserve exact error messages, command outputs, and code "
+    "references VERBATIM. Do NOT paraphrase file paths or error text.\n\n"
+    "## Key Decisions\n"
+    "Technical decisions made and their rationale. User corrections or preferences.\n\n"
+    "## Errors & Resolutions\n"
+    "Issues encountered and how they were resolved. Failed approaches to avoid.\n\n"
+    "## Next Steps\n"
+    "Specific actions needed, in priority order. Blockers and open questions.\n\n"
+    "## Context to Preserve\n"
+    "User preferences, domain details, promises made, Slack thread references, "
+    "any important context about the user's goals or working style.\n\n"
+    "Be comprehensive but concise. Preserve exact identifiers "
+    "(file paths, function names, error messages) — paraphrasing destroys "
+    "navigability. This summary must fit in a system prompt."
+)
+
+_COMPACT_SUMMARY_PREFIX = (
+    "\n\n## Session Context (Compacted)\n"
+    "This session was compacted to free context space. The summary below "
+    "preserves key context from the previous conversation. Continue from "
+    "where you left off without re-asking answered questions.\n\n"
+)
+
+_OVERFLOW_RECOVERY_PROMPT = (
+    "\n\n## Context Recovery Required\n"
+    "This session was restarted because the previous context was too full "
+    "to summarize. Your conversation history has been cleared.\n\n"
+    "To recover context, use the `slack_read_history` MCP tool to read the "
+    "channel's message history. Use `slack_fetch_thread` to read specific "
+    "thread conversations.\n\n"
+    "After reading the history:\n"
+    "1. Identify what was being worked on\n"
+    "2. Note any decisions, file changes, or errors mentioned\n"
+    "3. Resume work from where the previous session left off\n"
+    "4. Confirm with the user what you have recovered before proceeding\n\n"
+    "The user is aware the session was restarted and expects you to "
+    "recover context from the channel history."
 )
 
 
@@ -491,6 +551,19 @@ class _PendingTurn:
     compact: bool = False  # If True, consumer runs _execute_compact instead of normal turn
 
 
+class _SessionRestartError(Exception):
+    """Signal to restart the SDK client with a new system prompt.
+
+    Raised by ``_execute_compact`` when compaction succeeds (summary captured)
+    or when context overflow requires a fresh client with history recovery.
+    """
+
+    def __init__(self, *, summary: str | None = None, recovery_mode: bool = False):
+        self.summary = summary
+        self.recovery_mode = recovery_mode
+        super().__init__("session restart requested")
+
+
 @dataclass(frozen=True, slots=True)
 class _SessionRuntime:
     registry: SessionRegistry
@@ -580,7 +653,7 @@ class SummonSession:
         # Turn abort infrastructure
         self._current_turn_task: asyncio.Task | None = None
         self._abort_event = asyncio.Event()
-        self._context_warned: bool = False
+        self._context_warned_threshold: float = 0.0
 
         # Session state
         self._last_heartbeat_time: float = 0.0
@@ -1042,36 +1115,6 @@ class SummonSession:
             )
             mcp_servers["summon-cli"] = cli_mcp
 
-        prompt_append = _SYSTEM_PROMPT_BASE
-        if self._canvas_store is not None:
-            prompt_append += _CANVAS_PROMPT_SECTION
-        system_prompt = {
-            "type": "preset",
-            "preset": "claude_code",
-            "append": prompt_append,
-        }
-
-        options = ClaudeAgentOptions(
-            cwd=self._cwd,
-            resume=self._resume,
-            system_prompt=system_prompt,
-            include_partial_messages=True,
-            setting_sources=["user", "project"],
-            plugins=discover_installed_plugins(),
-            can_use_tool=rt.permission_handler.handle,
-            mcp_servers=mcp_servers,
-            model=self._model,
-            # TODO: if config gains thinking_budget_tokens, use
-            # ThinkingConfigEnabled(budget_tokens=N) when enable_thinking
-            # is True + budget set; adaptive remains the default.
-            thinking=(
-                ThinkingConfigAdaptive()
-                if self._config.enable_thinking
-                else ThinkingConfigDisabled()
-            ),
-            effort=self._effort,
-        )
-
         streamer = ResponseStreamer(
             router=router,
             user_id=self._authenticated_user_id,
@@ -1079,56 +1122,131 @@ class SummonSession:
             max_inline_chars=self._config.max_inline_chars,
         )
 
-        async with ClaudeSDKClient(options) as claude:
-            self._claude = claude
-            try:
-                # Validate SDK commands and extract model info from server info
-                try:
-                    server_info = await claude.get_server_info()
-                    if server_info:
-                        commands = server_info.get("commands", [])
-                        if commands:
-                            validate_sdk_commands(commands)
-                        models = server_info.get("models", [])
-                        if models:
-                            self._available_models = models
-                        # Best-effort: resolve initial model from init data
-                        init_model = server_info.get("model")
-                        if init_model and (not self._model or self._model == "default"):
-                            self._model = init_model
-                except Exception as e:
-                    logger.debug("Could not retrieve server info: %s", e)
+        # Disable auto-compaction — we handle compaction via !compact
+        os.environ["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "100"
 
-                # Register plugin skills/commands for !help and passthrough
-                try:
-                    plugin_skills = discover_plugin_skills()
-                    if plugin_skills:
-                        register_plugin_skills(plugin_skills)
-                except Exception as e:
-                    logger.debug("Could not discover plugin skills: %s", e)
+        # System prompt state — modified on compaction restart
+        restart_count = 0
+        base_prompt = _BASE_SYSTEM_APPEND
+        if self._canvas_store is not None:
+            base_prompt += _CANVAS_PROMPT_SECTION
+        system_prompt_append = base_prompt
 
+        while True:
+            system_prompt = {
+                "type": "preset",
+                "preset": "claude_code",
+                "append": system_prompt_append,
+            }
+            options = ClaudeAgentOptions(
+                cwd=self._cwd,
+                resume=self._resume,
+                system_prompt=system_prompt,
+                include_partial_messages=True,
+                setting_sources=["user", "project"],
+                plugins=discover_installed_plugins(),
+                can_use_tool=rt.permission_handler.handle,
+                mcp_servers=mcp_servers,
+                model=self._model,
+                # TODO: if config gains thinking_budget_tokens, use
+                # ThinkingConfigEnabled(budget_tokens=N) when enable_thinking
+                # is True + budget set; adaptive remains the default.
+                thinking=(
+                    ThinkingConfigAdaptive()
+                    if self._config.enable_thinking
+                    else ThinkingConfigDisabled()
+                ),
+                effort=self._effort,
+            )
+
+            restart: _SessionRestartError | None = None
+
+            async with ClaudeSDKClient(options) as claude:
+                self._claude = claude
                 try:
-                    async with asyncio.TaskGroup() as tg:
-                        tg.create_task(self._run_preprocessor(rt, claude))
-                        tg.create_task(self._run_response_consumer(rt, claude, streamer))
-                except ExceptionGroup as eg:
-                    for exc in eg.exceptions:
-                        logger.error("Session task failed: %s", exc, exc_info=exc)
-                    raise eg.exceptions[0] from eg
-            finally:
-                # Post session summary while the client is still open
-                if self._total_turns > 0:
+                    # Validate SDK commands and extract model info from server info
                     try:
-                        await asyncio.wait_for(
-                            self._post_session_summary(router, claude), timeout=30.0
-                        )
-                    except TimeoutError:
-                        logger.warning("Session summary timed out")
+                        server_info = await claude.get_server_info()
+                        if server_info:
+                            commands = server_info.get("commands", [])
+                            if commands:
+                                validate_sdk_commands(commands)
+                            models = server_info.get("models", [])
+                            if models:
+                                self._available_models = models
+                            # Best-effort: resolve initial model from init data
+                            init_model = server_info.get("model")
+                            if init_model and (not self._model or self._model == "default"):
+                                self._model = init_model
                     except Exception as e:
-                        logger.warning("Session summary failed: %s", e)
-                self._claude = None
+                        logger.debug("Could not retrieve server info: %s", e)
 
-    async def _run_preprocessor(self, rt: _SessionRuntime, claude: ClaudeSDKClient) -> None:
+                    # Register plugin skills/commands for !help and passthrough
+                    try:
+                        plugin_skills = discover_plugin_skills()
+                        if plugin_skills:
+                            register_plugin_skills(plugin_skills)
+                    except Exception as e:
+                        logger.debug("Could not discover plugin skills: %s", e)
+
+                    try:
+                        async with asyncio.TaskGroup() as tg:
+                            tg.create_task(self._run_preprocessor(rt, claude))
+                            tg.create_task(self._run_response_consumer(rt, claude, streamer))
+                    except ExceptionGroup as eg:
+                        restart_exc = next(
+                            (e for e in eg.exceptions if isinstance(e, _SessionRestartError)),
+                            None,
+                        )
+                        if restart_exc:
+                            restart = restart_exc
+                        else:
+                            for exc in eg.exceptions:
+                                logger.error("Session task failed: %s", exc, exc_info=exc)
+                            raise eg.exceptions[0] from eg
+                except _SessionRestartError as e:
+                    restart = e
+                finally:
+                    if restart is None and self._total_turns > 0:
+                        try:
+                            await asyncio.wait_for(
+                                self._post_session_summary(router, claude),
+                                timeout=30.0,
+                            )
+                        except TimeoutError:
+                            logger.warning("Session summary timed out")
+                        except Exception as e:
+                            logger.warning("Session summary failed: %s", e)
+                    self._claude = None
+
+            # After client teardown: restart if compaction requested
+            if restart is not None:
+                if restart.summary:
+                    system_prompt_append = base_prompt + _COMPACT_SUMMARY_PREFIX + restart.summary
+                elif restart.recovery_mode:
+                    system_prompt_append = base_prompt + _OVERFLOW_RECOVERY_PROMPT
+                restart_count += 1
+                if restart_count > _MAX_SESSION_RESTARTS:
+                    logger.warning("Max restart count (%d) exceeded", _MAX_SESSION_RESTARTS)
+                    break
+                self._pending_turns = asyncio.Queue()
+                self._context_warned_threshold = 0.0
+                self._last_context = None
+                self._claude_session_id = None
+                self._resume = None
+                logger.info(
+                    "Session restarting (%d/%d, recovery_mode=%s)",
+                    restart_count,
+                    _MAX_SESSION_RESTARTS,
+                    restart.recovery_mode,
+                )
+                continue
+
+            break  # Normal exit
+
+    async def _run_preprocessor(  # noqa: PLR0912
+        self, rt: _SessionRuntime, claude: ClaudeSDKClient
+    ) -> None:
         """Dequeue raw Slack events, preprocess, call query(), enqueue _PendingTurn.
 
         Runs concurrently with ``_run_response_consumer``. Calling ``query()``
@@ -1158,6 +1276,21 @@ class SummonSession:
 
                 if not user_message:
                     continue
+
+                # Agent context awareness: prepend context note when usage is high
+                if self._last_context and self._last_context.percentage > _CONTEXT_AGENT_THRESHOLD:
+                    pct = self._last_context.percentage
+                    if pct > _CONTEXT_URGENT_THRESHOLD:
+                        urgency = (
+                            "CRITICALLY HIGH — run !compact immediately or context will overflow."
+                        )
+                    elif pct > _CONTEXT_WARNING_THRESHOLD:
+                        urgency = "Consider running !compact to free up space."
+                    else:
+                        urgency = "No action needed yet."
+                    user_message = (
+                        f"[Context: {pct:.0f}% of window used. {urgency}]\n\n" + user_message
+                    )
 
                 # Pre-send: call query() immediately so SDK queues it
                 message_ts = item.get("ts")
@@ -1288,6 +1421,8 @@ class SummonSession:
                 except (asyncio.CancelledError, Exception) as _e:
                     logger.debug("Turn task cancelled: %s", _e)
             raise
+        except _SessionRestartError:
+            raise  # Propagate to TaskGroup for client restart
         except Exception as e:
             logger.exception("Error during Claude response: %s", e)
             # Emoji lifecycle: gear -> warning (error)
@@ -1313,10 +1448,13 @@ class SummonSession:
         finally:
             # Safety net: clean up gear if turn ended without proper emoji transition
             if pending.message_ts and not emoji_finalized:
-                await rt.client.unreact(pending.message_ts, "gear")
+                try:
+                    await rt.client.unreact(pending.message_ts, "gear")
+                except Exception:
+                    logger.debug("Failed to clean up gear emoji", exc_info=True)
             self._current_turn_task = None
 
-    async def _finalize_turn_result(
+    async def _finalize_turn_result(  # noqa: PLR0912, PLR0915
         self,
         rt: _SessionRuntime,
         streamer: ResponseStreamer,
@@ -1351,16 +1489,19 @@ class SummonSession:
                 logger.warning("Failed to post Claude session ID to Slack", exc_info=True)
         cost = stream_result.result.total_cost_usd or 0.0
         self._total_cost += cost
-        await rt.registry.record_turn(self._session_id, cost)
         if stream_result.model is not None:
             self._last_model_seen = stream_result.model
 
-        # Compute accurate context from JSONL transcript (not cumulative usage)
+        # Compute accurate context from JSONL transcript BEFORE recording
+        # so the DB gets current-turn data, not previous-turn
         if self._claude_session_id:
             tp = derive_transcript_path(self._cwd, self._claude_session_id)
             transcript_usage = get_last_step_usage(tp)
             if transcript_usage:
                 self._last_context = compute_context_usage(transcript_usage, self._last_model_seen)
+
+        ctx_pct = self._last_context.percentage if self._last_context else None
+        await rt.registry.record_turn(self._session_id, cost, context_pct=ctx_pct)
 
         summary = streamer.finalize_turn(context=self._last_context)
         await streamer.update_turn_summary(summary)
@@ -1375,21 +1516,48 @@ class SummonSession:
             footer = f":checkered_flag: {cost_str}"
         await streamer.post_turn_footer(footer)
 
-        # Proactive context warning
-        if (
-            self._last_context
-            and self._last_context.percentage > _CONTEXT_WARNING_THRESHOLD
-            and not self._context_warned
-        ):
-            try:
-                await rt.client.post(
-                    f":warning: Context is getting large "
-                    f"(~{self._last_context.percentage:.0f}% used). "
-                    "Consider running `!compact` to free up space."
-                )
-            except Exception:
-                logger.debug("Failed to post context warning", exc_info=True)
-            self._context_warned = True
+        # Escalating context warnings + auto-compact
+        if self._last_context:
+            pct = self._last_context.percentage
+            if (
+                pct > _CONTEXT_AUTO_COMPACT_THRESHOLD
+                and self._context_warned_threshold < _CONTEXT_AUTO_COMPACT_THRESHOLD
+            ):
+                self._context_warned_threshold = pct
+                try:
+                    await rt.client.post(
+                        f":rotating_light: Context at ~{pct:.0f}% — "
+                        "auto-compacting to preserve session..."
+                    )
+                except Exception:
+                    logger.debug("Failed to post auto-compact message", exc_info=True)
+                await self._execute_compact(rt, instructions=None, thread_ts=None)
+            elif (
+                pct > _CONTEXT_URGENT_THRESHOLD
+                and self._context_warned_threshold < _CONTEXT_URGENT_THRESHOLD
+            ):
+                self._context_warned_threshold = pct
+                try:
+                    await rt.client.post(
+                        f":rotating_light: Context is critically full "
+                        f"(~{pct:.0f}% used). "
+                        "Run `!compact` now to avoid losing context."
+                    )
+                except Exception:
+                    logger.debug("Failed to post urgent context warning", exc_info=True)
+            elif (
+                pct > _CONTEXT_WARNING_THRESHOLD
+                and self._context_warned_threshold < _CONTEXT_WARNING_THRESHOLD
+            ):
+                self._context_warned_threshold = pct
+                try:
+                    await rt.client.post(
+                        f":warning: Context is getting large "
+                        f"(~{pct:.0f}% used). "
+                        "Consider running `!compact` to free up space."
+                    )
+                except Exception:
+                    logger.debug("Failed to post context warning", exc_info=True)
 
         # Only update topic if model or branch changed
         try:
@@ -1512,7 +1680,7 @@ class SummonSession:
         except Exception as e:
             logger.warning("Failed to post clear delineation: %s", e)
 
-    async def _execute_compact(
+    async def _execute_compact(  # noqa: PLR0912
         self,
         rt: _SessionRuntime,
         instructions: str | None,
@@ -1520,47 +1688,88 @@ class SummonSession:
         *,
         pre_sent: bool = False,
     ) -> None:
-        """Execute /compact via SDK and post feedback to Slack."""
-        compact_query = "/compact" + (f" {instructions}" if instructions else "")
+        """Compact context: send summarization prompt, capture summary, restart client.
+
+        On success, raises ``_SessionRestartError(summary=...)`` which is caught by
+        ``_run_session_tasks`` to rebuild the SDK client with the summary injected
+        into the system prompt.
+
+        On overflow (context too full to summarize), raises
+        ``_SessionRestartError(recovery_mode=True)`` to restart with instructions for
+        the fresh agent to use ``slack_read_history`` MCP tools.
+        """
         try:
-            if self._claude:
-                if not pre_sent:
-                    await self._claude.query(compact_query)
-                pre_tokens = None
-                async for msg in self._claude.receive_response():
-                    if (
-                        hasattr(msg, "subtype")
-                        and msg.subtype == "compact_boundary"
-                        and hasattr(msg, "compact_metadata")
-                        and msg.compact_metadata
-                    ):
-                        pre_tokens = getattr(msg.compact_metadata, "pre_tokens", None)
-                if pre_tokens is not None:
-                    await rt.client.post(
-                        f":broom: Context compacted"
-                        f" (was ~{pre_tokens:,} tokens). Summary preserved.",
-                        thread_ts=thread_ts,
-                    )
-                    self._context_warned = False
-                else:
-                    await rt.client.post(
-                        ":warning: Compact may not have completed.",
-                        thread_ts=thread_ts,
-                    )
-            else:
+            if not self._claude:
                 await rt.client.post(
                     ":warning: SDK client not available.",
                     thread_ts=thread_ts,
                 )
-        except Exception as e:
-            logger.warning("Compact failed: %s", e)
-            try:
+                return
+
+            # Build compaction prompt with optional focus instructions
+            compact_prompt = _COMPACT_PROMPT
+            if instructions:
+                compact_prompt += f"\n\nAdditional focus: {instructions}"
+
+            if not pre_sent:
+                await self._claude.query(compact_prompt)
+
+            # Capture summary text from Claude's response
+            summary_parts: list[str] = []
+            async for msg in self._claude.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            summary_parts.append(block.text)
+            raw_summary = "".join(summary_parts).strip()
+
+            # Extract content from <summary> tags if present
+            match = re.search(r"<summary>(.*?)</summary>", raw_summary, re.DOTALL)
+            summary = match.group(1).strip() if match else raw_summary
+
+            if not summary:
                 await rt.client.post(
-                    ":warning: Compact failed. Try again later.",
+                    ":warning: Compact produced no summary. Try again or use `!clear`.",
                     thread_ts=thread_ts,
                 )
-            except Exception as e2:
-                logger.debug("Failed to post compact error: %s", e2)
+                return
+
+            # Cap summary size to avoid consuming too much of the new context
+            if len(summary) > _MAX_COMPACT_SUMMARY_CHARS:
+                summary = summary[:_MAX_COMPACT_SUMMARY_CHARS] + "\n\n[Summary truncated]"
+
+            await rt.client.post(
+                ":broom: Context compacted. Restarting session with summary preserved...",
+                thread_ts=thread_ts,
+            )
+            raise _SessionRestartError(summary=summary)
+
+        except _SessionRestartError:
+            raise  # Propagate to trigger client restart
+        except Exception as e:
+            logger.warning("Compact failed: %s", e)
+            err_str = str(e).lower()
+            is_overflow = any(
+                kw in err_str for kw in ("context", "token", "limit", "length", "overflow")
+            )
+            if is_overflow:
+                try:
+                    await rt.client.post(
+                        ":warning: Context too full to summarize. "
+                        "Restarting with history recovery...",
+                        thread_ts=thread_ts,
+                    )
+                except Exception:
+                    logger.debug("Failed to post overflow message", exc_info=True)
+                raise _SessionRestartError(recovery_mode=True) from e
+            msg = (
+                ":warning: Compact failed. Try again, or use `!clear` to start fresh.\n"
+                "Use the `slack_read_history` MCP tool to recover context if needed."
+            )
+            try:
+                await rt.client.post(msg, thread_ts=thread_ts)
+            except Exception:
+                logger.debug("Failed to post compact error", exc_info=True)
 
     async def _execute_effort(self, rt: _SessionRuntime, level: str, thread_ts: str | None) -> None:
         """Execute /effort via SDK to change effort mid-session."""
@@ -1671,17 +1880,19 @@ class SummonSession:
         if result.metadata.get("clear"):
             await self._post_clear_delineation(rt)
 
-        # Handle !compact — pre-send and route through consumer for receive_response()
+        # Handle !compact — send summarization prompt, route through consumer
         if result.metadata.get("compact"):
             instructions = result.metadata.get("instructions") or ""
-            compact_query = "/compact" + (f" {instructions}" if instructions else "")
+            compact_prompt = _COMPACT_PROMPT
+            if instructions:
+                compact_prompt += f"\n\nAdditional focus: {instructions}"
             pre_sent = False
             if claude:
                 try:
-                    await claude.query(compact_query)
+                    await claude.query(compact_prompt)
                     pre_sent = True
                 except Exception as e:
-                    logger.warning("Pre-send query() for compact failed: %s", e)
+                    logger.warning("Pre-send compact prompt failed: %s", e)
             await self._pending_turns.put(
                 _PendingTurn(
                     message=instructions,
@@ -2037,26 +2248,7 @@ class SummonSession:
                         await self._execute_effort(rt, new_effort, thread_ts)
                     if result.metadata.get("clear"):
                         await self._post_clear_delineation(rt)
-                    if result.metadata.get("compact"):
-                        instructions = result.metadata.get("instructions") or ""
-                        compact_query = "/compact" + (f" {instructions}" if instructions else "")
-                        pre_sent = False
-                        if claude:
-                            try:
-                                await claude.query(compact_query)
-                                pre_sent = True
-                            except Exception as e:
-                                logger.warning("Pre-send compact failed: %s", e)
-                        await self._pending_turns.put(
-                            _PendingTurn(
-                                message=instructions,
-                                thread_ts=thread_ts,
-                                pre_sent=pre_sent,
-                                compact=True,
-                            )
-                        )
-                        annotations.insert(0, f"`!{match.raw_name}` — compacting context...")
-                    elif result.metadata.get("spawn"):
+                    if result.metadata.get("compact") or result.metadata.get("spawn"):
                         annotations.insert(
                             0,
                             f"`!{match.raw_name}` — must be used as a standalone command",

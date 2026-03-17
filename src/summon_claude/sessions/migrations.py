@@ -7,6 +7,7 @@ schema change is ever duplicated between _connect() and a migration.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 from typing import Any
@@ -15,7 +16,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,13 @@ async def _migrate_5_to_6(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_6_to_7(db: aiosqlite.Connection) -> None:
+    """Add context_pct column for tracking context window usage."""
+    # SQLite lacks IF NOT EXISTS for ALTER TABLE ADD COLUMN
+    with contextlib.suppress(sqlite3.OperationalError):
+        await db.execute("ALTER TABLE sessions ADD COLUMN context_pct REAL")
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the baseline DDL in _connect() produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
@@ -83,6 +91,7 @@ _MIGRATIONS: dict[int, Any] = {
     3: _migrate_3_to_4,
     4: _migrate_4_to_5,
     5: _migrate_5_to_6,
+    6: _migrate_6_to_7,
 }
 
 

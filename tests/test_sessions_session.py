@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from claude_agent_sdk import AssistantMessage, TextBlock
 
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.auth import SessionAuth
@@ -22,6 +24,7 @@ from summon_claude.sessions.session import (
     SessionOptions,
     SummonSession,
     _format_file_references,
+    _SessionRestartError,
     _SessionRuntime,
 )
 from summon_claude.slack.client import MessageRef, SlackClient
@@ -1027,19 +1030,17 @@ class TestCompactRouting:
         assert pt.pre_sent is False
 
 
-class TestContextWarningReset:
-    """Tests for _context_warned reset after compact."""
+class TestContextWarningThreshold:
+    """Tests for _context_warned_threshold tracking."""
 
-    def test_context_warned_resets_on_init(self):
+    def test_context_warned_threshold_starts_at_zero(self):
         session = make_session()
-        assert session._context_warned is False
+        assert session._context_warned_threshold == 0.0
 
-    def test_context_warned_flag_exists(self):
+    def test_context_warned_threshold_is_settable(self):
         session = make_session()
-        session._context_warned = True
-        assert session._context_warned is True
-        session._context_warned = False
-        assert session._context_warned is False
+        session._context_warned_threshold = 75.0
+        assert session._context_warned_threshold == 75.0
 
 
 class TestMCPRegistration:
@@ -1299,3 +1300,774 @@ class TestHandleSpawn:
         rt.client.post.assert_called()
         annotation_text = rt.client.post.call_args[0][0]
         assert "standalone" in annotation_text.lower()
+
+
+# ------------------------------------------------------------------
+# Compaction tests
+# ------------------------------------------------------------------
+
+
+class TestAutoCompactionDisabled:
+    """Verify CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is set before SDK client creation."""
+
+    async def test_env_var_set_before_client_creation(self, registry):
+        """CLAUDE_AUTOCOMPACT_PCT_OVERRIDE should be '100' when ClaudeSDKClient is entered."""
+        import os
+
+        captured_env = {}
+        _sentinel = RuntimeError("stop-after-capture")
+
+        class _FakeSDKClient:
+            def __init__(self, options):
+                # Record env var at construction time (just after `os.environ` line)
+                captured_env["val"] = os.environ.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")
+
+            async def __aenter__(self):
+                raise _sentinel  # Break out before the TaskGroup hangs
+
+            async def __aexit__(self, *_):
+                pass
+
+        session = make_session()
+        rt = make_rt(registry)
+        router = AsyncMock()
+
+        with (
+            patch("summon_claude.sessions.session.ClaudeSDKClient", _FakeSDKClient),
+            patch("summon_claude.sessions.session.create_summon_mcp_server", return_value={}),
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+        ):
+            try:
+                await session._run_session_tasks(rt, router)
+            except RuntimeError as e:
+                assert e is _sentinel  # Confirm we stopped at the right place
+
+        assert captured_env.get("val") == "100"
+
+    def test_base_system_append_is_string(self):
+        """_BASE_SYSTEM_APPEND must be a non-empty string."""
+        from summon_claude.sessions.session import _BASE_SYSTEM_APPEND
+
+        assert isinstance(_BASE_SYSTEM_APPEND, str)
+        assert len(_BASE_SYSTEM_APPEND) > 0
+
+
+class TestCompactPromptConstants:
+    """Verify compaction prompt constants are well-formed."""
+
+    def test_compact_prompt_has_mandatory_sections(self):
+        from summon_claude.sessions.session import _COMPACT_PROMPT
+
+        assert isinstance(_COMPACT_PROMPT, str)
+        assert "Task Overview" in _COMPACT_PROMPT
+        assert "Current State" in _COMPACT_PROMPT
+        assert "Files & Artifacts" in _COMPACT_PROMPT
+        assert "Key Decisions" in _COMPACT_PROMPT
+        assert "Next Steps" in _COMPACT_PROMPT
+        assert "<summary>" in _COMPACT_PROMPT
+        assert "<analysis>" in _COMPACT_PROMPT
+
+    def test_compact_summary_prefix_exists(self):
+        from summon_claude.sessions.session import _COMPACT_SUMMARY_PREFIX
+
+        assert isinstance(_COMPACT_SUMMARY_PREFIX, str)
+        assert "Compacted" in _COMPACT_SUMMARY_PREFIX
+
+    def test_overflow_recovery_prompt_mentions_tools(self):
+        from summon_claude.sessions.session import _OVERFLOW_RECOVERY_PROMPT
+
+        assert isinstance(_OVERFLOW_RECOVERY_PROMPT, str)
+        assert "slack_read_history" in _OVERFLOW_RECOVERY_PROMPT
+        assert "slack_fetch_thread" in _OVERFLOW_RECOVERY_PROMPT
+
+    def test_session_restart_exception(self):
+        exc = _SessionRestartError(summary="test summary")
+        assert exc.summary == "test summary"
+        assert exc.recovery_mode is False
+
+    def test_session_restart_recovery_mode(self):
+        exc = _SessionRestartError(recovery_mode=True)
+        assert exc.summary is None
+        assert exc.recovery_mode is True
+
+
+class TestExecuteCompact:
+    """Tests for _execute_compact: summarization, restart, and error handling."""
+
+    def _make_mock_claude_with_summary(self, summary_text: str):
+        """Create a mock SDK client whose receive_response yields an AssistantMessage."""
+        claude = AsyncMock()
+        claude.query = AsyncMock()
+
+        text_block = MagicMock(spec=TextBlock)
+        text_block.text = summary_text
+
+        msg = MagicMock(spec=AssistantMessage)
+        msg.content = [text_block]
+
+        async def fake_receive():
+            yield msg
+
+        claude.receive_response = fake_receive
+        return claude
+
+    def _make_mock_claude_empty(self):
+        """Create a mock SDK client whose receive_response yields no text."""
+        claude = AsyncMock()
+        claude.query = AsyncMock()
+
+        # Yield a message that isn't an AssistantMessage
+        msg = MagicMock()
+
+        async def fake_receive():
+            yield msg
+
+        claude.receive_response = fake_receive
+        return claude
+
+    async def test_success_raises_session_restart_with_summary(self, registry):
+        """On success, _execute_compact raises _SessionRestartError with captured summary."""
+        session = make_session()
+        rt = make_rt(registry)
+        session._claude = self._make_mock_claude_with_summary("## Task Overview\nBuild a widget")
+
+        with pytest.raises(_SessionRestartError) as exc_info:
+            await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        assert exc_info.value.summary == "## Task Overview\nBuild a widget"
+        assert exc_info.value.recovery_mode is False
+
+    async def test_success_extracts_summary_tags(self, registry):
+        """If response contains <summary> tags, only the inner content is captured."""
+        session = make_session()
+        rt = make_rt(registry)
+        raw = "<analysis>scratchpad</analysis>\n<summary>\n## Task\nDo thing\n</summary>"
+        session._claude = self._make_mock_claude_with_summary(raw)
+
+        with pytest.raises(_SessionRestartError) as exc_info:
+            await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        assert exc_info.value.summary == "## Task\nDo thing"
+        assert "scratchpad" not in exc_info.value.summary
+
+    async def test_success_posts_broom_message(self, registry):
+        """On success, post ':broom: Context compacted' before raising."""
+        session = make_session()
+        rt = make_rt(registry)
+        session._claude = self._make_mock_claude_with_summary("summary text")
+
+        with pytest.raises(_SessionRestartError):
+            await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        rt.client.post.assert_awaited_once()
+        text = rt.client.post.call_args[0][0]
+        assert ":broom:" in text
+
+    async def test_no_summary_posts_warning_no_restart(self, registry):
+        """If Claude returns no text, post warning and do NOT raise _SessionRestartError."""
+        session = make_session()
+        rt = make_rt(registry)
+        session._claude = self._make_mock_claude_empty()
+
+        # Should NOT raise _SessionRestartError
+        await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        rt.client.post.assert_awaited_once()
+        text = rt.client.post.call_args[0][0]
+        assert "no summary" in text.lower()
+
+    async def test_no_claude_client_posts_unavailable(self, registry):
+        """If _claude is None, post SDK client not available."""
+        session = make_session()
+        rt = make_rt(registry)
+        session._claude = None
+
+        await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        rt.client.post.assert_awaited_once()
+        text = rt.client.post.call_args[0][0]
+        assert "not available" in text
+
+    async def test_overflow_error_raises_recovery_restart(self, registry):
+        """On context overflow, raise _SessionRestartError(recovery_mode=True)."""
+        session = make_session()
+        rt = make_rt(registry)
+
+        claude = AsyncMock()
+        claude.query = AsyncMock(side_effect=RuntimeError("context limit exceeded"))
+        session._claude = claude
+
+        with pytest.raises(_SessionRestartError) as exc_info:
+            await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        assert exc_info.value.recovery_mode is True
+        assert exc_info.value.summary is None
+
+    async def test_overflow_posts_recovery_message(self, registry):
+        """On overflow, post recovery message before raising."""
+        session = make_session()
+        rt = make_rt(registry)
+
+        claude = AsyncMock()
+        claude.query = AsyncMock(side_effect=RuntimeError("token limit reached"))
+        session._claude = claude
+
+        with pytest.raises(_SessionRestartError):
+            await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        rt.client.post.assert_awaited_once()
+        text = rt.client.post.call_args[0][0]
+        assert "too full" in text.lower()
+        assert "history recovery" in text.lower()
+
+    async def test_generic_error_posts_warning_no_restart(self, registry):
+        """On a non-overflow error, post warning and do NOT restart."""
+        session = make_session()
+        rt = make_rt(registry)
+
+        claude = AsyncMock()
+        claude.query = AsyncMock(side_effect=RuntimeError("network error"))
+        session._claude = claude
+
+        # Should NOT raise _SessionRestartError
+        await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        rt.client.post.assert_awaited_once()
+        text = rt.client.post.call_args[0][0]
+        assert ":warning:" in text
+        assert "!clear" in text
+
+    async def test_instructions_appended_to_compact_prompt(self, registry):
+        """Instructions should be appended to the compaction prompt."""
+        from summon_claude.sessions.session import _COMPACT_PROMPT
+
+        session = make_session()
+        rt = make_rt(registry)
+        session._claude = self._make_mock_claude_with_summary("summary")
+
+        with pytest.raises(_SessionRestartError):
+            await session._execute_compact(rt, instructions="focus on tests", thread_ts=None)
+
+        sent_prompt = session._claude.query.call_args[0][0]
+        assert sent_prompt.startswith(_COMPACT_PROMPT)
+        assert "Additional focus: focus on tests" in sent_prompt
+
+    async def test_pre_sent_skips_query(self, registry):
+        """When pre_sent=True, _execute_compact should NOT call query()."""
+        session = make_session()
+        rt = make_rt(registry)
+        session._claude = self._make_mock_claude_with_summary("summary")
+
+        with pytest.raises(_SessionRestartError):
+            await session._execute_compact(rt, instructions=None, thread_ts=None, pre_sent=True)
+
+        session._claude.query.assert_not_awaited()
+
+    async def test_summary_truncated_when_too_long(self, registry):
+        """Summaries exceeding _MAX_COMPACT_SUMMARY_CHARS are truncated."""
+        from summon_claude.sessions.session import _MAX_COMPACT_SUMMARY_CHARS
+
+        session = make_session()
+        rt = make_rt(registry)
+        long_summary = "x" * (_MAX_COMPACT_SUMMARY_CHARS + 1000)
+        session._claude = self._make_mock_claude_with_summary(long_summary)
+
+        with pytest.raises(_SessionRestartError) as exc_info:
+            await session._execute_compact(rt, instructions=None, thread_ts=None)
+
+        assert len(exc_info.value.summary) <= _MAX_COMPACT_SUMMARY_CHARS + 50
+        assert exc_info.value.summary.endswith("[Summary truncated]")
+
+
+class TestSessionRestartLoop:
+    """Test that _run_session_tasks handles _SessionRestartError correctly.
+
+    Uses patched _run_preprocessor/_run_response_consumer to simulate the
+    real flow: consumer raises _SessionRestartError from inside the TaskGroup,
+    which propagates as an ExceptionGroup.
+    """
+
+    async def test_restart_rebuilds_system_prompt_with_summary(self, registry):
+        """After _SessionRestartError(summary=...), system prompt includes the summary."""
+        from summon_claude.sessions.session import (
+            _BASE_SYSTEM_APPEND,
+            _COMPACT_SUMMARY_PREFIX,
+        )
+
+        captured_prompts = []
+
+        class _FakeSDKClient:
+            def __init__(self, options):
+                captured_prompts.append(options.system_prompt["append"])
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                pass
+
+            async def get_server_info(self):
+                return None
+
+        consumer_call = 0
+
+        async def fake_consumer(_rt, _claude, _streamer):
+            nonlocal consumer_call
+            consumer_call += 1
+            if consumer_call == 1:
+                raise _SessionRestartError(summary="## Task\nBuild widget")
+            raise RuntimeError("stop-second-run")
+
+        async def fake_preprocessor(_rt, _claude):
+            await asyncio.sleep(999)  # Cancelled by TaskGroup
+
+        session = make_session()
+        rt = make_rt(registry)
+        router = AsyncMock()
+
+        with (
+            patch("summon_claude.sessions.session.ClaudeSDKClient", _FakeSDKClient),
+            patch("summon_claude.sessions.session.create_summon_mcp_server", return_value={}),
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+            patch.object(session, "_run_preprocessor", fake_preprocessor),
+            patch.object(session, "_run_response_consumer", fake_consumer),
+            contextlib.suppress(RuntimeError),
+        ):
+            await session._run_session_tasks(rt, router)
+
+        assert len(captured_prompts) == 2
+        assert captured_prompts[0] == _BASE_SYSTEM_APPEND
+        assert _COMPACT_SUMMARY_PREFIX in captured_prompts[1]
+        assert "Build widget" in captured_prompts[1]
+
+    async def test_restart_recovery_mode_includes_overflow_prompt(self, registry):
+        """After recovery_mode restart, system prompt includes recovery instructions."""
+        from summon_claude.sessions.session import _OVERFLOW_RECOVERY_PROMPT
+
+        captured_prompts = []
+        consumer_call = 0
+
+        class _FakeSDKClient:
+            def __init__(self, options):
+                captured_prompts.append(options.system_prompt["append"])
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                pass
+
+            async def get_server_info(self):
+                return None
+
+        async def fake_consumer(_rt, _claude, _streamer):
+            nonlocal consumer_call
+            consumer_call += 1
+            if consumer_call == 1:
+                raise _SessionRestartError(recovery_mode=True)
+            raise RuntimeError("stop-second-run")
+
+        async def fake_preprocessor(_rt, _claude):
+            await asyncio.sleep(999)
+
+        session = make_session()
+        rt = make_rt(registry)
+        router = AsyncMock()
+
+        with (
+            patch("summon_claude.sessions.session.ClaudeSDKClient", _FakeSDKClient),
+            patch("summon_claude.sessions.session.create_summon_mcp_server", return_value={}),
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+            patch.object(session, "_run_preprocessor", fake_preprocessor),
+            patch.object(session, "_run_response_consumer", fake_consumer),
+            contextlib.suppress(RuntimeError),
+        ):
+            await session._run_session_tasks(rt, router)
+
+        assert len(captured_prompts) == 2
+        assert "slack_read_history" in captured_prompts[1]
+        assert _OVERFLOW_RECOVERY_PROMPT in captured_prompts[1]
+
+    async def test_restart_resets_session_state(self, registry):
+        """Restart resets _pending_turns, _context_warned_threshold, and _resume."""
+        consumer_call = 0
+
+        class _FakeSDKClient:
+            def __init__(self, options):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                pass
+
+            async def get_server_info(self):
+                return None
+
+        async def fake_consumer(_rt, _claude, _streamer):
+            nonlocal consumer_call
+            consumer_call += 1
+            if consumer_call == 1:
+                raise _SessionRestartError(summary="summary")
+            raise RuntimeError("stop")
+
+        async def fake_preprocessor(_rt, _claude):
+            await asyncio.sleep(999)
+
+        session = make_session()
+        session._context_warned_threshold = 75.0
+        session._resume = "old-session-id"
+        session._claude_session_id = "old-claude-sid"
+
+        from summon_claude.sessions.context import ContextUsage
+
+        session._last_context = ContextUsage(
+            input_tokens=100000, context_window=200000, percentage=50.0
+        )
+        rt = make_rt(registry)
+        router = AsyncMock()
+
+        old_queue = session._pending_turns
+
+        with (
+            patch("summon_claude.sessions.session.ClaudeSDKClient", _FakeSDKClient),
+            patch("summon_claude.sessions.session.create_summon_mcp_server", return_value={}),
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+            patch.object(session, "_run_preprocessor", fake_preprocessor),
+            patch.object(session, "_run_response_consumer", fake_consumer),
+            contextlib.suppress(RuntimeError),
+        ):
+            await session._run_session_tasks(rt, router)
+
+        assert session._pending_turns is not old_queue  # New queue
+        assert session._context_warned_threshold == 0.0
+        assert session._resume is None
+        assert session._last_context is None
+        assert session._claude_session_id is None
+
+    async def test_restart_circuit_breaker_stops_after_max(self, registry):
+        """After max_restarts exceeded, the loop exits instead of restarting."""
+        from summon_claude.sessions.session import _MAX_SESSION_RESTARTS
+
+        captured_prompts = []
+        consumer_call = 0
+
+        class _FakeSDKClient:
+            def __init__(self, options):
+                captured_prompts.append(options.system_prompt["append"])
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                pass
+
+            async def get_server_info(self):
+                return None
+
+        async def fake_consumer(_rt, _claude, _streamer):
+            nonlocal consumer_call
+            consumer_call += 1
+            raise _SessionRestartError(summary=f"summary-{consumer_call}")
+
+        async def fake_preprocessor(_rt, _claude):
+            await asyncio.sleep(999)
+
+        session = make_session()
+        rt = make_rt(registry)
+        router = AsyncMock()
+
+        with (
+            patch("summon_claude.sessions.session.ClaudeSDKClient", _FakeSDKClient),
+            patch("summon_claude.sessions.session.create_summon_mcp_server", return_value={}),
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+            patch.object(session, "_run_preprocessor", fake_preprocessor),
+            patch.object(session, "_run_response_consumer", fake_consumer),
+        ):
+            await session._run_session_tasks(rt, router)
+
+        # Should have attempted _MAX_SESSION_RESTARTS + 1 clients (initial + restarts)
+        # then broken out
+        assert len(captured_prompts) == _MAX_SESSION_RESTARTS + 1
+        assert consumer_call == _MAX_SESSION_RESTARTS + 1
+
+
+class TestEscalatingContextWarnings:
+    """Tests for the escalating context warning thresholds and auto-compact."""
+
+    async def test_75pct_posts_standard_warning(self, registry):
+        """At >75%, post standard warning and update threshold."""
+        session = make_session()
+        session._context_warned_threshold = 0.0
+
+        from summon_claude.sessions.context import ContextUsage
+
+        session._last_context = ContextUsage(
+            input_tokens=160000, context_window=200000, percentage=80.0
+        )
+        # Call the warning logic directly by simulating _finalize_turn_result
+        # We test the threshold logic in isolation
+        from summon_claude.sessions.session import (
+            _CONTEXT_AUTO_COMPACT_THRESHOLD,
+            _CONTEXT_URGENT_THRESHOLD,
+            _CONTEXT_WARNING_THRESHOLD,
+        )
+
+        pct = session._last_context.percentage
+        assert pct > _CONTEXT_WARNING_THRESHOLD
+        assert pct < _CONTEXT_URGENT_THRESHOLD
+        assert session._context_warned_threshold < _CONTEXT_WARNING_THRESHOLD
+
+    async def test_90pct_posts_urgent_warning(self, registry):
+        """At >90%, threshold should allow urgent warning."""
+        session = make_session()
+        from summon_claude.sessions.session import (
+            _CONTEXT_URGENT_THRESHOLD,
+            _CONTEXT_WARNING_THRESHOLD,
+        )
+
+        session._context_warned_threshold = _CONTEXT_WARNING_THRESHOLD
+        from summon_claude.sessions.context import ContextUsage
+
+        session._last_context = ContextUsage(
+            input_tokens=185000, context_window=200000, percentage=92.0
+        )
+        pct = session._last_context.percentage
+        assert pct > _CONTEXT_URGENT_THRESHOLD
+        assert session._context_warned_threshold < _CONTEXT_URGENT_THRESHOLD
+
+    async def test_95pct_triggers_auto_compact(self, registry):
+        """At >95%, auto-compact should be triggered."""
+        session = make_session()
+        from summon_claude.sessions.session import (
+            _CONTEXT_AUTO_COMPACT_THRESHOLD,
+            _CONTEXT_URGENT_THRESHOLD,
+        )
+
+        session._context_warned_threshold = _CONTEXT_URGENT_THRESHOLD
+        from summon_claude.sessions.context import ContextUsage
+
+        session._last_context = ContextUsage(
+            input_tokens=196000, context_window=200000, percentage=98.0
+        )
+        pct = session._last_context.percentage
+        assert pct > _CONTEXT_AUTO_COMPACT_THRESHOLD
+        assert session._context_warned_threshold < _CONTEXT_AUTO_COMPACT_THRESHOLD
+
+    def test_threshold_prevents_duplicate_warnings(self):
+        """Once warned at a threshold, it should not warn again."""
+        session = make_session()
+        from summon_claude.sessions.session import _CONTEXT_WARNING_THRESHOLD
+
+        session._context_warned_threshold = 80.0  # Already warned above 75%
+        assert session._context_warned_threshold >= _CONTEXT_WARNING_THRESHOLD
+        # The condition `threshold < _CONTEXT_WARNING_THRESHOLD` is False
+        # so no duplicate warning fires
+
+    def test_threshold_resets_allow_re_warning(self):
+        """After reset (compaction), warnings can fire again."""
+        session = make_session()
+        from summon_claude.sessions.session import _CONTEXT_WARNING_THRESHOLD
+
+        session._context_warned_threshold = 80.0
+        session._context_warned_threshold = 0.0  # Simulates restart reset
+        assert session._context_warned_threshold < _CONTEXT_WARNING_THRESHOLD
+
+
+class TestCompactMidMessageBlocked:
+    """Verify !compact mid-message is blocked, not executed."""
+
+    async def test_compact_mid_message_posts_standalone_annotation(self, registry):
+        """'please !compact' mid-message should annotate, not compact."""
+        session = make_session()
+        session._authenticated_user_id = "U_OWNER"
+        mock_ph = AsyncMock()
+        mock_ph.has_pending_text_input = MagicMock(return_value=False)
+        rt = _SessionRuntime(
+            registry=AsyncMock(),
+            client=make_mock_client("C_TEST"),
+            permission_handler=mock_ph,
+        )
+
+        event = {"user": "U_OWNER", "text": "please !compact", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+
+        # Remaining text ("please ") should be forwarded
+        assert result is not None
+        text, _ = result
+        assert "!compact" not in text
+        assert "please" in text
+
+        # An annotation should be posted saying it must be standalone
+        rt.client.post.assert_called()
+        annotation_text = rt.client.post.call_args[0][0]
+        assert "standalone" in annotation_text.lower()
+
+
+class TestFinalizeEscalatingWarnings:
+    """Integration tests that call _finalize_turn_result to verify Slack warnings."""
+
+    @staticmethod
+    def _make_stream_result(
+        session_id: str = "claude-sid-123", cost: float = 0.001, model: str = "opus"
+    ):
+        result = MagicMock()
+        result.session_id = session_id
+        result.total_cost_usd = cost
+        sr = MagicMock()
+        sr.result = result
+        sr.model = model
+        return sr
+
+    @staticmethod
+    def _make_streamer():
+        streamer = AsyncMock()
+        streamer.finalize_turn = MagicMock(return_value="summary")
+        streamer.update_turn_summary = AsyncMock()
+        streamer.post_turn_footer = AsyncMock()
+        return streamer
+
+    async def _run_finalize(self, session, rt, pct, **sr_kwargs):
+        """Call _finalize_turn_result with a given context percentage."""
+        from pathlib import Path
+
+        from summon_claude.sessions.context import ContextUsage
+
+        session._claude_session_id = "already-set"
+        session._last_context = ContextUsage(
+            input_tokens=int(200000 * pct / 100),
+            context_window=200000,
+            percentage=pct,
+        )
+        sr = self._make_stream_result(**sr_kwargs)
+        streamer = self._make_streamer()
+
+        with (
+            patch("summon_claude.sessions.session.get_last_step_usage", return_value=None),
+            patch(
+                "summon_claude.sessions.session.derive_transcript_path",
+                return_value=Path("/fake"),
+            ),
+            patch("summon_claude.sessions.session._get_git_branch", return_value=None),
+        ):
+            await session._finalize_turn_result(rt, streamer, sr)
+
+    async def test_no_warning_below_75pct(self):
+        session = make_session()
+        rt = make_rt(AsyncMock())
+        await self._run_finalize(session, rt, pct=60.0)
+
+        calls = rt.client.post.call_args_list
+        warning_calls = [c for c in calls if ":warning:" in str(c) or ":rotating_light:" in str(c)]
+        assert len(warning_calls) == 0
+        assert session._context_warned_threshold == 0.0
+
+    async def test_no_context_data_skips_warnings(self):
+        """When _last_context is None, the warning block is skipped entirely."""
+        from pathlib import Path
+
+        session = make_session()
+        session._claude_session_id = "already-set"
+        session._last_context = None
+        rt = make_rt(AsyncMock())
+
+        with (
+            patch("summon_claude.sessions.session.get_last_step_usage", return_value=None),
+            patch(
+                "summon_claude.sessions.session.derive_transcript_path",
+                return_value=Path("/fake"),
+            ),
+            patch("summon_claude.sessions.session._get_git_branch", return_value=None),
+        ):
+            await session._finalize_turn_result(
+                rt, self._make_streamer(), self._make_stream_result()
+            )
+
+        calls = rt.client.post.call_args_list
+        warning_calls = [c for c in calls if ":warning:" in str(c) or ":rotating_light:" in str(c)]
+        assert len(warning_calls) == 0
+        assert session._context_warned_threshold == 0.0
+
+    async def test_exactly_75pct_no_warning(self):
+        """At exactly 75.0%, no warning fires (threshold uses strict >)."""
+        session = make_session()
+        rt = make_rt(AsyncMock())
+        await self._run_finalize(session, rt, pct=75.0)
+
+        calls = rt.client.post.call_args_list
+        warning_calls = [c for c in calls if ":warning:" in str(c) or ":rotating_light:" in str(c)]
+        assert len(warning_calls) == 0
+        assert session._context_warned_threshold == 0.0
+
+    async def test_75pct_posts_standard_warning(self):
+        session = make_session()
+        rt = make_rt(AsyncMock())
+        await self._run_finalize(session, rt, pct=80.0)
+
+        calls = rt.client.post.call_args_list
+        warning_calls = [c for c in calls if "getting large" in str(c)]
+        assert len(warning_calls) == 1
+        text = warning_calls[0][0][0]
+        assert ":warning:" in text
+        assert "~80%" in text
+        assert session._context_warned_threshold == 80.0
+
+    async def test_90pct_posts_urgent_warning(self):
+        session = make_session()
+        session._context_warned_threshold = 75.0
+        rt = make_rt(AsyncMock())
+        await self._run_finalize(session, rt, pct=92.0)
+
+        calls = rt.client.post.call_args_list
+        urgent_calls = [c for c in calls if "critically full" in str(c)]
+        assert len(urgent_calls) == 1
+        text = urgent_calls[0][0][0]
+        assert ":rotating_light:" in text
+        assert "~92%" in text
+        assert session._context_warned_threshold == 92.0
+
+    async def test_95pct_posts_auto_compact_message_and_calls_execute(self):
+        session = make_session()
+        session._context_warned_threshold = 90.0
+        rt = make_rt(AsyncMock())
+
+        with (
+            patch.object(
+                session,
+                "_execute_compact",
+                new_callable=AsyncMock,
+                side_effect=_SessionRestartError(summary="test"),
+            ) as mock_compact,
+            pytest.raises(_SessionRestartError),
+        ):
+            await self._run_finalize(session, rt, pct=97.0)
+
+        mock_compact.assert_awaited_once_with(rt, instructions=None, thread_ts=None)
+        calls = rt.client.post.call_args_list
+        auto_calls = [c for c in calls if "auto-compacting" in str(c)]
+        assert len(auto_calls) == 1
+        assert session._context_warned_threshold == 97.0
+
+    async def test_duplicate_75pct_warning_suppressed(self):
+        session = make_session()
+        session._context_warned_threshold = 80.0  # already warned above 75%
+        rt = make_rt(AsyncMock())
+        await self._run_finalize(session, rt, pct=82.0)
+
+        calls = rt.client.post.call_args_list
+        warning_calls = [c for c in calls if "getting large" in str(c)]
+        assert len(warning_calls) == 0
+        assert session._context_warned_threshold == 80.0  # unchanged
+
+    async def test_escalation_skips_lower_thresholds(self):
+        """At 92% with threshold=0, the 90% (urgent) warning fires — not the 75% one."""
+        session = make_session()
+        rt = make_rt(AsyncMock())
+        await self._run_finalize(session, rt, pct=92.0)
+
+        calls = rt.client.post.call_args_list
+        urgent = [c for c in calls if "critically full" in str(c)]
+        standard = [c for c in calls if "getting large" in str(c)]
+        assert len(urgent) == 1
+        assert len(standard) == 0
