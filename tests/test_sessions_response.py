@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolUseBlock,
+)
 
 from helpers import make_mock_slack_client
 from summon_claude.sessions.response import ResponseStreamer, _format_tool_summary
@@ -13,11 +19,17 @@ from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.router import ThreadRouter
 
 
-def make_streamer() -> tuple[ResponseStreamer, ThreadRouter, AsyncMock]:
+def make_streamer(
+    *,
+    show_thinking: bool = False,
+    max_inline_chars: int = 2500,
+) -> tuple[ResponseStreamer, ThreadRouter, AsyncMock]:
     """Create a ResponseStreamer with a mocked SlackClient."""
     client = make_mock_slack_client()
     router = ThreadRouter(client)
-    streamer = ResponseStreamer(router)
+    streamer = ResponseStreamer(
+        router, show_thinking=show_thinking, max_inline_chars=max_inline_chars
+    )
     return streamer, router, client
 
 
@@ -782,59 +794,49 @@ class TestThinkingBlock:
     """Tests for ThinkingBlock display."""
 
     async def test_thinking_silent_when_disabled(self):
-        client = make_mock_slack_client()
-        router = ThreadRouter(client)
-        streamer = ResponseStreamer(router, show_thinking=False)
-        from claude_agent_sdk import ThinkingBlock
-
+        streamer, _, client = make_streamer(show_thinking=False)
         tb = ThinkingBlock(thinking="deep thoughts", signature="sig")
         msg = AssistantMessage(content=[tb, make_text_block("result")], model="claude-opus-4-6")
         messages = [msg, make_result_message()]
         await streamer.stream_with_flush(agen(messages))
-        # Thinking should NOT appear in posted messages
-        all_texts = [c.args[0] for c in client.post.call_args_list if c.args]
-        assert not any("deep thoughts" in t for t in all_texts)
-
-    async def test_thinking_posted_when_enabled(self):
-        client = make_mock_slack_client()
-        router = ThreadRouter(client)
-        streamer = ResponseStreamer(router, show_thinking=True)
-        from claude_agent_sdk import ThinkingBlock
-
-        tb = ThinkingBlock(thinking="deep thoughts", signature="sig")
-        msg = AssistantMessage(content=[tb, make_text_block("result")], model="claude-opus-4-6")
-        messages = [msg, make_result_message()]
-        await streamer.stream_with_flush(agen(messages))
-        # Check blocks for thinking content
+        # Thinking should NOT appear in posted blocks (where _flush_thinking routes content)
         all_blocks = []
         for c in client.post.call_args_list:
             if c.kwargs.get("blocks"):
                 all_blocks.extend(c.kwargs["blocks"])
-        has_thinking = any("deep thoughts" in str(b) for b in all_blocks)
-        assert has_thinking
+        assert not any("deep thoughts" in str(b) for b in all_blocks), (
+            "Thinking content should not appear when show_thinking=False"
+        )
+
+    async def test_thinking_posted_when_enabled(self):
+        streamer, _, client = make_streamer(show_thinking=True)
+        tb = ThinkingBlock(thinking="deep thoughts", signature="sig")
+        msg = AssistantMessage(content=[tb, make_text_block("result")], model="claude-opus-4-6")
+        messages = [msg, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+        all_blocks = []
+        for c in client.post.call_args_list:
+            if c.kwargs.get("blocks"):
+                all_blocks.extend(c.kwargs["blocks"])
+        assert any("deep thoughts" in str(b) for b in all_blocks), (
+            "Thinking content should appear in posted blocks"
+        )
 
     async def test_thinking_sets_status_deeply(self):
-        client = make_mock_slack_client()
-        router = ThreadRouter(client)
-        streamer = ResponseStreamer(router, show_thinking=False)
+        streamer, _, client = make_streamer(show_thinking=False)
         await streamer.start_turn(1)
         client.set_thread_status.reset_mock()
-        from claude_agent_sdk import ThinkingBlock
-
         tb = ThinkingBlock(thinking="thinking...", signature="sig")
         msg = AssistantMessage(content=[tb], model="claude-opus-4-6")
         await streamer._handle_assistant_message(msg)
-        # Should set "Thinking deeply..."
         calls = [c.args[1] for c in client.set_thread_status.call_args_list]
-        assert "Thinking deeply..." in calls
+        assert "Thinking deeply..." in calls, (
+            "ThinkingBlock should set status to 'Thinking deeply...'"
+        )
 
     async def test_thinking_splits_long_content(self):
         """Thinking content near context element limit should split, not truncate."""
-        client = make_mock_slack_client()
-        router = ThreadRouter(client)
-        streamer = ResponseStreamer(router, show_thinking=True, max_inline_chars=5000)
-        from claude_agent_sdk import ThinkingBlock
-
+        streamer, _, client = make_streamer(show_thinking=True, max_inline_chars=5000)
         # 4000 chars — exceeds single context element (3000) but under max_inline_chars
         long_thinking = "x" * 4000
         tb = ThinkingBlock(thinking=long_thinking, signature="sig")
@@ -842,7 +844,6 @@ class TestThinkingBlock:
         messages = [msg, make_result_message()]
         await streamer.stream_with_flush(agen(messages))
 
-        # Should have multiple thinking posts (split), not truncated to one
         thinking_posts = [
             c
             for c in client.post.call_args_list
@@ -851,6 +852,80 @@ class TestThinkingBlock:
         ]
         assert len(thinking_posts) >= 2, (
             f"Expected multiple thinking posts for split, got {len(thinking_posts)}"
+        )
+
+    async def test_thinking_blocks_accumulate(self):
+        """Multiple ThinkingBlocks before a TextBlock flush as one combined message."""
+        streamer, _, client = make_streamer(show_thinking=True)
+        tb1 = ThinkingBlock(thinking="first thought", signature="sig1")
+        tb2 = ThinkingBlock(thinking="second thought", signature="sig2")
+        msg = AssistantMessage(
+            content=[tb1, tb2, make_text_block("result")], model="claude-opus-4-6"
+        )
+        messages = [msg, make_result_message()]
+
+        real_flush = streamer._flush_thinking
+        with patch.object(streamer, "_flush_thinking", wraps=real_flush) as patched:
+            await streamer.stream_with_flush(agen(messages))
+            assert patched.call_count >= 1, "_flush_thinking should be called before TextBlock"
+
+        # Both contents should appear in a single thinking post (concatenated)
+        thinking_posts = [
+            c
+            for c in client.post.call_args_list
+            if c.kwargs.get("blocks")
+            and any("thought_balloon" in str(b) for b in c.kwargs["blocks"])
+        ]
+        assert len(thinking_posts) == 1, (
+            f"Expected single combined thinking post, got {len(thinking_posts)}"
+        )
+        combined = str(thinking_posts[0].kwargs["blocks"])
+        assert "first thought" in combined, "First thought missing from combined post"
+        assert "second thought" in combined, "Second thought missing from combined post"
+
+    async def test_thinking_flush_on_tool_use(self):
+        """Accumulated thinking flushes when a ToolUseBlock arrives, not just TextBlock."""
+        streamer, _, client = make_streamer(show_thinking=True)
+        tb = ThinkingBlock(thinking="pre-tool thought", signature="sig")
+        tool = make_tool_use_block("Read", {"file_path": "/a.py"})
+        msg = AssistantMessage(content=[tb, tool], model="claude-opus-4-6")
+        messages = [msg, make_result_message()]
+
+        real_flush = streamer._flush_thinking
+        with patch.object(streamer, "_flush_thinking", wraps=real_flush) as patched:
+            await streamer.stream_with_flush(agen(messages))
+            assert patched.call_count >= 1, "_flush_thinking should be triggered by ToolUseBlock"
+
+        all_blocks = []
+        for c in client.post.call_args_list:
+            if c.kwargs.get("blocks"):
+                all_blocks.extend(c.kwargs["blocks"])
+        assert any("pre-tool thought" in str(b) for b in all_blocks), (
+            "Thinking content should appear in posted blocks"
+        )
+
+    async def test_subagent_thinking(self):
+        """ThinkingBlock with parent_tool_use_id still accumulates to turn buffer.
+
+        _handle_thinking_block does not inspect parent_tool_use_id — thinking is
+        always a turn-level concept, not scoped to a subagent thread.
+        """
+        streamer, _, client = make_streamer(show_thinking=True)
+        tb = ThinkingBlock(thinking="subagent thought", signature="sig")
+        msg = AssistantMessage(
+            content=[tb, make_text_block("subagent result")],
+            model="claude-opus-4-6",
+            parent_tool_use_id="tu_subagent",
+        )
+        messages = [msg, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+
+        all_blocks = []
+        for c in client.post.call_args_list:
+            if c.kwargs.get("blocks"):
+                all_blocks.extend(c.kwargs["blocks"])
+        assert any("subagent thought" in str(b) for b in all_blocks), (
+            "Thinking with parent_tool_use_id should still post to active thread"
         )
 
 
