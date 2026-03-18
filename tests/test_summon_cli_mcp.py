@@ -450,7 +450,7 @@ class TestSessionStart:
         """Spawning beyond MAX_SPAWN_DEPTH is rejected."""
         # Build a 3-deep chain: root -> child -> grandchild -> great-grandchild
         mock_reg = AsyncMock()
-        mock_reg.compute_spawn_depth = AsyncMock(return_value=3)
+        mock_reg.compute_spawn_depth = AsyncMock(return_value=2)
 
         local_tools = {
             t.name: t

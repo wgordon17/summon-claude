@@ -751,7 +751,7 @@ class TestComputeSpawnDepth:
     async def test_depth_limit_constant_pinned(self):
         from summon_claude.sessions.registry import MAX_SPAWN_DEPTH
 
-        assert MAX_SPAWN_DEPTH == 3
+        assert MAX_SPAWN_DEPTH == 2
 
 
 class TestWorkflowDefaults:

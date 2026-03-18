@@ -1300,7 +1300,7 @@ class TestHandleSpawn:
         """Guard test: pin spawn limit constants to prevent accidental drift."""
         assert MAX_SPAWN_CHILDREN == 5
         assert MAX_SPAWN_CHILDREN_PM == 15
-        assert MAX_SPAWN_DEPTH == 3
+        assert MAX_SPAWN_DEPTH == 2
 
     async def test_spawn_blocked_at_depth_limit(self):
         """_handle_spawn posts depth message when depth >= MAX_SPAWN_DEPTH."""
@@ -1308,7 +1308,7 @@ class TestHandleSpawn:
         session._authenticated_user_id = "U_OWNER"
         rt = self._make_rt()
 
-        rt.registry.compute_spawn_depth = AsyncMock(return_value=3)
+        rt.registry.compute_spawn_depth = AsyncMock(return_value=2)
 
         with patch("summon_claude.sessions.auth.generate_spawn_token", new=AsyncMock()) as mock_gen:
             await session._handle_spawn(rt, user_id="U_OWNER", thread_ts=None)
@@ -1325,7 +1325,7 @@ class TestHandleSpawn:
         session._channel_id = "C_TEST"
         rt = self._make_rt()
 
-        rt.registry.compute_spawn_depth = AsyncMock(return_value=2)
+        rt.registry.compute_spawn_depth = AsyncMock(return_value=1)
         rt.registry.list_children = AsyncMock(return_value=[])
 
         with (

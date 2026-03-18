@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Shared spawn-child limits — used by both session.py and summon_cli_mcp.py
 MAX_SPAWN_CHILDREN = 5  # regular sessions (!summon start)
 MAX_SPAWN_CHILDREN_PM = 15  # PM sessions (shared pool: MCP + !summon start)
-MAX_SPAWN_DEPTH = 3  # max nesting levels (root → child → grandchild → great-grandchild)
+MAX_SPAWN_DEPTH = 2  # max nesting: root → child → grandchild (3 sessions deep)
 
 _CREATE_SESSIONS = """
 CREATE TABLE IF NOT EXISTS sessions (
