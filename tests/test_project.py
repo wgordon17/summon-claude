@@ -748,6 +748,39 @@ class TestStopProjectManagersOutput:
         # get_project_sessions only called for alpha, not beta
         reg.get_project_sessions.assert_called_once_with("p1")
 
+    async def test_stop_by_name_suspends_child_sessions(self):
+        """project down <name> suspends child sessions for cascade restart."""
+        from summon_claude.cli.project import stop_project_managers
+
+        projects = [
+            {"project_id": "p1", "name": "alpha"},
+            {"project_id": "p2", "name": "beta"},
+        ]
+        alpha_sessions = [
+            {"session_id": "pm-alpha", "session_name": "alpha-pm-abc", "status": "active"},
+            {"session_id": "child-alpha", "session_name": "alpha-worker", "status": "active"},
+        ]
+
+        with (
+            patch("summon_claude.cli.project.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.project.SessionRegistry") as mock_reg_cls,
+            patch("summon_claude.cli.project.daemon_client") as mock_dc,
+        ):
+            reg = AsyncMock()
+            reg.list_projects = AsyncMock(return_value=projects)
+            reg.get_project_sessions = AsyncMock(return_value=alpha_sessions)
+            reg.update_status = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_dc.stop_session = AsyncMock(return_value=True)
+
+            result = await stop_project_managers(name="alpha")
+
+        assert "pm-alpha" in result
+        assert "child-alpha" in result
+        # Child session must be marked suspended for cascade restart
+        reg.update_status.assert_called_once_with("child-alpha", "suspended")
+
     async def test_stop_by_name_unknown_project_raises(self):
         """project down <name> raises when project not found."""
         from summon_claude.cli.project import stop_project_managers
