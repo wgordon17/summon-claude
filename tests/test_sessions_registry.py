@@ -725,6 +725,35 @@ class TestSpawnTokens:
         assert session["authenticated_user_id"] == "U123"
 
 
+class TestComputeSpawnDepth:
+    async def test_root_session_has_depth_zero(self, registry):
+        await registry.register("root-1", 1234, "/tmp")
+        depth = await registry.compute_spawn_depth("root-1")
+        assert depth == 0
+
+    async def test_child_has_depth_one(self, registry):
+        await registry.register("root-2", 1234, "/tmp")
+        await registry.register("child-2", 1234, "/tmp", parent_session_id="root-2")
+        depth = await registry.compute_spawn_depth("child-2")
+        assert depth == 1
+
+    async def test_grandchild_has_depth_two(self, registry):
+        await registry.register("root-3", 1234, "/tmp")
+        await registry.register("child-3", 1234, "/tmp", parent_session_id="root-3")
+        await registry.register("grand-3", 1234, "/tmp", parent_session_id="child-3")
+        depth = await registry.compute_spawn_depth("grand-3")
+        assert depth == 2
+
+    async def test_nonexistent_session_returns_zero(self, registry):
+        depth = await registry.compute_spawn_depth("nonexistent")
+        assert depth == 0
+
+    async def test_depth_limit_constant_pinned(self):
+        from summon_claude.sessions.registry import MAX_SPAWN_DEPTH
+
+        assert MAX_SPAWN_DEPTH == 2
+
+
 class TestWorkflowDefaults:
     async def test_get_workflow_defaults_empty_by_default(self, registry):
         result = await registry.get_workflow_defaults()

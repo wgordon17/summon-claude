@@ -480,11 +480,15 @@ def project_up(ctx: click.Context) -> None:
 
 
 @cmd_project.command("down")
+@click.argument("name", required=False, default=None)
 @click.pass_context
-def project_down(ctx: click.Context) -> None:
-    """Stop all active PM sessions for registered projects."""
+def project_down(ctx: click.Context, name: str | None) -> None:
+    """Stop PM sessions for registered projects.
+
+    If NAME is given, stop only that project's sessions. Otherwise stop all.
+    """
     try:
-        asyncio.run(stop_project_managers())
+        asyncio.run(stop_project_managers(name=name))
     except click.ClickException:
         raise
     except Exception as e:

@@ -446,6 +446,48 @@ class TestSessionStart:
     def test_max_active_children_constant(self):
         assert MAX_SPAWN_CHILDREN_PM == 15
 
+    async def test_depth_limit_blocks_spawn(self, tmp_path):
+        """Spawning beyond MAX_SPAWN_DEPTH is rejected."""
+        # Build a 3-deep chain: root -> child -> grandchild -> great-grandchild
+        mock_reg = AsyncMock()
+        mock_reg.compute_spawn_depth = AsyncMock(return_value=2)
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=mock_reg,
+                session_id="deep-session",
+                authenticated_user_id="U_DEEP",
+                channel_id="C_DEEP",
+                cwd=str(tmp_path),
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "too-deep"})
+        assert result["is_error"] is True
+        text = result["content"][0]["text"]
+        assert "depth limit" in text
+
+    async def test_depth_check_error_blocks_spawn(self, tmp_path):
+        """Depth check failure is fail-closed."""
+        mock_reg = AsyncMock()
+        mock_reg.compute_spawn_depth = AsyncMock(side_effect=RuntimeError("DB error"))
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=mock_reg,
+                session_id="err-session",
+                authenticated_user_id="U_ERR",
+                channel_id="C_ERR",
+                cwd=str(tmp_path),
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "should-fail"})
+        assert result["is_error"] is True
+        assert "spawn depth" in result["content"][0]["text"]
+
 
 class TestSessionStop:
     async def test_not_found(self, tools):

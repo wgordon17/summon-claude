@@ -19,7 +19,11 @@ from summon_claude.sessions.commands import (
     CommandDef,
     CommandResult,
 )
-from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN, MAX_SPAWN_CHILDREN_PM
+from summon_claude.sessions.registry import (
+    MAX_SPAWN_CHILDREN,
+    MAX_SPAWN_CHILDREN_PM,
+    MAX_SPAWN_DEPTH,
+)
 from summon_claude.sessions.session import (
     SessionOptions,
     SummonSession,
@@ -707,6 +711,46 @@ class TestProcessIncomingEvent:
         assert text == "Hello Claude"
         assert ts == "123.456"
 
+    async def test_synthetic_event_bypasses_preprocessing(self):
+        """Synthetic events (scan triggers) bypass all Slack preprocessing."""
+        session = make_session()
+        rt = self._make_rt()
+
+        event = {
+            "type": "message",
+            "text": "[SCAN TRIGGER] Perform your scheduled scan.",
+            "user": "U_PM_OWNER",
+            "_synthetic": True,
+        }
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is not None
+        text, ts = result
+        assert "[SCAN TRIGGER]" in text
+        assert ts is None  # synthetic events have no Slack ts
+
+    async def test_synthetic_event_without_user_id_still_passes(self):
+        """Synthetic events bypass user_id validation."""
+        session = make_session()
+        rt = self._make_rt()
+
+        event = {"text": "Scan now", "_synthetic": True}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is not None
+        text, ts = result
+        assert text == "Scan now"
+        assert ts is None
+
+    async def test_synthetic_event_empty_text_filtered(self):
+        """Synthetic events with empty text are filtered out."""
+        session = make_session()
+        rt = self._make_rt()
+
+        event = {"text": "", "_synthetic": True}
+        result = await session._process_incoming_event(event, rt)
+        assert result is None
+
     async def test_subtype_message_filtered(self):
         """Messages with a subtype (bot messages etc.) are filtered out."""
         session = make_session()
@@ -1256,6 +1300,49 @@ class TestHandleSpawn:
         """Guard test: pin spawn limit constants to prevent accidental drift."""
         assert MAX_SPAWN_CHILDREN == 5
         assert MAX_SPAWN_CHILDREN_PM == 15
+        assert MAX_SPAWN_DEPTH == 2
+
+    async def test_spawn_blocked_at_depth_limit(self):
+        """_handle_spawn posts depth message when depth >= MAX_SPAWN_DEPTH."""
+        session = make_session()
+        session._authenticated_user_id = "U_OWNER"
+        rt = self._make_rt()
+
+        rt.registry.compute_spawn_depth = AsyncMock(return_value=2)
+
+        with patch("summon_claude.sessions.auth.generate_spawn_token", new=AsyncMock()) as mock_gen:
+            await session._handle_spawn(rt, user_id="U_OWNER", thread_ts=None)
+
+        mock_gen.assert_not_called()
+        rt.client.post.assert_awaited_once()
+        text = rt.client.post.call_args[0][0]
+        assert "Cannot spawn beyond depth" in text
+
+    async def test_spawn_allowed_below_depth_limit(self):
+        """_handle_spawn proceeds when depth < MAX_SPAWN_DEPTH."""
+        session = make_session(session_id="parent-ok", cwd="/tmp")
+        session._authenticated_user_id = "U_OWNER"
+        session._channel_id = "C_TEST"
+        rt = self._make_rt()
+
+        rt.registry.compute_spawn_depth = AsyncMock(return_value=1)
+        rt.registry.list_children = AsyncMock(return_value=[])
+
+        with (
+            patch(
+                "summon_claude.sessions.auth.generate_spawn_token",
+                new=AsyncMock(return_value=AsyncMock(token="tok", parent_session_id="parent-ok")),
+            ),
+            patch(
+                "summon_claude.cli.daemon_client.create_session_with_spawn_token",
+                new=AsyncMock(return_value="child-ok"),
+            ),
+        ):
+            await session._handle_spawn(rt, user_id="U_OWNER", thread_ts=None)
+
+        rt.client.post.assert_awaited_once()
+        text = rt.client.post.call_args[0][0]
+        assert "Spawned session started" in text
 
     async def test_spawn_list_children_failure_blocks_spawn(self):
         """If list_children raises, spawn should be blocked (fail-closed)."""
