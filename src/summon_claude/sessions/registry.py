@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Shared spawn-child limits — used by both session.py and summon_cli_mcp.py
 MAX_SPAWN_CHILDREN = 5  # regular sessions (!summon start)
 MAX_SPAWN_CHILDREN_PM = 15  # PM sessions (shared pool: MCP + !summon start)
+MAX_SPAWN_DEPTH = 3  # max nesting levels (root → child → grandchild → great-grandchild)
 
 _CREATE_SESSIONS = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -418,6 +419,33 @@ class SessionRegistry:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def compute_spawn_depth(self, session_id: str) -> int:
+        """Count ancestor levels by following parent_session_id chain.
+
+        Returns 0 for root sessions (no parent), 1 for direct children, etc.
+        """
+        db = self._check_connected()
+        depth = 0
+        current: str | None = session_id
+        visited: set[str] = set()
+
+        while current:
+            if current in visited:
+                logger.error("Circular parent chain detected at session %s", current)
+                break
+            visited.add(current)
+            async with db.execute(
+                "SELECT parent_session_id FROM sessions WHERE session_id = ?",
+                (current,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row or not row[0]:
+                break
+            depth += 1
+            current = row[0]
+
+        return depth
 
     async def list_stale(self) -> list[dict]:
         """Return sessions with status pending_auth/active whose PIDs are dead."""

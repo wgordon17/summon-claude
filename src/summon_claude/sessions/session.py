@@ -64,6 +64,7 @@ from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.sessions.registry import (
     MAX_SPAWN_CHILDREN,
     MAX_SPAWN_CHILDREN_PM,
+    MAX_SPAWN_DEPTH,
     SessionRegistry,
     slugify_for_channel,
 )
@@ -2187,7 +2188,7 @@ class SummonSession:
                     logger.warning("Failed to post command response: %s", e)
                     break
 
-    async def _handle_spawn(self, rt: _SessionRuntime, user_id: str, thread_ts: str | None) -> None:
+    async def _handle_spawn(self, rt: _SessionRuntime, user_id: str, thread_ts: str | None) -> None:  # noqa: PLR0912, PLR0915
         """Handle !summon start: verify caller, generate spawn token, create child session."""
         if user_id != self._authenticated_user_id:
             try:
@@ -2201,6 +2202,22 @@ class SummonSession:
 
         from summon_claude.cli import daemon_client  # noqa: PLC0415
         from summon_claude.sessions.auth import generate_spawn_token  # noqa: PLC0415
+
+        # Enforce spawn depth limit to prevent recursive chains
+        try:
+            depth = await rt.registry.compute_spawn_depth(self._session_id)
+            if depth >= MAX_SPAWN_DEPTH:
+                try:
+                    await rt.client.post(
+                        f":warning: Cannot spawn beyond depth {MAX_SPAWN_DEPTH}. "
+                        f"Current nesting level: {depth}.",
+                        thread_ts=thread_ts,
+                    )
+                except Exception as e2:
+                    logger.debug("Failed to post spawn depth message: %s", e2)
+                return
+        except Exception as e:
+            logger.error("Failed to verify spawn depth: %s", e)
 
         # Enforce active-child cap before spawning (PM sessions share the
         # higher limit with the MCP session_spawn tool)

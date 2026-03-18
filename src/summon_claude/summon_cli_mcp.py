@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
-from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN_PM, SessionRegistry
+from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN_PM, MAX_SPAWN_DEPTH, SessionRegistry
 
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
@@ -195,6 +195,34 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0915
                             f"directory ({cwd}). Cannot spawn sessions in "
                             f"parent or unrelated directories."
                         ),
+                    }
+                ],
+                "is_error": True,
+            }
+
+        # Enforce spawn depth limit
+        try:
+            depth = await registry.compute_spawn_depth(session_id)
+            if depth >= MAX_SPAWN_DEPTH:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Error: spawn depth limit reached ({depth}/{MAX_SPAWN_DEPTH}). "
+                                "Cannot spawn sessions this deep in the hierarchy."
+                            ),
+                        }
+                    ],
+                    "is_error": True,
+                }
+        except Exception as e:
+            logger.error("Failed to verify spawn depth: %s", e)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Error: could not verify spawn depth. Try again.",
                     }
                 ],
                 "is_error": True,

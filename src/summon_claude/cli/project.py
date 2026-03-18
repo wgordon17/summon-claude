@@ -89,8 +89,11 @@ async def launch_project_managers() -> None:
     click.echo("Run 'summon project list' to check status.")
 
 
-async def stop_project_managers() -> list[str]:
-    """Stop all active project sessions (PM + children) for registered projects.
+async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noqa: PLR0912
+    """Stop active project sessions (PM + children) for registered projects.
+
+    If *name* is given, only stop sessions for that project.
+    Otherwise stop all registered projects.
 
     PM sessions are stopped normally. Child sessions are marked ``suspended``
     so ``project up`` can deterministically restart them.
@@ -108,6 +111,11 @@ async def stop_project_managers() -> list[str]:
         if not projects:
             click.echo("No projects registered.")
             return []
+
+        if name:
+            projects = [p for p in projects if p["name"] == name]
+            if not projects:
+                raise click.ClickException(f"No project named {name!r}.")
 
         for project in projects:
             pname = project["name"]
