@@ -209,6 +209,9 @@ class SessionScheduler:
                         await self._on_change()
                     return
 
+                # Guard against tight loop if CronSim returns past/current time
+                await asyncio.sleep(1)
+
         except asyncio.CancelledError:
             return
         except Exception:
