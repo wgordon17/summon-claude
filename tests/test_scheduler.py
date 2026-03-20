@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from summon_claude.sessions.scheduler import ScheduledJob, SessionScheduler
+from summon_claude.sessions.scheduler import ScheduledJob, SessionScheduler, explain_cron
 
 
 @pytest.fixture
@@ -28,7 +28,6 @@ def scheduler(event_queue: asyncio.Queue, shutdown_event: asyncio.Event) -> Sess
 
 
 class TestCreateJob:
-    @pytest.mark.asyncio
     async def test_create_job(self, scheduler: SessionScheduler) -> None:
         job = await scheduler.create("*/5 * * * *", "test prompt")
         assert job.id
@@ -38,30 +37,25 @@ class TestCreateJob:
         assert job.internal is False
         assert len(scheduler.list_jobs()) == 1
 
-    @pytest.mark.asyncio
     async def test_create_internal_job(self, scheduler: SessionScheduler) -> None:
         job = await scheduler.create("*/5 * * * *", "scan", internal=True, max_lifetime_s=0)
         assert job.internal is True
         assert job.max_lifetime_s == 0
 
-    @pytest.mark.asyncio
     async def test_create_non_recurring(self, scheduler: SessionScheduler) -> None:
         job = await scheduler.create("0 12 * * *", "once", recurring=False)
         assert job.recurring is False
 
 
 class TestDeleteJob:
-    @pytest.mark.asyncio
     async def test_delete_job(self, scheduler: SessionScheduler) -> None:
         job = await scheduler.create("*/5 * * * *", "test")
         assert await scheduler.delete(job.id) is True
         assert len(scheduler.list_jobs()) == 0
 
-    @pytest.mark.asyncio
     async def test_delete_nonexistent(self, scheduler: SessionScheduler) -> None:
         assert await scheduler.delete("nonexistent") is False
 
-    @pytest.mark.asyncio
     async def test_delete_internal_refused(self, scheduler: SessionScheduler) -> None:
         job = await scheduler.create("*/5 * * * *", "scan", internal=True)
         with pytest.raises(ValueError, match="Cannot delete system-created jobs"):
@@ -70,14 +64,12 @@ class TestDeleteJob:
 
 
 class TestLimits:
-    @pytest.mark.asyncio
     async def test_max_agent_jobs(self, scheduler: SessionScheduler) -> None:
         for i in range(10):
             await scheduler.create("*/5 * * * *", f"job {i}")
         with pytest.raises(ValueError, match="Maximum of 10"):
             await scheduler.create("*/5 * * * *", "one too many")
 
-    @pytest.mark.asyncio
     async def test_internal_jobs_bypass_agent_limit(self, scheduler: SessionScheduler) -> None:
         for i in range(10):
             await scheduler.create("*/5 * * * *", f"job {i}")
@@ -85,7 +77,6 @@ class TestLimits:
         job = await scheduler.create("*/5 * * * *", "internal", internal=True)
         assert job.internal is True
 
-    @pytest.mark.asyncio
     async def test_min_interval_enforced(self, scheduler: SessionScheduler) -> None:
         # */1 * * * * fires every minute (60s) — should pass
         await scheduler.create("*/1 * * * *", "every minute")
@@ -93,13 +84,11 @@ class TestLimits:
         # standard 5-field syntax (minimum is 1 minute), so min interval
         # enforcement primarily guards against future CronSim extensions.
 
-    @pytest.mark.asyncio
     async def test_prompt_truncation(self, scheduler: SessionScheduler) -> None:
         long_prompt = "x" * 2000
         job = await scheduler.create("*/5 * * * *", long_prompt)
         assert len(job.prompt) == 1000
 
-    @pytest.mark.asyncio
     async def test_internal_jobs_skip_prompt_truncation(self, scheduler: SessionScheduler) -> None:
         long_prompt = "x" * 2000
         job = await scheduler.create("*/5 * * * *", long_prompt, internal=True)
@@ -107,7 +96,6 @@ class TestLimits:
 
 
 class TestValidation:
-    @pytest.mark.asyncio
     async def test_5_field_validation(self, scheduler: SessionScheduler) -> None:
         with pytest.raises(ValueError, match="exactly 5 fields"):
             await scheduler.create("@reboot", "test")
@@ -116,7 +104,6 @@ class TestValidation:
         with pytest.raises(ValueError, match="exactly 5 fields"):
             await scheduler.create("* * *", "test")
 
-    @pytest.mark.asyncio
     async def test_invalid_cron_expression(self, scheduler: SessionScheduler) -> None:
         from cronsim import CronSimError
 
@@ -125,7 +112,6 @@ class TestValidation:
 
 
 class TestCancelAll:
-    @pytest.mark.asyncio
     async def test_cancel_all(self, scheduler: SessionScheduler) -> None:
         await scheduler.create("*/5 * * * *", "job1")
         await scheduler.create("*/5 * * * *", "job2")
@@ -137,14 +123,12 @@ class TestCancelAll:
 
 
 class TestOnChangeCallback:
-    @pytest.mark.asyncio
     async def test_callback_on_create(self, scheduler: SessionScheduler) -> None:
         callback = AsyncMock()
         scheduler._on_change = callback
         await scheduler.create("*/5 * * * *", "test")
         callback.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_callback_on_delete(self, scheduler: SessionScheduler) -> None:
         job = await scheduler.create("*/5 * * * *", "test")
         callback = AsyncMock()
@@ -152,21 +136,19 @@ class TestOnChangeCallback:
         await scheduler.delete(job.id)
         callback.assert_awaited_once()
 
-    @pytest.mark.asyncio
     async def test_no_callback_no_crash(self, scheduler: SessionScheduler) -> None:
         scheduler._on_change = None
         await scheduler.create("*/5 * * * *", "test")  # No crash
 
 
 class TestJobFiring:
-    @pytest.mark.asyncio
     async def test_job_fires_synthetic_event(
         self, event_queue: asyncio.Queue, shutdown_event: asyncio.Event
     ) -> None:
         scheduler = SessionScheduler(event_queue, shutdown_event)
 
         # Create a real job, then patch _run_job's CronSim to fire immediately
-        now = datetime.now()  # noqa: DTZ005
+        now = datetime.now(UTC)
         immediate = now + timedelta(milliseconds=10)
 
         # Create job normally (validates cron), then cancel its task and
@@ -193,7 +175,6 @@ class TestJobFiring:
 
         scheduler.cancel_all()
 
-    @pytest.mark.asyncio
     async def test_internal_job_system_prefix(
         self, event_queue: asyncio.Queue, shutdown_event: asyncio.Event
     ) -> None:
@@ -205,7 +186,7 @@ class TestJobFiring:
             with contextlib.suppress(asyncio.CancelledError):
                 await job.task
 
-        now = datetime.now()  # noqa: DTZ005
+        now = datetime.now(UTC)
         immediate = now + timedelta(milliseconds=10)
 
         with patch("summon_claude.sessions.scheduler.CronSim") as mock_cronsim:
@@ -221,7 +202,6 @@ class TestJobFiring:
 
 
 class TestJobExpiry:
-    @pytest.mark.asyncio
     async def test_job_expires(
         self, event_queue: asyncio.Queue, shutdown_event: asyncio.Event
     ) -> None:
@@ -230,7 +210,7 @@ class TestJobExpiry:
         # Create a job that's already expired
         job = await scheduler.create("*/5 * * * *", "expired", max_lifetime_s=1)
         # Backdate creation to make it expired
-        job.created_at = datetime.now() - timedelta(seconds=10)  # noqa: DTZ005
+        job.created_at = datetime.now(UTC) - timedelta(seconds=10)
 
         # Give the task time to notice expiry
         await asyncio.sleep(0.2)
@@ -239,6 +219,26 @@ class TestJobExpiry:
         assert job.id not in {j.id for j in scheduler.list_jobs()}
 
         scheduler.cancel_all()
+
+
+class TestExplainCron:
+    def test_returns_tuple(self) -> None:
+        result = explain_cron("*/5 * * * *")
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        explain, next_fire = result
+        assert isinstance(explain, str)
+        assert isinstance(next_fire, str)
+        assert next_fire != "—"
+
+    def test_invalid_expression_fallback(self) -> None:
+        explain, next_fire = explain_cron("not a cron")
+        assert explain == "not a cron"
+        assert next_fire == "—"
+
+    def test_valid_expression_has_human_readable(self) -> None:
+        explain, _ = explain_cron("0 9 * * 1-5")
+        assert explain != "0 9 * * 1-5"  # Should be human-readable, not raw
 
 
 class TestGuardTests:

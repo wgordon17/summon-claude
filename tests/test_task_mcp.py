@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from summon_claude.sessions.registry import SessionRegistry
+from summon_claude.sessions.scheduler import SessionScheduler
 from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
+
+
+def _make_scheduler() -> SessionScheduler:
+    return SessionScheduler(asyncio.Queue(maxsize=100), asyncio.Event())
 
 
 @pytest.fixture
@@ -25,6 +32,7 @@ def tools(task_registry):
             authenticated_user_id="U_TASK",
             channel_id="C_TASK",
             cwd="/tmp",
+            scheduler=_make_scheduler(),
         )
     }
 
@@ -51,6 +59,7 @@ class TestTaskCreate:
             authenticated_user_id="U_TASK",
             channel_id="C_TASK",
             cwd="/tmp",
+            scheduler=_make_scheduler(),
             on_task_change=_cb,
         )
         create_tool = next(t for t in tool_list if t.name == "TaskCreate")
@@ -86,6 +95,29 @@ class TestTaskList:
         text = result["content"][0]["text"]
         assert "No tasks" in text
 
+    async def test_cap_excludes_completed_tasks(self, tools, task_registry):
+        """Completing tasks frees cap space for new ones."""
+        from summon_claude.summon_cli_mcp import _MAX_TASKS_PER_SESSION
+
+        # Create tasks up to the cap
+        task_ids = []
+        for i in range(_MAX_TASKS_PER_SESSION):
+            r = await tools["TaskCreate"].handler({"content": f"t-{i}", "priority": "low"})
+            assert not r.get("is_error"), f"Failed to create task {i}: {r}"
+            task_ids.append(r["content"][0]["text"].split()[-1].rstrip("."))
+
+        # Next create should fail
+        r = await tools["TaskCreate"].handler({"content": "overflow", "priority": "low"})
+        assert r.get("is_error") is True
+        assert "Maximum" in r["content"][0]["text"]
+
+        # Complete one task
+        await tools["TaskUpdate"].handler({"id": task_ids[0], "status": "completed"})
+
+        # Now creation should succeed
+        r = await tools["TaskCreate"].handler({"content": "after-complete", "priority": "low"})
+        assert not r.get("is_error"), f"Should succeed after completing a task: {r}"
+
     async def test_cross_session_pm_only(self, task_registry):
         non_pm_tools = {
             t.name: t
@@ -95,6 +127,7 @@ class TestTaskList:
                 authenticated_user_id="U_TASK",
                 channel_id="C_TASK",
                 cwd="/tmp",
+                scheduler=_make_scheduler(),
                 is_pm=False,
             )
         }

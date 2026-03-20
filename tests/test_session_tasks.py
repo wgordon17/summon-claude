@@ -317,3 +317,29 @@ class TestGetTasksForSessions:
     async def test_get_tasks_for_sessions_empty_input(self, registry: SessionRegistry):
         result = await registry.get_tasks_for_sessions([], authenticated_user_id="user-1")
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Foreign key and CASCADE tests
+# ---------------------------------------------------------------------------
+
+
+class TestForeignKeys:
+    async def test_foreign_keys_pragma_enabled(self, registry: SessionRegistry):
+        db = registry._check_connected()
+        async with db.execute("PRAGMA foreign_keys") as cursor:
+            row = await cursor.fetchone()
+        assert row[0] == 1
+
+    async def test_cascade_delete_removes_tasks(self, registry: SessionRegistry):
+        await _register_session(registry, "sess-cascade")
+        await registry.create_task("sess-cascade", make_task_id(), "Task 1")
+        await registry.create_task("sess-cascade", make_task_id(), "Task 2")
+        tasks_before = await registry.list_tasks("sess-cascade")
+        assert len(tasks_before) == 2
+
+        db = registry._check_connected()
+        await db.execute("DELETE FROM sessions WHERE session_id = ?", ("sess-cascade",))
+        await db.commit()
+        tasks_after = await registry.list_tasks("sess-cascade")
+        assert tasks_after == []

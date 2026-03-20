@@ -150,6 +150,7 @@ class SessionRegistry:
         await self._db.execute("PRAGMA busy_timeout=5000")
         await self._db.execute("PRAGMA synchronous=NORMAL")
         await self._db.execute("PRAGMA journal_size_limit=67108864")
+        await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.execute(_CREATE_SESSIONS)
         await self._db.execute(_CREATE_PENDING_AUTH_TOKENS)
         await self._db.execute(_CREATE_AUDIT_LOG)

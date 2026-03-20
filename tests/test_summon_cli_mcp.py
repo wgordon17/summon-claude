@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import AsyncMock
 
 import pytest
 
 from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN_PM, SessionRegistry
+from summon_claude.sessions.scheduler import SessionScheduler
 from summon_claude.summon_cli_mcp import (
     _SENSITIVE_FIELDS,
     create_summon_cli_mcp_server,
     create_summon_cli_mcp_tools,
 )
+
+
+def _make_scheduler() -> SessionScheduler:
+    return SessionScheduler(asyncio.Queue(maxsize=100), asyncio.Event())
 
 
 @pytest.fixture
@@ -81,6 +87,7 @@ def tools(populated_registry: SessionRegistry) -> dict:
             authenticated_user_id="U_OWNER",
             channel_id="C100",
             cwd="/home/user/proj",
+            scheduler=_make_scheduler(),
             is_pm=True,
         )
     }
@@ -219,6 +226,7 @@ class TestSessionStart:
                 authenticated_user_id="U_OWNER",
                 channel_id="C100",
                 cwd=str(child),
+                scheduler=_make_scheduler(),
                 is_pm=True,
             )
         }
@@ -258,6 +266,7 @@ class TestSessionStart:
                 authenticated_user_id="U_OWNER",
                 channel_id="C100",
                 cwd=str(parent),
+                scheduler=_make_scheduler(),
                 is_pm=True,
                 _generate_spawn_token=mock_spawn,
                 _ipc_create_session=mock_ipc,
@@ -284,6 +293,7 @@ class TestSessionStart:
                 authenticated_user_id="U_OWNER",
                 channel_id="C100",
                 cwd=str(parent),
+                scheduler=_make_scheduler(),
                 is_pm=True,
             )
         }
@@ -318,6 +328,7 @@ class TestSessionStart:
                 authenticated_user_id="U_OWNER",
                 channel_id="C100",
                 cwd=str(tmp_path),
+                scheduler=_make_scheduler(),
                 is_pm=True,
                 _generate_spawn_token=mock_spawn,
                 _ipc_create_session=mock_ipc,
@@ -361,6 +372,7 @@ class TestSessionStart:
                 authenticated_user_id="U_PM",
                 channel_id="C_PM",
                 cwd=str(tmp_path),
+                scheduler=_make_scheduler(),
                 is_pm=True,
             )
         }
@@ -421,6 +433,7 @@ class TestSessionStart:
                 authenticated_user_id="U_PM2",
                 channel_id="C_PM2",
                 cwd=str(tmp_path),
+                scheduler=_make_scheduler(),
                 is_pm=True,
                 _generate_spawn_token=mock_spawn,
                 _ipc_create_session=mock_ipc,
@@ -443,6 +456,7 @@ class TestSessionStart:
                 authenticated_user_id="U_PM",
                 channel_id="C_PM",
                 cwd=str(tmp_path),
+                scheduler=_make_scheduler(),
                 is_pm=True,
             )
         }
@@ -468,6 +482,7 @@ class TestSessionStart:
                 authenticated_user_id="U_DEEP",
                 channel_id="C_DEEP",
                 cwd=str(tmp_path),
+                scheduler=_make_scheduler(),
                 is_pm=True,
             )
         }
@@ -490,6 +505,7 @@ class TestSessionStart:
                 authenticated_user_id="U_ERR",
                 channel_id="C_ERR",
                 cwd=str(tmp_path),
+                scheduler=_make_scheduler(),
                 is_pm=True,
             )
         }
@@ -535,6 +551,7 @@ class TestSessionStop:
                 authenticated_user_id="U_OWNER",
                 channel_id="C100",
                 cwd="/home/user/proj",
+                scheduler=_make_scheduler(),
                 is_pm=True,
                 _ipc_stop_session=mock_ipc,
             )
@@ -555,6 +572,7 @@ class TestSessionStop:
                 authenticated_user_id="U_OWNER",
                 channel_id="C100",
                 cwd="/home/user/proj",
+                scheduler=_make_scheduler(),
                 is_pm=True,
                 _ipc_stop_session=mock_ipc,
             )
@@ -567,6 +585,13 @@ class TestSessionStop:
 class TestSensitiveFields:
     def test_sensitive_fields_pinned(self):
         assert {"pid", "error_message", "authenticated_user_id"} == _SENSITIVE_FIELDS
+
+
+class TestGuardConstants:
+    def test_max_tasks_per_session_pinned(self):
+        from summon_claude.summon_cli_mcp import _MAX_TASKS_PER_SESSION
+
+        assert _MAX_TASKS_PER_SESSION == 100
 
 
 class TestListChildren:
@@ -817,14 +842,14 @@ class TestSessionResume:
 class TestMCPServerCreation:
     def test_returns_valid_config(self, populated_registry):
         config = create_summon_cli_mcp_server(
-            populated_registry, "sid", "uid", "cid", "/tmp", scheduler=make_scheduler()
+            populated_registry, "sid", "uid", "cid", "/tmp", scheduler=_make_scheduler()
         )
         assert config["name"] == "summon-cli"
         assert config["type"] == "sdk"
 
     def test_tool_count(self, populated_registry):
         tools = create_summon_cli_mcp_tools(
-            populated_registry, "sid", "uid", "cid", "/tmp", scheduler=make_scheduler()
+            populated_registry, "sid", "uid", "cid", "/tmp", scheduler=_make_scheduler()
         )
         # session_list, session_info, cron x3, task x3 = 8 (no PM tools)
         assert len(tools) == 8

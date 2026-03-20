@@ -7,7 +7,7 @@ import logging
 import secrets
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from cronsim import CronSim
@@ -25,8 +25,27 @@ class ScheduledJob:
     recurring: bool = True
     internal: bool = False
     task: asyncio.Task[None] | None = field(default=None, repr=False)
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     max_lifetime_s: int = 86400  # 24h default, 0 = no limit for internal
+
+
+def explain_cron(cron_expr: str) -> tuple[str, str]:
+    """Return (human_readable, next_fire_time) for a cron expression.
+
+    CronSim uses local time (matching scheduler's ``_run_job``).
+    """
+    now = datetime.now().astimezone()
+    try:
+        sim = CronSim(cron_expr, now)
+        explain = sim.explain()
+    except Exception:
+        return cron_expr, "—"
+    try:
+        nxt = next(iter(sim))
+        next_fire = nxt.strftime("%H:%M")
+    except Exception:
+        next_fire = "—"
+    return explain, next_fire
 
 
 class SessionScheduler:
@@ -67,7 +86,8 @@ class SessionScheduler:
             raise ValueError(msg)
 
         # Validate via CronSim (raises ValueError on invalid)
-        CronSim(cron_expr, datetime.now())  # noqa: DTZ005 — CronSim needs naive local time
+        # Use local time — cron expressions are interpreted in the user's timezone
+        CronSim(cron_expr, datetime.now().astimezone())
 
         if not internal:
             self._check_min_interval(cron_expr)
@@ -93,7 +113,7 @@ class SessionScheduler:
             recurring=recurring,
             internal=internal,
             max_lifetime_s=max_lifetime_s,
-            created_at=datetime.now(),  # noqa: DTZ005
+            created_at=datetime.now(UTC),
         )
         job.task = asyncio.create_task(self._run_job(job))
         self._jobs[job.id] = job
@@ -138,7 +158,7 @@ class SessionScheduler:
 
     def _check_min_interval(self, cron_expr: str) -> None:
         """Ensure minimum interval between fires for agent jobs."""
-        now = datetime.now()  # noqa: DTZ005 — CronSim needs naive local time
+        now = datetime.now().astimezone()
         it = iter(CronSim(cron_expr, now))
         try:
             first = next(it)
@@ -157,9 +177,11 @@ class SessionScheduler:
         """Run a scheduled job, firing at each cron match."""
         try:
             while not self._shutdown_event.is_set():
-                now = datetime.now()  # noqa: DTZ005
+                # Local time for CronSim — cron expressions are in user's timezone
+                now = datetime.now().astimezone()
 
-                # Check lifetime expiry
+                # Check lifetime expiry (created_at is UTC — subtraction works
+                # across timezones because both are aware)
                 if job.max_lifetime_s > 0:
                     elapsed = (now - job.created_at).total_seconds()
                     if elapsed >= job.max_lifetime_s:
@@ -190,7 +212,7 @@ class SessionScheduler:
                         pass  # Timer elapsed, fire the job
 
                 # Inject synthetic event
-                timestamp = datetime.now().strftime("%H:%M:%S")  # noqa: DTZ005
+                timestamp = datetime.now().astimezone().strftime("%H:%M:%S")
                 prefix = f"[SYSTEM:{job.id}]" if job.internal else f"[CRON:{job.id}]"
                 event: dict[str, Any] = {
                     "type": "message",

@@ -7,6 +7,13 @@ import asyncio
 from summon_claude.sessions.scheduler import SessionScheduler
 from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
 
+
+def _make_scheduler() -> SessionScheduler:
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    ev = asyncio.Event()
+    return SessionScheduler(q, ev)
+
+
 # ---------------------------------------------------------------------------
 # Scheduler + session lifecycle integration
 # ---------------------------------------------------------------------------
@@ -148,6 +155,7 @@ class TestCanvasSyncIntegration:
             authenticated_user_id="U_INT",
             channel_id="C_INT",
             cwd="/tmp",
+            scheduler=_make_scheduler(),
             on_task_change=mock_sync,
         )
         create_tool = next(t for t in tools if t.name == "TaskCreate")
@@ -178,6 +186,7 @@ class TestToolAvailabilityGating:
             authenticated_user_id="U",
             channel_id="C",
             cwd="/tmp",
+            scheduler=_make_scheduler(),
             is_pm=True,
         )
         names = {t.name for t in tools}
@@ -193,6 +202,7 @@ class TestToolAvailabilityGating:
             authenticated_user_id="U",
             channel_id="C",
             cwd="/tmp",
+            scheduler=_make_scheduler(),
             is_pm=False,
         )
         names = {t.name for t in tools}
@@ -208,6 +218,7 @@ class TestToolAvailabilityGating:
             authenticated_user_id="U",
             channel_id="C",
             cwd="/tmp",
+            scheduler=_make_scheduler(),
             is_pm=False,
         )
         names = {t.name for t in tools}
@@ -217,24 +228,10 @@ class TestToolAvailabilityGating:
         assert "TaskUpdate" in names
         assert "TaskList" in names
 
-    async def test_cron_tools_only_with_scheduler(self, registry):
-        """Cron tools only appear when scheduler is provided."""
-        without = create_summon_cli_mcp_tools(
-            registry=registry,
-            session_id="sid",
-            authenticated_user_id="U",
-            channel_id="C",
-            cwd="/tmp",
-        )
-        names_without = {t.name for t in without}
-        assert "CronCreate" not in names_without
-        assert "CronDelete" not in names_without
-        assert "CronList" not in names_without
-
-        q: asyncio.Queue = asyncio.Queue(maxsize=100)
-        ev = asyncio.Event()
-        scheduler = SessionScheduler(q, ev)
-        with_sched = create_summon_cli_mcp_tools(
+    async def test_cron_tools_present(self, registry):
+        """Cron tools are always present (scheduler is required)."""
+        scheduler = _make_scheduler()
+        tools = create_summon_cli_mcp_tools(
             registry=registry,
             session_id="sid",
             authenticated_user_id="U",
@@ -242,10 +239,10 @@ class TestToolAvailabilityGating:
             cwd="/tmp",
             scheduler=scheduler,
         )
-        names_with = {t.name for t in with_sched}
-        assert "CronCreate" in names_with
-        assert "CronDelete" in names_with
-        assert "CronList" in names_with
+        names = {t.name for t in tools}
+        assert "CronCreate" in names
+        assert "CronDelete" in names
+        assert "CronList" in names
 
 
 # ---------------------------------------------------------------------------

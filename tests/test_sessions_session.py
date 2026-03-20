@@ -110,6 +110,39 @@ def make_rt(
     )
 
 
+class TestSanitizeForTable:
+    """Tests for _sanitize_for_table canvas helper."""
+
+    def test_heading_at_start(self):
+        from summon_claude.sessions.session import _sanitize_for_table
+
+        assert _sanitize_for_table("## Heading") == "Heading"
+
+    def test_heading_on_non_first_line(self):
+        from summon_claude.sessions.session import _sanitize_for_table
+
+        result = _sanitize_for_table("line one\n## Heading two")
+        assert "##" not in result
+        assert "Heading two" in result
+
+    def test_pipe_escaped(self):
+        from summon_claude.sessions.session import _sanitize_for_table
+
+        assert "\\|" in _sanitize_for_table("a|b")
+
+    def test_newlines_flattened(self):
+        from summon_claude.sessions.session import _sanitize_for_table
+
+        assert "\n" not in _sanitize_for_table("a\nb\nc")
+
+    def test_truncation(self):
+        from summon_claude.sessions.session import _sanitize_for_table
+
+        result = _sanitize_for_table("x" * 200, max_len=50)
+        assert len(result) == 53  # 50 + "..."
+        assert result.endswith("...")
+
+
 class TestSessionOptions:
     """Tests for SessionOptions dataclass."""
 
@@ -1128,6 +1161,20 @@ class TestMCPRegistration:
         result = await self._capture_mcp_servers(pm_profile=True)
         assert "summon-slack" in result["mcp_servers"]
         assert "summon-cli" in result["mcp_servers"]
+
+    async def test_pm_without_auth_raises(self):
+        """PM session without authenticated_user_id raises RuntimeError."""
+        session = make_session(pm_profile=True)
+        # Do NOT set session._authenticated_user_id — stays None
+        mock_registry = AsyncMock()
+        rt = make_rt(mock_registry)
+
+        with (
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+            patch("summon_claude.sessions.session.discover_plugin_skills", return_value=[]),
+            pytest.raises(RuntimeError, match="authenticated_user_id"),
+        ):
+            await session._run_session_tasks(rt, AsyncMock())
 
     def test_session_options_pm_profile_default(self):
         opts = SessionOptions(cwd="/tmp", name="test")

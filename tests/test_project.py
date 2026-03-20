@@ -11,7 +11,13 @@ from click.testing import CliRunner
 
 from summon_claude.cli import cli
 from summon_claude.sessions.registry import SessionRegistry
+from summon_claude.sessions.scheduler import SessionScheduler
 from summon_claude.sessions.session import build_pm_system_prompt
+
+
+def _make_scheduler() -> SessionScheduler:
+    return SessionScheduler(asyncio.Queue(maxsize=100), asyncio.Event())
+
 
 # ---------------------------------------------------------------------------
 # Registry: project CRUD
@@ -907,7 +913,15 @@ class TestSessionStatusUpdateTool:
 
         # Register a session for the tool to look up
         await registry.register("test-sid", 1234, "/tmp")
-        tools = create_summon_cli_mcp_tools(registry, "test-sid", "uid", "cid", "/tmp", is_pm=True)
+        tools = create_summon_cli_mcp_tools(
+            registry,
+            "test-sid",
+            "uid",
+            "cid",
+            "/tmp",
+            is_pm=True,
+            scheduler=_make_scheduler(),
+        )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
         result = await status_tool.handler({"status": "active", "summary": "All good"})
@@ -916,7 +930,15 @@ class TestSessionStatusUpdateTool:
     async def test_status_update_invalid_status(self, registry):
         from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
 
-        tools = create_summon_cli_mcp_tools(registry, "sid", "uid", "cid", "/tmp", is_pm=True)
+        tools = create_summon_cli_mcp_tools(
+            registry,
+            "sid",
+            "uid",
+            "cid",
+            "/tmp",
+            is_pm=True,
+            scheduler=_make_scheduler(),
+        )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
         result = await status_tool.handler({"status": "bogus", "summary": "test"})
@@ -925,7 +947,15 @@ class TestSessionStatusUpdateTool:
     async def test_status_update_missing_summary(self, registry):
         from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
 
-        tools = create_summon_cli_mcp_tools(registry, "sid", "uid", "cid", "/tmp", is_pm=True)
+        tools = create_summon_cli_mcp_tools(
+            registry,
+            "sid",
+            "uid",
+            "cid",
+            "/tmp",
+            is_pm=True,
+            scheduler=_make_scheduler(),
+        )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
         result = await status_tool.handler({"status": "active", "summary": ""})
@@ -936,7 +966,7 @@ class TestSessionStatusUpdateTool:
 
         await registry.register("sid-allstatus", 1234, "/tmp")
         tools = create_summon_cli_mcp_tools(
-            registry, "sid-allstatus", "uid", "cid", "/tmp", is_pm=True
+            registry, "sid-allstatus", "uid", "cid", "/tmp", is_pm=True, scheduler=_make_scheduler()
         )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 

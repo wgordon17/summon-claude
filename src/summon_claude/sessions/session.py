@@ -29,7 +29,6 @@ from claude_agent_sdk import (
     ThinkingConfigAdaptive,
     ThinkingConfigDisabled,
 )
-from cronsim import CronSim
 from slack_sdk.http_retry.builtin_async_handlers import (
     AsyncRateLimitErrorRetryHandler,
     AsyncServerErrorRetryHandler,
@@ -73,7 +72,7 @@ from summon_claude.sessions.registry import (
 )
 from summon_claude.sessions.response import ResponseStreamer, StreamResult
 from summon_claude.sessions.response import split_text as _split_text
-from summon_claude.sessions.scheduler import SessionScheduler
+from summon_claude.sessions.scheduler import SessionScheduler, explain_cron
 from summon_claude.sessions.types import FileChange
 from summon_claude.slack.canvas_store import CanvasStore
 from summon_claude.slack.canvas_templates import get_canvas_template
@@ -234,6 +233,8 @@ _SCHEDULING_PROMPT_SECTION = (
     "TaskList shows all tasks, optionally filtered by status. "
     "Scheduled jobs and tasks auto-sync to the channel canvas. "
     "System jobs (scan timers) are visible but cannot be deleted. "
+    "Mark tasks as 'completed' via TaskUpdate when done — completed tasks "
+    "stay visible (strikethrough) but keep the list manageable. "
     "If context compaction occurs, you will be prompted to re-create any lost scheduled jobs."
 )
 
@@ -712,9 +713,9 @@ class _SessionRuntime:
 
 def _sanitize_for_table(text: str, max_len: int = 80) -> str:
     """Sanitize text for markdown table cells (escape pipes, strip newlines)."""
+    # Strip heading markers before flattening newlines so ^ matches line starts
+    text = re.sub(r"^#{1,6}\s", "", text, flags=re.MULTILINE)
     text = text.replace("|", "\\|").replace("\n", " ").replace("\r", "")
-    # Strip heading markers that could break canvas structure
-    text = re.sub(r"^#{1,6}\s", "", text)
     if len(text) > max_len:
         text = text[:max_len] + "..."
     return text
@@ -731,15 +732,7 @@ async def _sync_scheduler_to_canvas(scheduler: SessionScheduler, canvas_store: C
         "|-----|----------|--------|------|-----------|",
     ]
     for j in jobs:
-        try:
-            explain = CronSim(j.cron_expr, datetime.now()).explain()  # noqa: DTZ005
-        except Exception:
-            explain = j.cron_expr
-        try:
-            nxt = next(iter(CronSim(j.cron_expr, datetime.now())))  # noqa: DTZ005
-            next_fire = nxt.strftime("%H:%M")
-        except (StopIteration, Exception):
-            next_fire = "—"
+        explain, next_fire = explain_cron(j.cron_expr)
         job_type = "System" if j.internal else "Agent"
         prompt_display = "Project scan timer" if j.internal else _sanitize_for_table(j.prompt, 60)
         lines.append(f"| {j.id} | {explain} | {prompt_display} | {job_type} | {next_fire} |")
@@ -1716,6 +1709,9 @@ class SummonSession:
                 await _sync_tasks_to_canvas(rt.registry, self._session_id, cs, task_heading)
 
             _on_task_change = _task_sync
+
+        if is_pm and self._authenticated_user_id is None:
+            raise RuntimeError("_run_session_tasks reached PM path without authenticated_user_id")
 
         if self._authenticated_user_id is not None:
             cli_mcp = create_summon_cli_mcp_server(
