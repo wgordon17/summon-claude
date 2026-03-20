@@ -28,6 +28,7 @@ dependencies = [
     "slack-sdk==3.40.1",
     "pick==2.6.0",
     "markdown-to-mrkdwn==0.3.1",
+    "cronsim>=2.7",
 ]
 
 [project.optional-dependencies]

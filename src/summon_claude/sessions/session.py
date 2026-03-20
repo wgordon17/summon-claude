@@ -29,6 +29,7 @@ from claude_agent_sdk import (
     ThinkingConfigAdaptive,
     ThinkingConfigDisabled,
 )
+from cronsim import CronSim
 from slack_sdk.http_retry.builtin_async_handlers import (
     AsyncRateLimitErrorRetryHandler,
     AsyncServerErrorRetryHandler,
@@ -72,6 +73,7 @@ from summon_claude.sessions.registry import (
 )
 from summon_claude.sessions.response import ResponseStreamer, StreamResult
 from summon_claude.sessions.response import split_text as _split_text
+from summon_claude.sessions.scheduler import SessionScheduler
 from summon_claude.sessions.types import FileChange
 from summon_claude.slack.canvas_store import CanvasStore
 from summon_claude.slack.canvas_templates import get_canvas_template
@@ -223,6 +225,18 @@ _CANVAS_PROMPT_SECTION = (
     "Always prefer summon_canvas_update_section over summon_canvas_write."
 )
 
+_SCHEDULING_PROMPT_SECTION = (
+    "\n\nScheduling & Tasks: you have scheduling and task tracking tools. "
+    "CronCreate schedules recurring or one-shot prompts (5-field cron syntax). "
+    "CronDelete cancels a job by ID. CronList shows all jobs (including system jobs). "
+    "TaskCreate tracks work items with priority (high/medium/low). "
+    "TaskUpdate changes status (pending/in_progress/completed) or content. "
+    "TaskList shows all tasks, optionally filtered by status. "
+    "Scheduled jobs and tasks auto-sync to the channel canvas. "
+    "System jobs (scan timers) are visible but cannot be deleted. "
+    "Scheduled jobs may be lost on context compaction — use TaskCreate for persistent tracking."
+)
+
 # Maximum characters for a compaction summary injected into the system prompt.
 _MAX_COMPACT_SUMMARY_CHARS = 50_000
 
@@ -302,7 +316,10 @@ _PM_SYSTEM_PROMPT_APPEND = (
     "this project directory. Do NOT spawn sessions outside this path.\n\n"
     "The user can message you directly in Slack with instructions, status requests, "
     "or updates. Acknowledge user messages and include them in your task tracking. "
-    "Use !commands (e.g. !help, !status, !stop) for session control."
+    "Use !commands (e.g. !help, !status, !stop) for session control.\n\n"
+    "Scheduling & Tasks: CronCreate/CronDelete/CronList manage scheduled prompts. "
+    "TaskCreate/TaskUpdate/TaskList track work items (visible in canvas). "
+    "During scans, review child session tasks via TaskList with session_ids."
 )
 
 
@@ -693,6 +710,66 @@ class _SessionRuntime:
 # ---------------------------------------------------------------------------
 
 
+def _sanitize_for_table(text: str, max_len: int = 80) -> str:
+    """Sanitize text for markdown table cells (escape pipes, strip newlines)."""
+    text = text.replace("|", "\\|").replace("\n", " ").replace("\r", "")
+    # Strip heading markers that could break canvas structure
+    text = re.sub(r"^#{1,6}\s", "", text)
+    if len(text) > max_len:
+        text = text[:max_len] + "..."
+    return text
+
+
+async def _sync_scheduler_to_canvas(scheduler: SessionScheduler, canvas_store: CanvasStore) -> None:
+    """Render scheduler state as markdown and push to the canvas."""
+    jobs = scheduler.list_jobs()
+    if not jobs:
+        await canvas_store.update_section("Scheduled Jobs", "_No scheduled jobs._")
+        return
+    lines = [
+        "| ID | Schedule | Prompt | Type | Recurring |",
+        "|-----|----------|--------|------|-----------|",
+    ]
+    for j in jobs:
+        try:
+            explain = CronSim(j.cron_expr, datetime.now()).explain()  # noqa: DTZ005
+        except Exception:
+            explain = j.cron_expr
+        job_type = "System" if j.internal else "Agent"
+        prompt_display = "Project scan timer" if j.internal else _sanitize_for_table(j.prompt, 60)
+        lines.append(f"| {j.id} | {explain} | {prompt_display} | {job_type} | {j.recurring} |")
+    await canvas_store.update_section("Scheduled Jobs", "\n".join(lines))
+
+
+async def _sync_tasks_to_canvas(
+    registry: SessionRegistry,
+    session_id: str,
+    canvas_store: CanvasStore,
+    heading: str = "Tasks",
+) -> None:
+    """Render task state as markdown and push to the canvas."""
+    tasks = await registry.list_tasks(session_id)
+    if not tasks:
+        no_msg = "_No work items tracked._" if heading == "Work Items" else "_No tasks tracked._"
+        await canvas_store.update_section(heading, no_msg)
+        return
+    # Sort: incomplete first, completed at bottom
+    active = [t for t in tasks if t["status"] != "completed"]
+    done = [t for t in tasks if t["status"] == "completed"]
+    lines = [
+        "| Status | Priority | Task | Updated |",
+        "|--------|----------|------|---------|",
+    ]
+    for t in active:
+        content = _sanitize_for_table(t["content"], 60)
+        lines.append(f"| {t['status']} | {t['priority']} | {content} | {t['updated_at'][:16]} |")
+    for t in done:
+        content = _sanitize_for_table(t["content"], 60)
+        updated = t["updated_at"][:16]
+        lines.append(f"| ~~{t['status']}~~ | ~~{t['priority']}~~ | ~~{content}~~ | ~~{updated}~~ |")
+    await canvas_store.update_section(heading, "\n".join(lines))
+
+
 class SummonSession:
     """Orchestrates a Claude Code session bridged to a Slack channel.
 
@@ -787,6 +864,7 @@ class SummonSession:
         self._last_heartbeat_time: float = 0.0
         self._channel_id: str | None = None  # set after channel creation
         self._canvas_store: CanvasStore | None = None
+        self._scheduler: SessionScheduler | None = None
         self._changed_files: dict[str, FileChange] = {}
 
     # ------------------------------------------------------------------
@@ -1244,6 +1322,10 @@ class SummonSession:
             except (asyncio.CancelledError, Exception) as e:
                 logger.debug("Heartbeat task cleanup: %s", e)
 
+            # Cancel all scheduler tasks before shutdown
+            if self._scheduler is not None:
+                self._scheduler.cancel_all()
+
             # Stop canvas sync before shutdown
             if self._canvas_store is not None:
                 try:
@@ -1610,11 +1692,27 @@ class SummonSession:
             )
             mcp_servers["summon-canvas"] = canvas_mcp
 
-        pm_user_id: str | None = None
-        if is_pm:
-            if self._authenticated_user_id is None:
-                raise RuntimeError("_run_message_loop reached without authenticated_user_id")
-            pm_user_id = self._authenticated_user_id
+        # Create scheduler before MCP server so it can be passed in
+        scheduler = SessionScheduler(self._raw_event_queue, self._shutdown_event)
+        self._scheduler = scheduler
+
+        # Wire canvas sync callbacks
+        task_heading = "Work Items" if is_pm else "Tasks"
+        _on_task_change = None
+        if self._canvas_store is not None:
+            cs = self._canvas_store
+
+            async def _sched_sync() -> None:
+                await _sync_scheduler_to_canvas(scheduler, cs)
+
+            scheduler._on_change = _sched_sync  # noqa: SLF001
+
+            async def _task_sync() -> None:
+                await _sync_tasks_to_canvas(rt.registry, self._session_id, cs, task_heading)
+
+            _on_task_change = _task_sync
+
+        if self._authenticated_user_id is not None:
             cli_mcp = create_summon_cli_mcp_server(
                 registry=rt.registry,
                 session_id=self._session_id,
@@ -1623,6 +1721,10 @@ class SummonSession:
                 cwd=self._cwd,
                 session_name=self._name,
                 web_client=self._web_client,
+                is_pm=bool(is_pm),
+                scheduler=scheduler,
+                project_id=self._project_id,
+                on_task_change=_on_task_change,
             )
             mcp_servers["summon-cli"] = cli_mcp
 
@@ -1644,6 +1746,7 @@ class SummonSession:
         base_prompt = _BASE_SYSTEM_APPEND
         if self._canvas_store is not None:
             base_prompt += _CANVAS_PROMPT_SECTION
+        base_prompt += _SCHEDULING_PROMPT_SECTION
         system_prompt_append = base_prompt
 
         # Fetch workflow instructions once for PM sessions (survives compaction restarts)
@@ -1662,6 +1765,24 @@ class SummonSession:
                     logger.debug("Failed to post workflow warning to Slack")
 
         while True:
+            # Cancel any orphaned scheduler tasks from prior iteration and re-register
+            scheduler.cancel_all()
+            if is_pm:
+                interval_min = max(1, self._scan_interval_s // 60)
+                if interval_min <= 59:
+                    scan_cron = f"*/{interval_min} * * * *"
+                else:
+                    scan_cron = f"0 */{max(1, interval_min // 60)} * * *"
+                await scheduler.create(
+                    cron_expr=scan_cron,
+                    prompt=(
+                        "[SCAN TRIGGER] Perform your scheduled project scan now. "
+                        "Check all active sub-sessions, identify any that need attention, "
+                        "and update the canvas with current status."
+                    ),
+                    internal=True,
+                    max_lifetime_s=0,
+                )
             if is_pm:
                 system_prompt = build_pm_system_prompt(
                     cwd=self._cwd,
@@ -1729,9 +1850,6 @@ class SummonSession:
                         async with asyncio.TaskGroup() as tg:
                             tg.create_task(self._run_preprocessor(rt, claude))
                             tg.create_task(self._run_response_consumer(rt, claude, streamer))
-                            if is_pm:
-                                assert pm_user_id is not None  # narrowed above
-                                tg.create_task(self._scan_timer_loop(pm_user_id))
                     except ExceptionGroup as eg:
                         restart_exc = next(
                             (e for e in eg.exceptions if isinstance(e, _SessionRestartError)),
@@ -1867,43 +1985,6 @@ class SummonSession:
             # Always unblock consumer — even on crash
             with contextlib.suppress(Exception):
                 self._pending_turns.put_nowait(None)
-
-    async def _scan_timer_loop(self, authenticated_user_id: str) -> None:
-        """Inject periodic scan-trigger messages for PM sessions.
-
-        Waits ``self._scan_interval_s`` between triggers.  When the shutdown
-        event is set the loop exits cleanly without injecting a trigger.
-        """
-        scan_interval = self._scan_interval_s
-        logger.info("PM scan timer started (interval: %ds)", scan_interval)
-        while not self._shutdown_event.is_set():
-            try:
-                async with asyncio.timeout(scan_interval):
-                    await self._shutdown_event.wait()
-                # Shutdown event fired — exit cleanly
-                return
-            except TimeoutError:
-                pass
-
-            if self._shutdown_event.is_set():
-                return
-
-            # Inject scan trigger into the raw event queue
-            scan_event = {
-                "type": "message",
-                "text": (
-                    "[SCAN TRIGGER] Perform your scheduled project scan now. "
-                    "Check all active sub-sessions, identify any that need attention, "
-                    "and update the canvas with current status."
-                ),
-                "user": authenticated_user_id,
-                "_synthetic": True,
-            }
-            try:
-                self._raw_event_queue.put_nowait(scan_event)
-                logger.info("PM: scan trigger injected")
-            except asyncio.QueueFull:
-                logger.debug("PM: scan trigger dropped (queue full)")
 
     async def _run_response_consumer(
         self,

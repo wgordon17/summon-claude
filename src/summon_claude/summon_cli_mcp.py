@@ -7,13 +7,19 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Awaitable, Callable
+import secrets
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN_PM, MAX_SPAWN_DEPTH, SessionRegistry
+from summon_claude.sessions.scheduler import (
+    SessionScheduler,
+    explain_cron,
+    sanitize_for_table,
+)
 
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
@@ -25,6 +31,7 @@ _SESSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
 _MAX_MESSAGE_CHARS = 10_000
 
 _SENSITIVE_FIELDS = frozenset({"pid", "error_message", "authenticated_user_id"})
+_MAX_TASKS_PER_SESSION = 100
 
 
 def _sanitize_session(session: dict[str, Any]) -> dict[str, Any]:
@@ -40,6 +47,10 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     cwd: str,
     *,
     session_name: str = "",
+    is_pm: bool = False,
+    scheduler: SessionScheduler,
+    project_id: str | None = None,
+    on_task_change: Callable[[], Coroutine[Any, Any, None]] | None = None,
     _generate_spawn_token: Callable[..., Awaitable[Any]] | None = None,
     _ipc_create_session: Callable[..., Awaitable[str]] | None = None,
     _ipc_stop_session: Callable[..., Awaitable[bool]] | None = None,
@@ -47,7 +58,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     _ipc_resume_session: Callable[..., Awaitable[dict]] | None = None,
     _web_client: Any | None = None,
 ) -> list[SdkMcpTool]:
-    """Create MCP tool instances for session lifecycle management.
+    """Create MCP tool instances for session lifecycle and scheduling.
 
     Args:
         registry: SessionRegistry instance for querying session data.
@@ -56,6 +67,10 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         channel_id: For spawn token's parent_channel_id.
         cwd: Calling session's working directory, default for spawned sessions.
         session_name: Calling session's name (for sender_info attribution).
+        is_pm: Whether this is a PM session (gates session_start/stop/log_status).
+        scheduler: SessionScheduler for cron/task scheduling.
+        project_id: Project ID for cross-session task queries (optional).
+        on_task_change: Async callback for task mutations (canvas sync).
         _generate_spawn_token: Override for generate_spawn_token (testing).
         _ipc_create_session: Override for daemon IPC create (testing).
         _ipc_stop_session: Override for daemon IPC stop (testing).
@@ -728,15 +743,278 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 "is_error": True,
             }
 
-    return [
+    # --- Cron tools (all sessions) ---
+
+    @tool(
+        "CronCreate",
+        (
+            "Schedule a prompt to be enqueued on a recurring or one-shot basis. "
+            "Uses standard 5-field cron: minute hour day-of-month month day-of-week. "
+            "Example: '*/5 * * * *' = every 5 minutes. "
+            "Returns a job ID for use with CronDelete."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "cron": {"type": "string"},
+                "prompt": {"type": "string"},
+                "recurring": {"type": "boolean"},
+            },
+            "required": ["cron", "prompt"],
+        },
+    )
+    async def cron_create(args: dict) -> dict:
+        try:
+            cron_expr = args.get("cron", "")
+            prompt = args.get("prompt", "")
+            recurring = args.get("recurring", True)
+            job = await scheduler.create(cron_expr, prompt, recurring=recurring, internal=False)
+            explain, _ = explain_cron(job.cron_expr)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Created job {job.id} ({explain}). "
+                        f"Recurring: {job.recurring}. "
+                        f"Use CronDelete with id '{job.id}' to cancel.",
+                    }
+                ]
+            }
+        except Exception as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    @tool(
+        "CronDelete",
+        "Cancel a scheduled job by ID.",
+        {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    )
+    async def cron_delete(args: dict) -> dict:
+        try:
+            job_id = args.get("id", "")
+            result = await scheduler.delete(job_id)
+            if not result:
+                return {
+                    "content": [{"type": "text", "text": f"Job '{job_id}' not found."}],
+                    "is_error": True,
+                }
+            return {"content": [{"type": "text", "text": f"Job '{job_id}' cancelled."}]}
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    @tool(
+        "CronList",
+        "List all scheduled jobs in this session.",
+        {"type": "object", "properties": {}, "required": []},
+    )
+    async def cron_list(args: dict) -> dict:  # noqa: ARG001
+        jobs = scheduler.list_jobs()
+        if not jobs:
+            return {"content": [{"type": "text", "text": "No scheduled jobs."}]}
+        lines = [
+            "| ID | Schedule | Prompt | Type | Next Fire | Recurring |",
+            "|-----|----------|--------|------|-----------|-----------|",
+        ]
+        for j in jobs:
+            explain, next_fire = explain_cron(j.cron_expr)
+            job_type = "System" if j.internal else "Agent"
+            prompt_short = sanitize_for_table(j.prompt, 80)
+            lines.append(
+                f"| {j.id} | {explain} | {prompt_short} "
+                f"| {job_type} | {next_fire} | {j.recurring} |"
+            )
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    # --- Task tools (all sessions) ---
+
+    @tool(
+        "TaskCreate",
+        (
+            "Create a task to track work items. Tasks persist across context compaction "
+            "and are visible in the channel canvas. Returns the task ID. "
+            "priority: 'high' | 'medium' | 'low'."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "priority": {"type": "string"},
+            },
+            "required": ["content"],
+        },
+    )
+    async def task_create(args: dict) -> dict:
+        try:
+            content = args.get("content", "")
+            if not content or not content.strip():
+                return {
+                    "content": [{"type": "text", "text": "Task content cannot be empty."}],
+                    "is_error": True,
+                }
+            priority = args.get("priority", "medium")
+            # Enforce per-session cap on non-completed tasks
+            existing = await registry.list_tasks(session_id)
+            active_count = sum(1 for t in existing if t["status"] != "completed")
+            if active_count >= _MAX_TASKS_PER_SESSION:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Maximum of {_MAX_TASKS_PER_SESSION} tasks "
+                            "per session reached. Mark completed tasks with "
+                            "TaskUpdate before creating new ones.",
+                        }
+                    ],
+                    "is_error": True,
+                }
+            task_id = secrets.token_hex(8)
+            await registry.create_task(session_id, task_id, content, priority)
+            if on_task_change:
+                await on_task_change()
+            return {"content": [{"type": "text", "text": f"Created task {task_id}."}]}
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    @tool(
+        "TaskUpdate",
+        (
+            "Update a task's status, content, or priority. "
+            "status: 'pending' | 'in_progress' | 'completed'. "
+            "priority: 'high' | 'medium' | 'low'. "
+            "All fields except id are optional — only update provided fields."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "status": {"type": "string"},
+                "content": {"type": "string"},
+                "priority": {"type": "string"},
+            },
+            "required": ["id"],
+        },
+    )
+    async def task_update(args: dict) -> dict:
+        try:
+            task_id = args.get("id", "")
+            kwargs: dict[str, str] = {}
+            if args.get("status"):
+                kwargs["status"] = args["status"]
+            if args.get("content"):
+                kwargs["content"] = args["content"]
+            if args.get("priority"):
+                kwargs["priority"] = args["priority"]
+            # session_id is closure-captured — NOT overridable by agent input
+            result = await registry.update_task(session_id, task_id, **kwargs)
+            if not result:
+                return {
+                    "content": [{"type": "text", "text": f"Task '{task_id}' not found."}],
+                    "is_error": True,
+                }
+            if on_task_change:
+                await on_task_change()
+            return {"content": [{"type": "text", "text": f"Task '{task_id}' updated."}]}
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    @tool(
+        "TaskList",
+        (
+            "List all tasks in this session. Optionally filter by status. "
+            "PM sessions: pass session_ids (comma-separated) to query child session tasks."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "session_ids": {"type": "string"},
+            },
+            "required": [],
+        },
+    )
+    async def task_list(args: dict) -> dict:  # noqa: PLR0911
+        try:
+            status = args.get("status", "")
+            session_ids = args.get("session_ids", "")
+            if session_ids:
+                if not is_pm:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Cross-session task queries are PM-only.",
+                            }
+                        ],
+                        "is_error": True,
+                    }
+                ids = [s.strip() for s in session_ids.split(",") if s.strip()]
+                result = await registry.get_tasks_for_sessions(
+                    ids, authenticated_user_id, project_id
+                )
+                if not result:
+                    return {
+                        "content": [
+                            {"type": "text", "text": "No tasks found for specified sessions."}
+                        ]
+                    }
+                lines: list[str] = []
+                for sid, tasks in result.items():
+                    lines.append(f"\n**Session {sid}:**")
+                    for t in tasks:
+                        lines.append(f"  - [{t['status']}] {t['content'][:100]} (id: {t['id']})")
+                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+            # Own-session query
+            valid_statuses = {"pending", "in_progress", "completed"}
+            if status and status not in valid_statuses:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Invalid status '{status}'. "
+                            f"Use: {', '.join(sorted(valid_statuses))}.",
+                        }
+                    ],
+                    "is_error": True,
+                }
+            filter_status = status if status else None
+            tasks = await registry.list_tasks(session_id, status=filter_status)
+            if not tasks:
+                msg = (
+                    "No tasks." if not filter_status else f"No tasks with status '{filter_status}'."
+                )
+                return {"content": [{"type": "text", "text": msg}]}
+            lines_own = [
+                "| ID | Status | Priority | Task | Updated |",
+                "|-----|--------|----------|------|---------|",
+            ]
+            for t in tasks:
+                content_short = sanitize_for_table(t["content"], 80)
+                lines_own.append(
+                    f"| {t['id']} | {t['status']} | {t['priority']} "
+                    f"| {content_short} | {t['updated_at'][:16]} |"
+                )
+            return {"content": [{"type": "text", "text": "\n".join(lines_own)}]}
+        except Exception as e:
+            return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
+
+    # Common tools: session info (2) + cron (3) + task (3) = 8; PM adds 5 more
+    tools: list[SdkMcpTool] = [
         session_list,
         session_info,
-        session_start,
-        session_stop,
-        session_log_status,
-        session_message,
-        session_resume,
+        cron_create,
+        cron_delete,
+        cron_list,
+        task_create,
+        task_update,
+        task_list,
     ]
+    if is_pm:
+        tools.extend([session_start, session_stop, session_log_status, session_message, session_resume])
+    return tools
 
 
 def create_summon_cli_mcp_server(  # noqa: PLR0913
@@ -748,8 +1026,12 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
     *,
     session_name: str = "",
     web_client: Any | None = None,
+    is_pm: bool = False,
+    scheduler: SessionScheduler,
+    project_id: str | None = None,
+    on_task_change: Callable[[], Coroutine[Any, Any, None]] | None = None,
 ) -> McpSdkServerConfig:
-    """Create an MCP server with session lifecycle tools."""
+    """Create an MCP server with session lifecycle + scheduling tools."""
     tools = create_summon_cli_mcp_tools(
         registry,
         session_id,
@@ -757,6 +1039,10 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
         channel_id,
         cwd,
         session_name=session_name,
+        is_pm=is_pm,
+        scheduler=scheduler,
+        project_id=project_id,
+        on_task_change=on_task_change,
         _web_client=web_client,
     )
     return create_sdk_mcp_server(name="summon-cli", version="1.0.0", tools=tools)

@@ -73,6 +73,12 @@ async def async_db_purge(older_than: int, ctx: click.Context) -> None:
         db = reg.db
         await db.execute("BEGIN")
         try:
+            await db.execute(
+                "DELETE FROM session_tasks WHERE session_id IN "
+                "(SELECT session_id FROM sessions "
+                "WHERE started_at < ? AND status IN ('completed', 'errored'))",
+                (cutoff,),
+            )
             async with db.execute(
                 "DELETE FROM sessions WHERE started_at < ? AND status IN ('completed', 'errored')",
                 (cutoff,),

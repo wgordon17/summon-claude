@@ -76,3 +76,20 @@ class TestTemplateFormatting:
         )
         assert "/home/user/{project}" in result
         assert "{model}" not in result
+
+
+class TestScheduledJobsSection:
+    def test_all_templates_have_scheduled_jobs(self):
+        assert "## Scheduled Jobs" in AGENT_CANVAS_TEMPLATE
+        assert "## Scheduled Jobs" in PM_CANVAS_TEMPLATE
+        assert "## Scheduled Jobs" in GLOBAL_PM_CANVAS_TEMPLATE
+        assert "## Scheduled Jobs" in SCRIBE_CANVAS_TEMPLATE
+
+    def test_non_pm_templates_have_tasks_heading(self):
+        assert "## Tasks" in AGENT_CANVAS_TEMPLATE
+        assert "## Tasks" in GLOBAL_PM_CANVAS_TEMPLATE
+        assert "## Tasks" in SCRIBE_CANVAS_TEMPLATE
+
+    def test_pm_template_has_work_items_not_tasks(self):
+        assert "## Work Items" in PM_CANVAS_TEMPLATE
+        assert "## Tasks" not in PM_CANVAS_TEMPLATE

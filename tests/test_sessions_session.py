@@ -1119,10 +1119,10 @@ class TestMCPRegistration:
 
         return captured
 
-    async def test_regular_session_has_only_slack_mcp(self):
+    async def test_regular_session_has_slack_and_cli_mcps(self):
         result = await self._capture_mcp_servers(pm_profile=False)
         assert "summon-slack" in result["mcp_servers"]
-        assert "summon-cli" not in result["mcp_servers"]
+        assert "summon-cli" in result["mcp_servers"]
 
     async def test_pm_session_has_both_mcps(self):
         result = await self._capture_mcp_servers(pm_profile=True)
@@ -2183,7 +2183,7 @@ class TestSessionRestartLoop:
             await session._run_session_tasks(rt, router)
 
         assert len(captured_prompts) == 2
-        assert captured_prompts[0] == _BASE_SYSTEM_APPEND
+        assert _BASE_SYSTEM_APPEND in captured_prompts[0]
         assert _COMPACT_SUMMARY_PREFIX in captured_prompts[1]
         assert "Build widget" in captured_prompts[1]
 

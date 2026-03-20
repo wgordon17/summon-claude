@@ -907,7 +907,7 @@ class TestSessionStatusUpdateTool:
 
         # Register a session for the tool to look up
         await registry.register("test-sid", 1234, "/tmp")
-        tools = create_summon_cli_mcp_tools(registry, "test-sid", "uid", "cid", "/tmp")
+        tools = create_summon_cli_mcp_tools(registry, "test-sid", "uid", "cid", "/tmp", is_pm=True)
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
         result = await status_tool.handler({"status": "active", "summary": "All good"})
@@ -916,7 +916,7 @@ class TestSessionStatusUpdateTool:
     async def test_status_update_invalid_status(self, registry):
         from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
 
-        tools = create_summon_cli_mcp_tools(registry, "sid", "uid", "cid", "/tmp")
+        tools = create_summon_cli_mcp_tools(registry, "sid", "uid", "cid", "/tmp", is_pm=True)
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
         result = await status_tool.handler({"status": "bogus", "summary": "test"})
@@ -925,7 +925,7 @@ class TestSessionStatusUpdateTool:
     async def test_status_update_missing_summary(self, registry):
         from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
 
-        tools = create_summon_cli_mcp_tools(registry, "sid", "uid", "cid", "/tmp")
+        tools = create_summon_cli_mcp_tools(registry, "sid", "uid", "cid", "/tmp", is_pm=True)
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
         result = await status_tool.handler({"status": "active", "summary": ""})
@@ -935,7 +935,9 @@ class TestSessionStatusUpdateTool:
         from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
 
         await registry.register("sid-allstatus", 1234, "/tmp")
-        tools = create_summon_cli_mcp_tools(registry, "sid-allstatus", "uid", "cid", "/tmp")
+        tools = create_summon_cli_mcp_tools(
+            registry, "sid-allstatus", "uid", "cid", "/tmp", is_pm=True
+        )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
         for status in ("active", "idle", "blocked", "error"):
@@ -950,43 +952,28 @@ class TestSessionStatusUpdateTool:
 # ---------------------------------------------------------------------------
 
 
-class TestScanTimerLoop:
-    async def test_scan_timer_exits_on_shutdown(self):
-        """_scan_timer_loop should exit immediately when shutdown is set."""
-
+class TestSchedulerIntegration:
+    async def test_pm_session_has_scheduler_field(self):
+        """SummonSession should have a _scheduler attribute."""
         from summon_claude.config import SummonConfig
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
         options = SessionOptions(cwd="/tmp", name="pm-test", pm_profile=True, scan_interval_s=3600)
-        session = SummonSession(config=config, options=options, session_id="test-scan")
-        # Set shutdown immediately
-        session._shutdown_event.set()
-        # Should exit without delay
-        await asyncio.wait_for(session._scan_timer_loop("U_TEST"), timeout=1.0)
+        session = SummonSession(config=config, options=options, session_id="test-sched")
+        assert session._scheduler is None  # Set during _run_session_tasks
 
-    async def test_scan_timer_injects_event(self):
-        """_scan_timer_loop injects a scan trigger after interval."""
+    async def test_scheduler_cancel_all_clears_jobs(self):
+        """SessionScheduler.cancel_all must clear _jobs dict."""
+        from summon_claude.sessions.scheduler import SessionScheduler
 
-        from summon_claude.config import SummonConfig
-        from summon_claude.sessions.session import SessionOptions, SummonSession
-
-        config = MagicMock(spec=SummonConfig)
-        options = SessionOptions(cwd="/tmp", name="pm-scan", pm_profile=True, scan_interval_s=30)
-        session = SummonSession(config=config, options=options, session_id="test-scan-inject")
-        session._scan_interval_s = 1  # bypass floor for fast testing
-
-        # Run timer for just past 1 second, then set shutdown
-        async def _stop_after():
-            await asyncio.sleep(1.5)
-            session._shutdown_event.set()
-
-        await asyncio.gather(session._scan_timer_loop("U_TEST"), _stop_after())
-        # Should have received the synthetic scan event
-        assert not session._raw_event_queue.empty()
-        event = session._raw_event_queue.get_nowait()
-        assert event is not None
-        assert "SCAN TRIGGER" in event.get("text", "")
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        ev = asyncio.Event()
+        sched = SessionScheduler(q, ev)
+        await sched.create("*/5 * * * *", "test", internal=True)
+        assert len(sched.list_jobs()) == 1
+        sched.cancel_all()
+        assert len(sched.list_jobs()) == 0
 
 
 # ---------------------------------------------------------------------------

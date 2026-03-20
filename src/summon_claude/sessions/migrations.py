@@ -16,7 +16,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +163,26 @@ async def _migrate_9_to_10(db: aiosqlite.Connection) -> None:
             await db.execute(f"ALTER TABLE sessions DROP COLUMN {col}")
 
 
+async def _migrate_10_to_11(db: aiosqlite.Connection) -> None:
+    """Create session_tasks table for structured task tracking."""
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS session_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            priority TEXT NOT NULL DEFAULT 'medium',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+        )
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_session_tasks_session
+        ON session_tasks(session_id)
+    """)
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the baseline DDL in _connect() produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
@@ -176,6 +196,7 @@ _MIGRATIONS: dict[int, Any] = {
     7: _migrate_7_to_8,
     8: _migrate_8_to_9,
     9: _migrate_9_to_10,
+    10: _migrate_10_to_11,
 }
 
 

@@ -386,6 +386,14 @@ wheels = [
 ]
 
 [[package]]
+name = "cronsim"
+version = "2.7"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fb/1a/02f105147f7f2e06ed4f734ff5a6439590bb275a53dd91fc73df6312298a/cronsim-2.7-py3-none-any.whl", hash = "sha256:1e1431fa08c51dc7f72e67e571c7c7a09af26420169b607badd4ca9677ffad1e", size = 14213, upload-time = "2025-10-21T16:38:20.431Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "46.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1987,6 +1995,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "claude-agent-sdk" },
     { name = "click" },
+    { name = "cronsim" },
     { name = "markdown-to-mrkdwn" },
     { name = "packaging" },
     { name = "pick" },
@@ -2025,6 +2034,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = "==0.22.1" },
     { name = "claude-agent-sdk", specifier = "==0.1.44" },
     { name = "click", specifier = "==8.3.1" },
+    { name = "cronsim", specifier = ">=2.7" },
     { name = "markdown-to-mrkdwn", specifier = "==0.3.1" },
     { name = "packaging", specifier = "==26.0" },
     { name = "pick", specifier = "==2.6.0" },

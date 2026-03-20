@@ -11,6 +11,14 @@ AGENT_CANVAS_TEMPLATE = """\
 | Model | {model} |
 | Directory | `{cwd}` |
 
+## Scheduled Jobs
+
+_No scheduled jobs._
+
+## Tasks
+
+_No tasks tracked._
+
 ## Current Task
 
 _No task assigned yet._
@@ -37,6 +45,14 @@ PM_CANVAS_TEMPLATE = """\
 | Model | {model} |
 | Directory | `{cwd}` |
 
+## Scheduled Jobs
+
+_No scheduled jobs._
+
+## Work Items
+
+_No work items tracked._
+
 ## Active Tasks
 
 _No tasks tracked yet._
@@ -62,6 +78,14 @@ GLOBAL_PM_CANVAS_TEMPLATE = """\
 | Status | Starting... |
 | Model | {model} |
 
+## Scheduled Jobs
+
+_No scheduled jobs._
+
+## Tasks
+
+_No tasks tracked._
+
 ## Active Sessions
 
 _No active sessions._
@@ -83,6 +107,14 @@ SCRIBE_CANVAS_TEMPLATE = """\
 | Status | Starting... |
 | Model | {model} |
 | Directory | `{cwd}` |
+
+## Scheduled Jobs
+
+_No scheduled jobs._
+
+## Tasks
+
+_No tasks tracked._
 
 ## Session Timeline
 
