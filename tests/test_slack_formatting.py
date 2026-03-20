@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from summon_claude.slack.formatting import markdown_to_mrkdwn
+from summon_claude.slack.formatting import markdown_to_mrkdwn, snippet_type_for_extension
 
 
 class TestMarkdownToMrkdwn:
@@ -68,3 +68,42 @@ class TestMarkdownToMrkdwn:
         assert "*three changes*" in result
         # Code fence content should be preserved
         assert "def fix():" in result
+
+
+class TestSnippetTypeForExtension:
+    @pytest.mark.parametrize(
+        ("ext", "expected"),
+        [
+            ("py", "python"),
+            ("js", "javascript"),
+            ("ts", "typescript"),
+            ("sh", "shell"),
+            ("rb", "ruby"),
+            ("rs", "rust"),
+            ("yml", "yaml"),
+            ("kt", "kotlin"),
+            ("jsx", "javascript"),
+            ("tsx", "typescript"),
+            ("md", "markdown"),
+        ],
+    )
+    def test_mapped_extensions(self, ext: str, expected: str) -> None:
+        assert snippet_type_for_extension(ext) == expected
+
+    @pytest.mark.parametrize("ext", ["go", "json", "yaml", "html", "css", "toml", "sql"])
+    def test_identity_extensions(self, ext: str) -> None:
+        assert snippet_type_for_extension(ext) == ext
+
+    def test_empty_returns_none(self) -> None:
+        assert snippet_type_for_extension("") is None
+
+    def test_strips_leading_dot(self) -> None:
+        assert snippet_type_for_extension(".py") == "python"
+
+    def test_case_insensitive(self) -> None:
+        assert snippet_type_for_extension("PY") == "python"
+
+    @pytest.mark.parametrize("ext", ["lock", "dockerfile", "xyz", "bak"])
+    def test_unknown_extensions_pass_through(self, ext: str) -> None:
+        """Unknown extensions pass through as-is; Slack ignores unrecognized types."""
+        assert snippet_type_for_extension(ext) == ext

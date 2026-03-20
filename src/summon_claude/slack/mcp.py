@@ -31,7 +31,8 @@ if TYPE_CHECKING:
     from claude_agent_sdk.types import McpSdkServerConfig
 
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
-_MAX_TEXT_CHARS = 3000  # Slack block limit
+_MAX_TEXT_CHARS = 3000  # Slack section block limit
+_MARKDOWN_BLOCK_LIMIT = 12000  # Slack type: markdown block cumulative limit
 
 _PARENT_TS_RE = re.compile(r"^\d+\.\d+$")
 _EMOJI_RE = re.compile(r"^[A-Za-z0-9_+]+$")
@@ -225,9 +226,20 @@ def create_summon_mcp_tools(  # noqa: PLR0915
         (
             "Upload a file to the Slack session channel. "
             "content: file text content. filename: name with extension (e.g. 'output.txt'). "
-            "title: display title shown in Slack."
+            "title: display title shown in Slack. "
+            "snippet_type: optional syntax highlighting type (e.g. 'diff', 'python', 'json'). "
+            "Enables Slack's native syntax highlighting for the uploaded file."
         ),
-        {"content": str, "filename": str, "title": str},
+        {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "filename": {"type": "string"},
+                "title": {"type": "string"},
+                "snippet_type": {"type": "string"},
+            },
+            "required": ["content", "filename", "title"],
+        },
     )
     async def upload_file(args: dict) -> dict:
         try:
@@ -245,6 +257,7 @@ def create_summon_mcp_tools(  # noqa: PLR0915
                 args["content"],
                 args["filename"],
                 title=args.get("title", args["filename"]),
+                snippet_type=args.get("snippet_type"),
             )
         except Exception:
             return {
@@ -357,7 +370,10 @@ def create_summon_mcp_tools(  # noqa: PLR0915
         (
             "Post a formatted code snippet with syntax highlighting to the channel. "
             "code: source code content. "
-            "language: syntax highlighting language (e.g. 'python', 'bash', 'json'). "
+            "language: Slack snippet type for syntax highlighting. Use exact values: "
+            "python, javascript, typescript, shell, go, rust, ruby, java, kotlin, "
+            "swift, c, cpp, csharp, html, css, json, yaml, toml, xml, sql, diff, "
+            "markdown, text. "
             "title: display title for the snippet."
         ),
         {"code": str, "language": str, "title": str},
@@ -367,31 +383,71 @@ def create_summon_mcp_tools(  # noqa: PLR0915
             await _check_channel(None)
         except ValueError as e:
             return {"content": [{"type": "text", "text": f"Error: {e}"}], "is_error": True}
-        code = args["code"][: _MAX_TEXT_CHARS - 20]  # Reserve space for fences/title
+        code = args["code"]
+        if len(code.encode("utf-8", errors="replace")) > _MAX_UPLOAD_BYTES:
+            return {
+                "content": [{"type": "text", "text": "Error: code content exceeds 10 MB limit"}],
+                "is_error": True,
+            }
         lang = _sanitize_mrkdwn_meta(args.get("language", ""))
         title = _sanitize_mrkdwn_meta(args.get("title", "Code"))
-        blocks = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*{title}*\n```{lang}\n{code}\n```",
-                },
-            }
-        ]
+
+        formatted = f"*{title}*\n```{lang}\n{code}\n```"
+
+        # Content > 12K → file upload fallback
+        if len(formatted) > _MARKDOWN_BLOCK_LIMIT:
+            snippet_type = lang.lower() or None
+            try:
+                await client.upload(
+                    code,
+                    f"snippet.{lang or 'txt'}",
+                    title=title,
+                    snippet_type=snippet_type,
+                )
+            except Exception:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Error: failed to upload snippet."
+                            " Check Slack API connectivity and permissions.",
+                        }
+                    ],
+                    "is_error": True,
+                }
+            return {"content": [{"type": "text", "text": "Code snippet uploaded to Slack"}]}
+
+        # Use type: markdown block (12K limit)
+        blocks = [{"type": "markdown", "text": formatted}]
         try:
             await client.post(title, blocks=blocks)
         except Exception:
-            return {
-                "content": [
+            # Fallback to section/mrkdwn if markdown blocks fail
+            try:
+                # Account for title/lang/fence overhead in 3K section limit
+                overhead = len(f"*{title}*\n```{lang}\n\n```")
+                truncated = code[: max(_MAX_TEXT_CHARS - overhead, 100)]
+                fallback_blocks = [
                     {
-                        "type": "text",
-                        "text": "Error: failed to post snippet."
-                        " Check Slack API connectivity and permissions.",
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*{title}*\n```{lang}\n{truncated}\n```",
+                        },
                     }
-                ],
-                "is_error": True,
-            }
+                ]
+                await client.post(title, blocks=fallback_blocks)
+            except Exception:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Error: failed to post snippet."
+                            " Check Slack API connectivity and permissions.",
+                        }
+                    ],
+                    "is_error": True,
+                }
         return {"content": [{"type": "text", "text": "Code snippet posted to Slack"}]}
 
     @tool(

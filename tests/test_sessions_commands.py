@@ -237,6 +237,22 @@ class TestHelpHandler:
         assert result.text is not None
         assert "end" in result.text
 
+    async def test_help_detail_shows_argument_hint(self, make_context):
+        """!help diff should include the argument_hint in the usage line."""
+        context = make_context()
+        result = await dispatch("help", ["diff"], context)
+        assert result.text is not None
+        assert "<file_path>" in result.text
+        assert "!diff <file_path>" in result.text
+
+    async def test_help_detail_no_hint_omits_argument(self, make_context):
+        """!help changes (no argument_hint) should show bare command name."""
+        context = make_context()
+        result = await dispatch("help", ["changes"], context)
+        assert result.text is not None
+        assert "!changes`" in result.text
+        assert "!changes " not in result.text.split("`")[1]  # no trailing space inside code span
+
     async def test_help_shows_skills_summary(self, make_context):
         """Help listing should show plugin names with skill counts, not full list."""
         skills = [

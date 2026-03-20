@@ -142,6 +142,7 @@ class SlackClient:
         *,
         title: str = "",
         thread_ts: str | None = None,
+        snippet_type: str | None = None,
     ) -> None:
         """Upload a file to the channel."""
         kwargs: dict[str, Any] = {
@@ -152,6 +153,8 @@ class SlackClient:
         }
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
+        if snippet_type:
+            kwargs["snippet_type"] = snippet_type
         await self._web.files_upload_v2(**kwargs)
 
     async def set_topic(self, topic: str) -> None:

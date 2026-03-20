@@ -100,7 +100,9 @@ async def _handle_help(args: list[str], _ctx: CommandContext) -> CommandResult: 
             action = "skill"
         else:
             action = "passthrough"
-        lines = [f"*`!{canonical}`* — {defn.description}", f"_Type: {action}_"]
+        safe_hint = defn.argument_hint.replace("`", "'")
+        usage = f"`!{canonical} {safe_hint}`" if safe_hint.strip() else f"`!{canonical}`"
+        lines = [f"*{usage}* — {defn.description}", f"_Type: {action}_"]
         if defn.aliases:
             lines.append(f"_Aliases: {', '.join(f'`!{a}`' for a in defn.aliases)}_")
         # Show short aliases from _ALIAS_LOOKUP (e.g. plugin skills)
@@ -226,6 +228,16 @@ async def _handle_summon(args: list[str], _ctx: CommandContext) -> CommandResult
     return CommandResult(text=f":question: Unknown subcommand `{args[0]}`. Usage: `!summon start`")
 
 
+async def _handle_diff(args: list[str], _ctx: CommandContext) -> CommandResult:
+    if not args:
+        return CommandResult(text=":warning: Usage: `!diff <file_path>`")
+    return CommandResult(text=None, metadata={"diff_file": args[0]})
+
+
+async def _handle_changes(_args: list[str], _ctx: CommandContext) -> CommandResult:
+    return CommandResult(text=None, metadata={"show_changes": True})
+
+
 # ------------------------------------------------------------------
 # Shared block-reason constant
 # ------------------------------------------------------------------
@@ -329,7 +341,17 @@ COMMAND_ACTIONS: dict[str, CommandDef] = {
     "agents": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "chrome": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "copy": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
-    "diff": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
+    "diff": CommandDef(
+        description="Show git diff for a file changed in this session",
+        handler=_handle_diff,
+        max_args=1,
+        argument_hint="<file_path>",
+    ),
+    "changes": CommandDef(
+        description="Show all files changed in this session",
+        handler=_handle_changes,
+        max_args=0,
+    ),
     "export": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "extra-usage": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "fast": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),

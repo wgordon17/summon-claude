@@ -181,6 +181,18 @@ class TestSlackClient:
         call_kwargs = web.files_upload_v2.call_args.kwargs
         assert call_kwargs["title"] == "My Script"
 
+    async def test_upload_with_snippet_type(self):
+        client, web = self._make_client()
+        await client.upload("diff content", "test.diff", snippet_type="diff")
+        call_kwargs = web.files_upload_v2.call_args.kwargs
+        assert call_kwargs["snippet_type"] == "diff"
+
+    async def test_upload_without_snippet_type_omits_key(self):
+        client, web = self._make_client()
+        await client.upload("content", "test.py")
+        call_kwargs = web.files_upload_v2.call_args.kwargs
+        assert "snippet_type" not in call_kwargs
+
     async def test_set_topic_calls_api(self):
         client, web = self._make_client()
         await client.set_topic("my topic")

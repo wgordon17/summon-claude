@@ -19,6 +19,10 @@ _No task assigned yet._
 
 _Session starting..._
 
+## Changed Files
+
+_No files changed yet._
+
 ## Notes
 
 _No notes yet._

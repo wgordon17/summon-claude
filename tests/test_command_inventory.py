@@ -52,7 +52,19 @@ class TestLocalCommands:
 class TestExpectedCommands:
     """Verify known commands exist in COMMAND_ACTIONS."""
 
-    EXPECTED_LOCAL = {"help", "status", "end", "clear", "stop", "model", "compact"}
+    EXPECTED_LOCAL = {
+        "help",
+        "status",
+        "end",
+        "clear",
+        "stop",
+        "model",
+        "compact",
+        "effort",
+        "summon",
+        "diff",
+        "changes",
+    }
     EXPECTED_PASSTHROUGH = {
         "review",
         "init",

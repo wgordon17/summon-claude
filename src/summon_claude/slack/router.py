@@ -43,7 +43,19 @@ class ThreadRouter:
         """Post directly via the client without any text conversion."""
         return await self.client.post(text, blocks=blocks, thread_ts=thread_ts)
 
-    # --- Thread-aware posting with mrkdwn conversion ---
+    # --- Explicit-thread posting with mrkdwn conversion ---
+
+    async def post_to_thread(
+        self,
+        text: str,
+        *,
+        thread_ts: str,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> MessageRef:
+        """Post to an explicit thread with markdown-to-mrkdwn conversion."""
+        return await self._post_raw(markdown_to_mrkdwn(text), blocks=blocks, thread_ts=thread_ts)
+
+    # --- State-aware posting with mrkdwn conversion ---
 
     async def post_to_main(
         self,
@@ -89,13 +101,47 @@ class ThreadRouter:
         """Update an existing message with mrkdwn conversion."""
         await self.client.update(ts, markdown_to_mrkdwn(text), blocks=blocks)
 
-    # upload_to_active_thread does not convert — file content is not markdown
+    async def post_markdown_to_thread(
+        self,
+        markdown: str,
+        *,
+        thread_ts: str,
+    ) -> MessageRef:
+        """Post a type:markdown block with raw content (no mrkdwn conversion).
+
+        The ``text`` fallback is the raw markdown — readable in notifications
+        even without rendering.
+        """
+        blocks = [{"type": "markdown", "text": markdown}]
+        return await self._post_raw(markdown, blocks=blocks, thread_ts=thread_ts)
+
+    # --- File uploads (no text conversion — file content is not markdown) ---
+
+    async def upload(
+        self,
+        content: str,
+        filename: str,
+        *,
+        thread_ts: str,
+        title: str | None = None,
+        snippet_type: str | None = None,
+    ) -> None:
+        """Upload a file to an explicit thread."""
+        await self.client.upload(
+            content,
+            filename,
+            title=title or filename,
+            thread_ts=thread_ts,
+            snippet_type=snippet_type,
+        )
+
     async def upload_to_active_thread(
         self,
         content: str,
         filename: str,
         *,
         title: str | None = None,
+        snippet_type: str | None = None,
     ) -> None:
         """Upload a file to the current active thread."""
         await self.client.upload(
@@ -103,6 +149,7 @@ class ThreadRouter:
             filename,
             title=title or filename,
             thread_ts=self.active_thread_ts,
+            snippet_type=snippet_type,
         )
 
     # --- Subagent management ---

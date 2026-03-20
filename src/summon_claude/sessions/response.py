@@ -13,8 +13,10 @@ import contextlib
 import difflib
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from claude_agent_sdk import (
@@ -27,6 +29,9 @@ from claude_agent_sdk import (
 )
 
 from summon_claude.sessions.context import ContextUsage
+from summon_claude.sessions.types import ChangeType, FileChange
+from summon_claude.slack.formatting import snippet_type_for_extension
+from summon_claude.slack.markdown_split import split_markdown
 from summon_claude.slack.router import ThreadRouter
 
 logger = logging.getLogger(__name__)
@@ -149,6 +154,7 @@ class _TurnState:
     user_snippet: str = ""
     turn_thread_ts: str | None = None
     thinking_buffer: str = ""
+    md_rendered_paths: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -179,16 +185,20 @@ class ResponseStreamer:
         user_id: str | None = None,
         show_thinking: bool = False,
         max_inline_chars: int = 2500,
+        on_file_change: Callable[[FileChange], Awaitable[None]] | None = None,
     ) -> None:
         self._router = router
         self._user_id = user_id
         self._show_thinking = show_thinking
         self._max_inline_chars = max_inline_chars
+        self._on_file_change = on_file_change
 
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
         # Turn number counter
         self._current_turn_number: int = 0
+        # Strong references to fire-and-forget tasks (prevent GC)
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     # --- Turn lifecycle ---
 
@@ -499,6 +509,39 @@ class ResponseStreamer:
             await self._router.post_to_active_thread(f"Tool: {tool_name}", blocks=blocks)
             self._turn.thread_ts = None
 
+        # Fire-and-forget diff upload for Edit tools
+        if tool_name in ("Edit", "str_replace_editor") and "old_string" in input_data:
+            filename = input_data.get("path", input_data.get("file_path", "file"))
+            old_str = input_data.get("old_string", "")
+            new_str = input_data.get("new_string", "")
+            try:
+                thread_ts = self._resolve_upload_thread(parent_id)
+            except RuntimeError:
+                logger.debug("No active thread for diff upload of %s, skipping", filename)
+            else:
+                self._spawn_background(self._upload_diff(old_str, new_str, filename, thread_ts))
+            self._schedule_file_change(filename, old_str, new_str)
+
+        # Fire-and-forget content upload for Write
+        elif tool_name == "Write":
+            filepath = input_data.get("file_path", input_data.get("path", ""))
+            content = input_data.get("content", "")
+            if filepath and content:
+                try:
+                    thread_ts = self._resolve_upload_thread(parent_id)
+                except RuntimeError:
+                    logger.debug("No active thread for write upload of %s, skipping", filepath)
+                else:
+                    if filepath.endswith(".md"):
+                        rendered = self._turn.md_rendered_paths
+                        self._spawn_background(
+                            self._render_md_write(filepath, content, thread_ts, rendered)
+                        )
+                    else:
+                        basename = PurePosixPath(filepath).name
+                        self._spawn_background(self._upload_write(content, basename, thread_ts))
+            self._schedule_file_change(filepath, "", content)
+
     async def _post_tool_result(self, block: ToolResultBlock, parent_id: str | None = None) -> None:
         """Post a brief tool result summary to the appropriate thread."""
         text, blocks = _format_tool_result(block)
@@ -538,10 +581,10 @@ class ResponseStreamer:
         self,
         tool_name: str,
         summary: str,
-        input_data: dict[str, Any],
+        input_data: dict[str, Any],  # noqa: ARG002
     ) -> list[dict[str, Any]]:
         """Build Block Kit blocks for a tool use context message."""
-        blocks: list[dict[str, Any]] = [
+        return [
             {
                 "type": "context",
                 "elements": [
@@ -552,51 +595,184 @@ class ResponseStreamer:
                 ],
             }
         ]
-        if tool_name in ("Edit", "str_replace_editor") and "old_string" in input_data:
-            filename = input_data.get("path", input_data.get("file_path", "file"))
-            diff_blocks = self._format_diff(
-                input_data.get("old_string", ""),
-                input_data.get("new_string", ""),
-                filename=filename,
-            )
-            blocks.extend(diff_blocks)
-        return blocks
 
-    def _format_diff(
+    def _spawn_background(self, coro: Awaitable[None]) -> None:
+        """Schedule a fire-and-forget task with a strong reference to prevent GC."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._on_background_done)
+
+    def _on_background_done(self, task: asyncio.Task[None]) -> None:
+        """Clean up completed background task and suppress unhandled exception warnings."""
+        self._background_tasks.discard(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                logger.debug("Background task failed: %s", exc)
+
+    def _resolve_upload_thread(self, parent_id: str | None) -> str:
+        """Resolve thread_ts for file uploads, respecting subagent threads."""
+        if parent_id:
+            ts = self._router.subagent_threads.get(parent_id)
+            if ts:
+                return ts
+        ts = self._router.active_thread_ts
+        if not ts:
+            raise RuntimeError("No active thread for upload")
+        return ts
+
+    async def _upload_diff(
         self,
         old_string: str,
         new_string: str,
-        filename: str = "file",
-    ) -> list[dict[str, Any]]:
-        """Format an edit as a unified diff in Slack Block Kit blocks."""
-        diff_lines = list(
-            difflib.unified_diff(
-                old_string.splitlines(keepends=True),
-                new_string.splitlines(keepends=True),
-                fromfile=f"a/{filename}",
-                tofile=f"b/{filename}",
+        filename: str,
+        thread_ts: str,
+    ) -> None:
+        """Upload a unified diff as a snippet_type=diff file (fire-and-forget)."""
+        diff_lines: list[str] = []
+        try:
+            diff_lines = list(
+                difflib.unified_diff(
+                    old_string.splitlines(keepends=True),
+                    new_string.splitlines(keepends=True),
+                    fromfile=f"a/{filename}",
+                    tofile=f"b/{filename}",
+                )
             )
-        )
-        if not diff_lines:
-            return [
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"_No changes in `{filename}`_"},
-                }
-            ]
+            if not diff_lines:
+                await self._router.post_to_thread(
+                    f"*No changes in `{filename}`*", thread_ts=thread_ts
+                )
+                return
 
-        diff_text = "".join(diff_lines)
-        # Prepend header to the full diff text, then split the combined string.
-        header = f"*Edit:* `{filename}`\n"
-        combined = f"{header}```{diff_text}```"
-        chunks = split_text(combined, _MAX_MESSAGE_CHARS)
-        return [
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": chunk},
-            }
-            for chunk in chunks
-        ]
+            diff_text = "".join(diff_lines)
+            basename = PurePosixPath(filename).name
+            await self._router.upload(
+                diff_text,
+                f"{basename}.diff",
+                title=f"Edit: {basename}",
+                thread_ts=thread_ts,
+                snippet_type="diff",
+            )
+        except Exception:
+            # Fallback: post diff inline
+            logger.warning("Diff upload failed for %s, using inline fallback", filename)
+            if not diff_lines:
+                return
+            try:
+                diff_text = "".join(diff_lines)
+                combined = f"**Edit:** `{filename}`\n```\n{diff_text}\n```"
+                chunks = split_text(combined, _MAX_MESSAGE_CHARS)
+                for chunk in chunks:
+                    await self._router.post_to_thread(chunk, thread_ts=thread_ts)
+            except Exception:
+                logger.warning("Diff inline fallback also failed for %s", filename)
+
+    async def _render_md_write(
+        self,
+        filepath: str,
+        content: str,
+        thread_ts: str,
+        rendered_paths: set[str],
+    ) -> None:
+        """Render a Write-created .md file with type: markdown blocks.
+
+        Args:
+            thread_ts: Captured at task creation time to avoid race with turn reset.
+            rendered_paths: Reference to the originating turn's md_rendered_paths set.
+        """
+        basename = PurePosixPath(filepath).name
+        n_chars = len(content)
+
+        # Claim slot immediately (before any await) to prevent duplicate renders
+        already_rendered = filepath in rendered_paths
+        rendered_paths.add(filepath)
+
+        if already_rendered:
+            try:
+                await self._router.post_to_thread(
+                    f":page_facing_up: **Updated:** `{basename}` ({n_chars} chars)",
+                    thread_ts=thread_ts,
+                )
+            except Exception:
+                logger.warning("Failed to post .md update notice for %s", basename)
+            return
+
+        # Post context header
+        try:
+            await self._router.post_to_thread(
+                f":page_facing_up: **Created:** `{basename}` ({n_chars} chars)",
+                thread_ts=thread_ts,
+            )
+        except Exception:
+            logger.warning("Failed to post .md header for %s", basename)
+
+        # Split and post markdown blocks
+        chunks = split_markdown(content, limit=12000)
+        for chunk in chunks:
+            try:
+                await self._router.post_markdown_to_thread(chunk, thread_ts=thread_ts)
+            except Exception:
+                # Fallback: post as mrkdwn-converted text if markdown blocks fail
+                logger.warning("Markdown block failed for %s, using mrkdwn fallback", basename)
+                try:
+                    await self._router.post_to_thread(chunk, thread_ts=thread_ts)
+                except Exception:
+                    logger.warning("mrkdwn fallback also failed for %s", basename)
+
+    async def _upload_write(
+        self,
+        content: str,
+        basename: str,
+        thread_ts: str,
+    ) -> None:
+        """Upload written file content (fire-and-forget)."""
+        try:
+            ext = PurePosixPath(basename).suffix.lstrip(".")
+            await self._router.upload(
+                content,
+                basename,
+                title=f"Written: {basename}",
+                thread_ts=thread_ts,
+                snippet_type=snippet_type_for_extension(ext),
+            )
+        except Exception:
+            logger.warning("Write content upload failed for %s", basename)
+
+    def _schedule_file_change(
+        self,
+        filepath: str,
+        old_content: str,
+        new_content: str,
+    ) -> None:
+        """Schedule on_file_change callback as a fire-and-forget task."""
+        if not self._on_file_change or not filepath:
+            return
+        old_lines = old_content.splitlines() if old_content else []
+        new_lines = new_content.splitlines() if new_content else []
+        change_type: ChangeType = "modified" if old_content else "created"
+        if old_content:
+            # Count actual changed lines via unified diff
+            diff = difflib.unified_diff(old_lines, new_lines)
+            additions = 0
+            deletions = 0
+            for line in diff:
+                if line.startswith("+") and not line.startswith("+++"):
+                    additions += 1
+                elif line.startswith("-") and not line.startswith("---"):
+                    deletions += 1
+        else:
+            additions = len(new_lines)
+            deletions = 0
+        change = FileChange(
+            path=filepath,
+            change_type=change_type,
+            additions=additions,
+            deletions=deletions,
+            timestamp=datetime.now(UTC),
+            turn_number=self._current_turn_number,
+        )
+        self._spawn_background(self._on_file_change(change))
 
 
 def _format_tool_result(block: ToolResultBlock) -> tuple[str, list[dict[str, Any]]]:

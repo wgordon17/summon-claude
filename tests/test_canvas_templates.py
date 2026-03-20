@@ -42,6 +42,13 @@ class TestTemplateFormatting:
         assert "/home/user/proj" in result
         assert "{model}" not in result
         assert "{cwd}" not in result
+        assert "Changed Files" in result
+
+    def test_changed_files_only_in_agent(self):
+        assert "Changed Files" in AGENT_CANVAS_TEMPLATE
+        assert "Changed Files" not in PM_CANVAS_TEMPLATE
+        assert "Changed Files" not in GLOBAL_PM_CANVAS_TEMPLATE
+        assert "Changed Files" not in SCRIBE_CANVAS_TEMPLATE
 
     def test_pm_template_formats(self):
         result = PM_CANVAS_TEMPLATE.replace("{model}", "sonnet-4").replace("{cwd}", "/tmp")
