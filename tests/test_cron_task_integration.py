@@ -68,6 +68,26 @@ class TestSchedulerSessionLifecycle:
 
         scheduler.cancel_all()
 
+    async def test_lost_cron_jobs_captured_for_recovery(self):
+        """Agent cron jobs are snapshotted before cancel_all for recovery prompt."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        ev = asyncio.Event()
+        scheduler = SessionScheduler(q, ev)
+
+        await scheduler.create("*/5 * * * *", "scan", internal=True, max_lifetime_s=0)
+        await scheduler.create("*/10 * * * *", "check CI")
+        await scheduler.create("0 9 * * 1-5", "daily standup", recurring=True)
+
+        # Snapshot agent jobs (what session.py does before cancel_all)
+        lost = [
+            (j.cron_expr, j.prompt, j.recurring) for j in scheduler.list_jobs() if not j.internal
+        ]
+        assert len(lost) == 2
+        assert ("*/10 * * * *", "check CI", True) in lost
+        assert ("0 9 * * 1-5", "daily standup", True) in lost
+
+        scheduler.cancel_all()
+
     async def test_shutdown_cancels_all_jobs(self):
         """cancel_all stops all asyncio tasks."""
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
