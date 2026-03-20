@@ -7,7 +7,7 @@ import logging
 import logging.handlers
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -108,6 +108,20 @@ COMPLETED_SESSION = {
     "started_at": "2026-02-23T09:00:00+00:00",
     "ended_at": "2026-02-23T10:00:00+00:00",
 }
+
+
+def make_hooks_mock_registry(hooks: list[str]) -> MagicMock:
+    """Build a mock SessionRegistry returning *hooks* from get_lifecycle_hooks_by_directory.
+
+    The mock returns *hooks* regardless of which hook_type is queried.
+    Suitable for worktree_create flow tests; add side_effect discrimination
+    if tests need to distinguish hook types.
+    """
+    instance = AsyncMock()
+    instance.__aenter__ = AsyncMock(return_value=instance)
+    instance.__aexit__ = AsyncMock(return_value=False)
+    instance.get_lifecycle_hooks_by_directory = AsyncMock(return_value=hooks)
+    return MagicMock(return_value=instance)
 
 
 def mock_registry(**overrides: object) -> AsyncMock:

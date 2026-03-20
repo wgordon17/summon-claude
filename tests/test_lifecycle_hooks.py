@@ -9,14 +9,14 @@ Covers Task 1 of hack/plans/2026-03-15-worktree-support.md:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from summon_claude.sessions.registry import SessionRegistry
+from tests.conftest import make_hooks_mock_registry as _make_hooks_mock_registry
 
 # ---------------------------------------------------------------------------
 # Registry: get/set/clear_lifecycle_hooks
@@ -396,19 +396,11 @@ class TestRunLifecycleHooksProjectRootEnv:
 
 
 class TestRunPostWorktreeHooksIntegration:
-    def _make_mock_registry(self, hooks: list[str]) -> MagicMock:
-        """Build a mock SessionRegistry async context manager returning given hooks."""
-        mock_reg_instance = AsyncMock()
-        mock_reg_instance.__aenter__ = AsyncMock(return_value=mock_reg_instance)
-        mock_reg_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_reg_instance.get_lifecycle_hooks_by_directory = AsyncMock(return_value=hooks)
-        return MagicMock(return_value=mock_reg_instance)
-
     def test_run_post_worktree_hooks_returns_zero_on_success(self, tmp_path):
         """run_post_worktree_hooks returns 0 on success."""
         from summon_claude.sessions.hooks import run_post_worktree_hooks
 
-        mock_reg_cls = self._make_mock_registry(["true"])
+        mock_reg_cls = _make_hooks_mock_registry(["true"])
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
             patch("summon_claude.sessions.registry.SessionRegistry", mock_reg_cls),
@@ -421,7 +413,7 @@ class TestRunPostWorktreeHooksIntegration:
         """run_post_worktree_hooks returns 0 even when hooks fail."""
         from summon_claude.sessions.hooks import run_post_worktree_hooks
 
-        mock_reg_cls = self._make_mock_registry(["exit 1"])
+        mock_reg_cls = _make_hooks_mock_registry(["exit 1"])
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
             patch("summon_claude.sessions.registry.SessionRegistry", mock_reg_cls),
@@ -434,7 +426,7 @@ class TestRunPostWorktreeHooksIntegration:
         """run_post_worktree_hooks returns 0 cleanly when no project matches the CWD."""
         from summon_claude.sessions.hooks import run_post_worktree_hooks
 
-        mock_reg_cls = self._make_mock_registry([])
+        mock_reg_cls = _make_hooks_mock_registry([])
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
             patch("summon_claude.sessions.registry.SessionRegistry", mock_reg_cls),
@@ -511,9 +503,128 @@ class TestHooksCliClear:
         hooks_json = json.dumps({"worktree_create": ["cmd-to-clear"]})
 
         with patch("summon_claude.sessions.registry.default_db_path", return_value=db_path):
-            runner.invoke(cli, ["hooks", "set", "--json", hooks_json])
+            set_result = runner.invoke(cli, ["hooks", "set", hooks_json])
+            assert set_result.exit_code == 0, f"set failed: {set_result.output}"
+
+            # Verify hooks were actually stored before clearing
+            pre_clear = runner.invoke(cli, ["hooks", "show"])
+            assert pre_clear.exit_code == 0, f"show failed: {pre_clear.output}"
+            assert "cmd-to-clear" in pre_clear.output, (
+                f"hooks set did not persist: {pre_clear.output}"
+            )
+
             clear_result = runner.invoke(cli, ["hooks", "clear"])
             assert clear_result.exit_code == 0, clear_result.output
 
             show_result = runner.invoke(cli, ["hooks", "show"])
+            assert show_result.exit_code == 0, show_result.output
             assert "cmd-to-clear" not in show_result.output
+
+
+class TestHooksCliProjectFlag:
+    def test_hooks_cli_set_show_clear_with_project_flag(self, tmp_path):
+        """summon hooks set/show/clear --project round-trip with per-project hooks."""
+        import asyncio
+
+        from click.testing import CliRunner
+
+        from summon_claude.cli import cli
+
+        db_path = tmp_path / "project_flag.db"
+        runner = CliRunner()
+        project_dir = tmp_path / "my-project"
+        project_dir.mkdir()
+
+        # Create a project directly via registry (project add CLI needs daemon).
+        async def _create_project() -> str:
+            pid = ""
+            async with SessionRegistry(db_path=db_path) as reg:
+                pid = await reg.add_project("flag-test-proj", str(project_dir))
+            return pid
+
+        project_id = asyncio.run(_create_project())
+
+        hooks_json = json.dumps({"worktree_create": ["echo project-hook"]})
+
+        with patch("summon_claude.sessions.registry.default_db_path", return_value=db_path):
+            # Set per-project hooks
+            set_result = runner.invoke(cli, ["hooks", "set", "--project", project_id, hooks_json])
+            assert set_result.exit_code == 0, f"set failed: {set_result.output}"
+
+            # Show per-project hooks
+            show_result = runner.invoke(cli, ["hooks", "show", "--project", project_id])
+            assert show_result.exit_code == 0, f"show failed: {show_result.output}"
+            assert "echo project-hook" in show_result.output
+
+            # Global hooks should NOT have the project hook
+            global_show = runner.invoke(cli, ["hooks", "show"])
+            assert global_show.exit_code == 0, global_show.output
+            assert "echo project-hook" not in global_show.output
+
+            # Clear per-project hooks
+            clear_result = runner.invoke(cli, ["hooks", "clear", "--project", project_id])
+            assert clear_result.exit_code == 0, f"clear failed: {clear_result.output}"
+
+            # Verify cleared
+            post_clear = runner.invoke(cli, ["hooks", "show", "--project", project_id])
+            assert post_clear.exit_code == 0, post_clear.output
+            assert "echo project-hook" not in post_clear.output
+
+
+class TestRunProjectHooksProjectIdsFilter:
+    async def test_project_ids_filter_runs_only_specified_projects(self, tmp_path):
+        """_run_project_hooks with project_ids only runs hooks for those projects."""
+        from summon_claude.cli.project import _run_project_hooks
+
+        dir_a = tmp_path / "proj-a"
+        dir_b = tmp_path / "proj-b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        sentinel_a = tmp_path / "ran_a.txt"
+        sentinel_b = tmp_path / "ran_b.txt"
+
+        db_path = tmp_path / "filter.db"
+        pid_a = ""
+        async with SessionRegistry(db_path=db_path) as reg:
+            pid_a = await reg.add_project("proj-a", str(dir_a))
+            pid_b = await reg.add_project("proj-b", str(dir_b))
+            await reg.set_lifecycle_hooks(
+                {"project_down": [f"touch {sentinel_a}"]}, project_id=pid_a
+            )
+            await reg.set_lifecycle_hooks(
+                {"project_down": [f"touch {sentinel_b}"]}, project_id=pid_b
+            )
+
+        with patch("summon_claude.sessions.registry.default_db_path", return_value=db_path):
+            await _run_project_hooks("project_down", project_ids=[pid_a])
+
+        assert sentinel_a.exists(), "proj-a hook should have run"
+        assert not sentinel_b.exists(), "proj-b hook should NOT have run"
+
+    async def test_project_ids_none_runs_all_projects(self, tmp_path):
+        """_run_project_hooks without project_ids runs hooks for all projects."""
+        from summon_claude.cli.project import _run_project_hooks
+
+        dir_a = tmp_path / "all-a"
+        dir_b = tmp_path / "all-b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        sentinel_a = tmp_path / "all_ran_a.txt"
+        sentinel_b = tmp_path / "all_ran_b.txt"
+
+        db_path = tmp_path / "all.db"
+        async with SessionRegistry(db_path=db_path) as reg:
+            pid_a = await reg.add_project("all-a", str(dir_a))
+            pid_b = await reg.add_project("all-b", str(dir_b))
+            await reg.set_lifecycle_hooks(
+                {"project_down": [f"touch {sentinel_a}"]}, project_id=pid_a
+            )
+            await reg.set_lifecycle_hooks(
+                {"project_down": [f"touch {sentinel_b}"]}, project_id=pid_b
+            )
+
+        with patch("summon_claude.sessions.registry.default_db_path", return_value=db_path):
+            await _run_project_hooks("project_down")
+
+        assert sentinel_a.exists(), "proj-a hook should have run"
+        assert sentinel_b.exists(), "proj-b hook should have run"

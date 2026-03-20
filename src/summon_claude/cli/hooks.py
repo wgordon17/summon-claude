@@ -44,7 +44,8 @@ exit 0
 # summon-post-worktree.sh — runs after EnterWorktree; triggers worktree_create hooks.
 # @@SUMMON_PATH@@ is substituted at install time via str.replace() (not format strings).
 # sqlite3 is soft-gated: if missing, falls through to the Python runner which handles it.
-# exec + || exit 0 ensures clean exit even if the summon binary fails/exits non-zero.
+# No exec: exec replaces the shell, making any fallback exit unreachable for non-zero returns.
+# Unconditional `; exit 0` after subprocess call ensures clean exit regardless of summon's status.
 POST_WORKTREE_TEMPLATE = """\
 #!/bin/bash
 # summon PostToolUse:EnterWorktree hook — runs worktree_create lifecycle hooks
@@ -54,9 +55,9 @@ if command -v sqlite3 >/dev/null 2>&1; then
     RESULT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM projects" 2>/dev/null)
     [ "${RESULT:-0}" -gt 0 ] || exit 0
 fi
-SUMMON_BIN="@@SUMMON_PATH@@"
+SUMMON_BIN='@@SUMMON_PATH@@'
 [ -x "$SUMMON_BIN" ] || exit 0
-exec "$SUMMON_BIN" hooks run post-worktree || exit 0
+"$SUMMON_BIN" hooks run post-worktree; exit 0
 """
 
 # ---------------------------------------------------------------------------

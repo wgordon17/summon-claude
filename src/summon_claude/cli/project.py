@@ -16,21 +16,31 @@ from summon_claude.sessions.registry import SessionRegistry
 logger = logging.getLogger(__name__)
 
 
-async def _run_project_hooks(hook_type: str) -> None:
-    """Run lifecycle hooks for all registered projects. Failures are logged, not fatal."""
-    async with SessionRegistry() as registry:
-        projects = await registry.list_projects()
-        for project in projects:
-            project_id = project["project_id"]
-            directory = project.get("directory", "")
-            hooks = await registry.get_lifecycle_hooks(hook_type, project_id=project_id)
-            if hooks:
-                cwd = pathlib.Path(directory) if directory else pathlib.Path.cwd()
-                errors = await run_lifecycle_hooks(hook_type, cwd, hooks, project_root=cwd)
-                for err in errors:
-                    logger.warning(
-                        "%s hook error for project %s: %s", hook_type, project["name"], err
-                    )
+async def _run_project_hooks(hook_type: str, *, project_ids: list[str] | None = None) -> None:
+    """Run lifecycle hooks for registered projects. Failures are logged, not fatal.
+
+    If *project_ids* is given, only run hooks for those projects.
+    Otherwise run for all registered projects.
+    """
+    try:
+        async with SessionRegistry() as registry:
+            projects = await registry.list_projects()
+            if project_ids is not None:
+                id_set = set(project_ids)
+                projects = [p for p in projects if p["project_id"] in id_set]
+            for project in projects:
+                project_id = project["project_id"]
+                directory = project.get("directory", "")
+                hooks = await registry.get_lifecycle_hooks(hook_type, project_id=project_id)
+                if hooks:
+                    cwd = pathlib.Path(directory) if directory else pathlib.Path.cwd()
+                    errors = await run_lifecycle_hooks(hook_type, cwd, hooks, project_root=cwd)
+                    for err in errors:
+                        logger.warning(
+                            "%s hook error for project %s: %s", hook_type, project["name"], err
+                        )
+    except Exception as exc:
+        logger.warning("Failed to run %s hooks: %s", hook_type, exc)
 
 
 def _resolve_directory(directory: str) -> str:
@@ -110,6 +120,9 @@ async def launch_project_managers() -> None:
     click.echo(f"\nAuthenticate in Slack: /summon {short_code}")
     click.echo("\nPM sessions will start after authentication.")
     click.echo("Run 'summon project list' to check status.")
+    # Hooks run immediately — before auth completes / PMs start.
+    # This is intentional: project_up hooks set up the environment
+    # (e.g. build deps, start services) that PMs will need once they launch.
     await _run_project_hooks("project_up")
 
 
@@ -130,6 +143,7 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
 
     stopped: list[str] = []
     suspended: list[str] = []
+    projects: list[dict[str, Any]] = []
     async with SessionRegistry() as registry:
         projects = await registry.list_projects()
         if not projects:
@@ -175,7 +189,8 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
             parts.append(f"{len(suspended)} subsession{'s' if len(suspended) != 1 else ''}")
         click.echo(f"Stopped {', '.join(parts)}.")
 
-    # Run project_down hooks after stopping sessions.
-    await _run_project_hooks("project_down")
+    # Run project_down hooks only for the projects that were actually stopped.
+    stopped_project_ids = [p["project_id"] for p in projects]
+    await _run_project_hooks("project_down", project_ids=stopped_project_ids)
 
     return stopped + suspended

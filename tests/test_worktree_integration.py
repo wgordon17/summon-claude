@@ -14,13 +14,14 @@ import os
 import stat
 import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from summon_claude.cli.hooks import POST_WORKTREE_TEMPLATE, PRE_WORKTREE_TEMPLATE
 from summon_claude.sessions.hooks import run_lifecycle_hooks, run_post_worktree_hooks
 from summon_claude.sessions.registry import SessionRegistry
+from tests.conftest import make_hooks_mock_registry as _make_hooks_mock_registry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,15 +33,6 @@ def _write_script(path: Path, content: str) -> Path:
     path.write_text(content)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
-
-
-def _make_mock_registry(hooks: list[str]) -> MagicMock:
-    """Build a mock SessionRegistry async context manager returning given hooks."""
-    mock_reg_instance = AsyncMock()
-    mock_reg_instance.__aenter__ = AsyncMock(return_value=mock_reg_instance)
-    mock_reg_instance.__aexit__ = AsyncMock(return_value=False)
-    mock_reg_instance.get_lifecycle_hooks_by_directory = AsyncMock(return_value=hooks)
-    return MagicMock(return_value=mock_reg_instance)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +90,7 @@ class TestWorktreePostHookRunsCreateHooks:
     def test_post_hook_executes_configured_commands(self, tmp_path):
         """Configured worktree_create hooks run when post-worktree is triggered."""
         sentinel = tmp_path / "create_hook_ran.txt"
-        mock_reg_cls = _make_mock_registry([f"touch {sentinel}"])
+        mock_reg_cls = _make_hooks_mock_registry([f"touch {sentinel}"])
 
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
@@ -113,14 +105,15 @@ class TestWorktreePostHookRunsCreateHooks:
         """Multiple worktree_create hooks all run."""
         file_a = tmp_path / "a.txt"
         file_b = tmp_path / "b.txt"
-        mock_reg_cls = _make_mock_registry([f"touch {file_a}", f"touch {file_b}"])
+        mock_reg_cls = _make_hooks_mock_registry([f"touch {file_a}", f"touch {file_b}"])
 
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
             patch("summon_claude.sessions.registry.SessionRegistry", mock_reg_cls),
         ):
-            run_post_worktree_hooks(cwd=tmp_path)
+            exit_code = run_post_worktree_hooks(cwd=tmp_path)
 
+        assert exit_code == 0
         assert file_a.exists()
         assert file_b.exists()
 
@@ -166,7 +159,7 @@ class TestWorktreePostHookSymlinksHackDir:
 class TestWorktreePostHookFailureNonFatal:
     def test_hook_failure_returns_zero(self, tmp_path):
         """Hook failures do not crash the runner — exit code is always 0."""
-        mock_reg_cls = _make_mock_registry(["exit 42"])
+        mock_reg_cls = _make_hooks_mock_registry(["exit 42"])
 
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
@@ -179,7 +172,7 @@ class TestWorktreePostHookFailureNonFatal:
     def test_failing_hook_does_not_abort_subsequent_hooks(self, tmp_path):
         """A failing hook does not abort subsequent hooks in the list."""
         sentinel = tmp_path / "after_failure.txt"
-        mock_reg_cls = _make_mock_registry(["exit 1", f"touch {sentinel}"])
+        mock_reg_cls = _make_hooks_mock_registry(["exit 1", f"touch {sentinel}"])
 
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
@@ -435,7 +428,7 @@ class TestShellHookProjectRootWithSpaces:
         spaced_dir.mkdir()
 
         sentinel = spaced_dir / "ran.txt"
-        mock_reg_cls = _make_mock_registry([f"touch '{sentinel}'"])
+        mock_reg_cls = _make_hooks_mock_registry([f"touch '{sentinel}'"])
 
         with (
             patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
