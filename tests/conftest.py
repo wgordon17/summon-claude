@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import logging.handlers
 import os
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from summon_claude.sessions.registry import SessionRegistry
+from summon_claude.sessions.scheduler import SessionScheduler
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -63,6 +65,11 @@ async def registry(temp_db_path: Path) -> SessionRegistry:
     reg = SessionRegistry(db_path=temp_db_path)
     async with reg:
         yield reg
+
+
+def make_scheduler() -> SessionScheduler:
+    """Create a minimal SessionScheduler for tests."""
+    return SessionScheduler(asyncio.Queue(maxsize=100), asyncio.Event())
 
 
 # ---------------------------------------------------------------------------

@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
+from conftest import make_scheduler
 
 from summon_claude.sessions.registry import SessionRegistry
-from summon_claude.sessions.scheduler import SessionScheduler
 from summon_claude.summon_cli_mcp import create_summon_cli_mcp_tools
-
-
-def _make_scheduler() -> SessionScheduler:
-    return SessionScheduler(asyncio.Queue(maxsize=100), asyncio.Event())
 
 
 @pytest.fixture
@@ -32,7 +26,7 @@ def tools(task_registry):
             authenticated_user_id="U_TASK",
             channel_id="C_TASK",
             cwd="/tmp",
-            scheduler=_make_scheduler(),
+            scheduler=make_scheduler(),
         )
     }
 
@@ -59,7 +53,7 @@ class TestTaskCreate:
             authenticated_user_id="U_TASK",
             channel_id="C_TASK",
             cwd="/tmp",
-            scheduler=_make_scheduler(),
+            scheduler=make_scheduler(),
             on_task_change=_cb,
         )
         create_tool = next(t for t in tool_list if t.name == "TaskCreate")
@@ -127,7 +121,7 @@ class TestTaskList:
                 authenticated_user_id="U_TASK",
                 channel_id="C_TASK",
                 cwd="/tmp",
-                scheduler=_make_scheduler(),
+                scheduler=make_scheduler(),
                 is_pm=False,
             )
         }

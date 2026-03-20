@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import secrets
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -39,13 +40,25 @@ def explain_cron(cron_expr: str) -> tuple[str, str]:
         sim = CronSim(cron_expr, now)
         explain = sim.explain()
     except Exception:
+        logger.debug("explain_cron: CronSim failed for %r", cron_expr, exc_info=True)
         return cron_expr, "—"
     try:
         nxt = next(iter(sim))
         next_fire = nxt.strftime("%H:%M")
     except Exception:
+        logger.debug("explain_cron: no future fire for %r", cron_expr, exc_info=True)
         next_fire = "—"
     return explain, next_fire
+
+
+def sanitize_for_table(text: str, max_len: int = 80) -> str:
+    """Sanitize text for markdown table cells (escape pipes, strip newlines)."""
+    # Strip heading markers before flattening newlines so ^ matches line starts
+    text = re.sub(r"^#{1,6}\s", "", text, flags=re.MULTILINE)
+    text = text.replace("|", "\\|").replace("\n", " ").replace("\r", "")
+    if len(text) > max_len:
+        text = text[:max_len] + "..."
+    return text
 
 
 class SessionScheduler:

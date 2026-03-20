@@ -72,7 +72,7 @@ from summon_claude.sessions.registry import (
 )
 from summon_claude.sessions.response import ResponseStreamer, StreamResult
 from summon_claude.sessions.response import split_text as _split_text
-from summon_claude.sessions.scheduler import SessionScheduler, explain_cron
+from summon_claude.sessions.scheduler import SessionScheduler, explain_cron, sanitize_for_table
 from summon_claude.sessions.types import FileChange
 from summon_claude.slack.canvas_store import CanvasStore
 from summon_claude.slack.canvas_templates import get_canvas_template
@@ -711,16 +711,6 @@ class _SessionRuntime:
 # ---------------------------------------------------------------------------
 
 
-def _sanitize_for_table(text: str, max_len: int = 80) -> str:
-    """Sanitize text for markdown table cells (escape pipes, strip newlines)."""
-    # Strip heading markers before flattening newlines so ^ matches line starts
-    text = re.sub(r"^#{1,6}\s", "", text, flags=re.MULTILINE)
-    text = text.replace("|", "\\|").replace("\n", " ").replace("\r", "")
-    if len(text) > max_len:
-        text = text[:max_len] + "..."
-    return text
-
-
 async def _sync_scheduler_to_canvas(scheduler: SessionScheduler, canvas_store: CanvasStore) -> None:
     """Render scheduler state as markdown and push to the canvas."""
     jobs = scheduler.list_jobs()
@@ -734,7 +724,7 @@ async def _sync_scheduler_to_canvas(scheduler: SessionScheduler, canvas_store: C
     for j in jobs:
         explain, next_fire = explain_cron(j.cron_expr)
         job_type = "System" if j.internal else "Agent"
-        prompt_display = "Project scan timer" if j.internal else _sanitize_for_table(j.prompt, 60)
+        prompt_display = "Project scan timer" if j.internal else sanitize_for_table(j.prompt, 60)
         lines.append(f"| {j.id} | {explain} | {prompt_display} | {job_type} | {next_fire} |")
     await canvas_store.update_section("Scheduled Jobs", "\n".join(lines))
 
@@ -759,10 +749,10 @@ async def _sync_tasks_to_canvas(
         "|--------|----------|------|---------|",
     ]
     for t in active:
-        content = _sanitize_for_table(t["content"], 60)
+        content = sanitize_for_table(t["content"], 60)
         lines.append(f"| {t['status']} | {t['priority']} | {content} | {t['updated_at'][:16]} |")
     for t in done:
-        content = _sanitize_for_table(t["content"], 60)
+        content = sanitize_for_table(t["content"], 60)
         updated = t["updated_at"][:16]
         lines.append(f"| ~~{t['status']}~~ | ~~{t['priority']}~~ | ~~{content}~~ | ~~{updated}~~ |")
     await canvas_store.update_section(heading, "\n".join(lines))

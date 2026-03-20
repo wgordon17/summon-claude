@@ -8,16 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import click
 import pytest
 from click.testing import CliRunner
+from conftest import make_scheduler
 
 from summon_claude.cli import cli
 from summon_claude.sessions.registry import SessionRegistry
-from summon_claude.sessions.scheduler import SessionScheduler
 from summon_claude.sessions.session import build_pm_system_prompt
-
-
-def _make_scheduler() -> SessionScheduler:
-    return SessionScheduler(asyncio.Queue(maxsize=100), asyncio.Event())
-
 
 # ---------------------------------------------------------------------------
 # Registry: project CRUD
@@ -920,7 +915,7 @@ class TestSessionStatusUpdateTool:
             "cid",
             "/tmp",
             is_pm=True,
-            scheduler=_make_scheduler(),
+            scheduler=make_scheduler(),
         )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
@@ -937,7 +932,7 @@ class TestSessionStatusUpdateTool:
             "cid",
             "/tmp",
             is_pm=True,
-            scheduler=_make_scheduler(),
+            scheduler=make_scheduler(),
         )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
@@ -954,7 +949,7 @@ class TestSessionStatusUpdateTool:
             "cid",
             "/tmp",
             is_pm=True,
-            scheduler=_make_scheduler(),
+            scheduler=make_scheduler(),
         )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 
@@ -966,7 +961,7 @@ class TestSessionStatusUpdateTool:
 
         await registry.register("sid-allstatus", 1234, "/tmp")
         tools = create_summon_cli_mcp_tools(
-            registry, "sid-allstatus", "uid", "cid", "/tmp", is_pm=True, scheduler=_make_scheduler()
+            registry, "sid-allstatus", "uid", "cid", "/tmp", is_pm=True, scheduler=make_scheduler()
         )
         status_tool = next(t for t in tools if t.name == "session_log_status")
 

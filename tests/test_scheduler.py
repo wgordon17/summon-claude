@@ -148,7 +148,7 @@ class TestJobFiring:
         scheduler = SessionScheduler(event_queue, shutdown_event)
 
         # Create a real job, then patch _run_job's CronSim to fire immediately
-        now = datetime.now(UTC)
+        now = datetime.now().astimezone()
         immediate = now + timedelta(milliseconds=10)
 
         # Create job normally (validates cron), then cancel its task and
@@ -186,7 +186,7 @@ class TestJobFiring:
             with contextlib.suppress(asyncio.CancelledError):
                 await job.task
 
-        now = datetime.now(UTC)
+        now = datetime.now().astimezone()
         immediate = now + timedelta(milliseconds=10)
 
         with patch("summon_claude.sessions.scheduler.CronSim") as mock_cronsim:

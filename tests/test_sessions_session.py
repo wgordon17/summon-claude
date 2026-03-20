@@ -111,34 +111,29 @@ def make_rt(
 
 
 class TestSanitizeForTable:
-    """Tests for _sanitize_for_table canvas helper."""
+    """Tests for sanitize_for_table canvas helper."""
+
+    def _sanitize(self, text: str, max_len: int = 80) -> str:
+        from summon_claude.sessions.scheduler import sanitize_for_table
+
+        return sanitize_for_table(text, max_len)
 
     def test_heading_at_start(self):
-        from summon_claude.sessions.session import _sanitize_for_table
-
-        assert _sanitize_for_table("## Heading") == "Heading"
+        assert self._sanitize("## Heading") == "Heading"
 
     def test_heading_on_non_first_line(self):
-        from summon_claude.sessions.session import _sanitize_for_table
-
-        result = _sanitize_for_table("line one\n## Heading two")
+        result = self._sanitize("line one\n## Heading two")
         assert "##" not in result
         assert "Heading two" in result
 
     def test_pipe_escaped(self):
-        from summon_claude.sessions.session import _sanitize_for_table
-
-        assert "\\|" in _sanitize_for_table("a|b")
+        assert "\\|" in self._sanitize("a|b")
 
     def test_newlines_flattened(self):
-        from summon_claude.sessions.session import _sanitize_for_table
-
-        assert "\n" not in _sanitize_for_table("a\nb\nc")
+        assert "\n" not in self._sanitize("a\nb\nc")
 
     def test_truncation(self):
-        from summon_claude.sessions.session import _sanitize_for_table
-
-        result = _sanitize_for_table("x" * 200, max_len=50)
+        result = self._sanitize("x" * 200, max_len=50)
         assert len(result) == 53  # 50 + "..."
         assert result.endswith("...")
 
