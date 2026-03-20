@@ -138,7 +138,7 @@ ignore = [
     "S105", "S106",  # hardcoded passwords/tokens are test fixtures
     "S108",    # temp file paths in tests
     "S311",    # random.random() fine in tests
-    "S607",    # partial subprocess path fine in tests
+    "S603", "S607",    # subprocess calls fine in tests
     "PLR2004", # magic values are readable in tests
     "PLW1510", # subprocess.run check= fine in tests
     "PLC0415", # deferred imports acceptable in tests

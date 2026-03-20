@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from typing import Any
 
@@ -9,7 +10,27 @@ import click
 
 from summon_claude.cli import daemon_client
 from summon_claude.daemon import is_daemon_running
+from summon_claude.sessions.hooks import run_lifecycle_hooks
 from summon_claude.sessions.registry import SessionRegistry
+
+logger = logging.getLogger(__name__)
+
+
+async def _run_project_hooks(hook_type: str) -> None:
+    """Run lifecycle hooks for all registered projects. Failures are logged, not fatal."""
+    async with SessionRegistry() as registry:
+        projects = await registry.list_projects()
+        for project in projects:
+            project_id = project["project_id"]
+            directory = project.get("directory", "")
+            hooks = await registry.get_lifecycle_hooks(hook_type, project_id=project_id)
+            if hooks:
+                cwd = pathlib.Path(directory) if directory else pathlib.Path.cwd()
+                errors = await run_lifecycle_hooks(hook_type, cwd, hooks, project_root=cwd)
+                for err in errors:
+                    logger.warning(
+                        "%s hook error for project %s: %s", hook_type, project["name"], err
+                    )
 
 
 def _resolve_directory(directory: str) -> str:
@@ -73,6 +94,8 @@ async def launch_project_managers() -> None:
 
     if response.get("type") == "project_up_complete":
         click.echo("All projects already have PM agents running.")
+        # Run project_up hooks for all projects even if PMs are already running.
+        await _run_project_hooks("project_up")
         return
 
     if response.get("type") != "project_up_auth_required":
@@ -87,6 +110,7 @@ async def launch_project_managers() -> None:
     click.echo(f"\nAuthenticate in Slack: /summon {short_code}")
     click.echo("\nPM sessions will start after authentication.")
     click.echo("Run 'summon project list' to check status.")
+    await _run_project_hooks("project_up")
 
 
 async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noqa: PLR0912
@@ -150,4 +174,8 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
         if suspended:
             parts.append(f"{len(suspended)} subsession{'s' if len(suspended) != 1 else ''}")
         click.echo(f"Stopped {', '.join(parts)}.")
+
+    # Run project_down hooks after stopping sessions.
+    await _run_project_hooks("project_down")
+
     return stopped + suspended

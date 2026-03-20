@@ -1093,10 +1093,17 @@ class SessionRegistry:
             await db.commit()
 
     async def clear_workflow_defaults(self) -> None:
-        """Remove global default workflow instructions."""
+        """Remove global default workflow instructions.
+
+        Uses UPDATE (not DELETE) to preserve other columns on the row
+        (e.g. hooks column added by migration 9→10).
+        """
         db = self._check_connected()
         async with self._lock:
-            await db.execute("DELETE FROM workflow_defaults WHERE id = 1")
+            await db.execute(
+                "UPDATE workflow_defaults SET instructions = '', updated_at = ? WHERE id = 1",
+                (_now(),),
+            )
             await db.commit()
 
     async def get_project_workflow(self, project_id: str) -> str:
@@ -1151,6 +1158,171 @@ class SessionRegistry:
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else ""
+
+    # --- Lifecycle hook methods ---
+
+    async def get_lifecycle_hooks(self, hook_type: str, project_id: str | None = None) -> list[str]:
+        """Return hook commands for *hook_type*, with project-level override semantics.
+
+        NULL in the hooks column means "not set — fall back to global defaults."
+        An explicit JSON value (even ``{}``) overrides global defaults entirely.
+        """
+        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
+
+        if hook_type not in VALID_HOOK_TYPES:
+            raise ValueError(
+                f"Invalid hook_type {hook_type!r}; must be one of {sorted(VALID_HOOK_TYPES)}"
+            )
+
+        db = self._check_connected()
+        raw: str | None = None
+
+        if project_id is not None:
+            async with db.execute(
+                "SELECT hooks FROM projects WHERE project_id = ?", (project_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is not None:
+                    raw = row[0]  # may be None (NULL) or a JSON string
+
+        # Fall back to global workflow_defaults when project hooks column is NULL.
+        if raw is None:
+            async with db.execute("SELECT hooks FROM workflow_defaults WHERE id = 1") as cursor:
+                row = await cursor.fetchone()
+                raw = row[0] if row else None
+
+        if raw is None:
+            return []
+
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Could not parse hooks JSON; returning empty list")
+            return []
+
+        if not isinstance(data, dict):
+            return []
+        value = data.get(hook_type, [])
+        if not isinstance(value, list):
+            return []
+        return [cmd for cmd in value if isinstance(cmd, str)]
+
+    async def get_lifecycle_hooks_by_directory(
+        self, hook_type: str, directory: str | Path
+    ) -> list[str]:
+        """Return hook commands for *hook_type* for the project at *directory*.
+
+        *directory* should be the main repo root (e.g. from ``git worktree list``).
+        Returns empty list if no matching project is found.
+
+        Consolidates the project-hooks + global-fallback lookup into minimal queries
+        (1 query if project has hooks, 2 if falling back to global).
+        """
+        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
+
+        if hook_type not in VALID_HOOK_TYPES:
+            raise ValueError(
+                f"Invalid hook_type {hook_type!r}; must be one of {sorted(VALID_HOOK_TYPES)}"
+            )
+
+        resolved = str(Path(directory).resolve())  # noqa: ASYNC240
+        db = self._check_connected()
+
+        # Single query: fetch hooks directly by directory (avoids 2nd project_id lookup).
+        async with db.execute(
+            "SELECT hooks FROM projects WHERE directory = ?", (resolved,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return []  # No matching project
+            raw = row[0]  # May be None (NULL) or JSON string
+
+        # NULL = fall back to global; explicit JSON (even {}) = override
+        if raw is None:
+            async with db.execute("SELECT hooks FROM workflow_defaults WHERE id = 1") as cursor:
+                row = await cursor.fetchone()
+                raw = row[0] if row else None
+
+        if raw is None:
+            return []
+
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Could not parse hooks JSON; returning empty list")
+            return []
+
+        if not isinstance(data, dict):
+            return []
+        value = data.get(hook_type, [])
+        if not isinstance(value, list):
+            return []
+        return [cmd for cmd in value if isinstance(cmd, str)]
+
+    async def set_lifecycle_hooks(
+        self, hooks: dict[str, list[str]], project_id: str | None = None
+    ) -> None:
+        """Persist *hooks* mapping (hook_type -> list[str]) for a project or globally.
+
+        Validates all keys against VALID_HOOK_TYPES and all values as non-empty strings.
+        Raises ``ValueError`` on invalid input; raises ``KeyError`` if project_id not found.
+        """
+        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
+
+        for key, val in hooks.items():
+            if key not in VALID_HOOK_TYPES:
+                raise ValueError(
+                    f"Invalid hook_type {key!r}; must be one of {sorted(VALID_HOOK_TYPES)}"
+                )
+            if not isinstance(val, list):
+                raise ValueError(f"Hooks for {key!r} must be a list, got {type(val).__name__}")
+            for item in val:
+                if not isinstance(item, str):
+                    raise ValueError(
+                        f"Each hook command must be a str, got {type(item).__name__!r}"
+                    )
+                if not item:
+                    raise ValueError("Hook commands must not be empty strings")
+
+        raw = json.dumps(hooks)
+        db = self._check_connected()
+        async with self._lock:
+            if project_id is not None:
+                cursor = await db.execute(
+                    "UPDATE projects SET hooks = ? WHERE project_id = ?",
+                    (raw, project_id),
+                )
+                await db.commit()
+                if cursor.rowcount == 0:
+                    raise KeyError(f"No project with id {project_id!r}")
+            else:
+                now = _now()
+                await db.execute(
+                    "INSERT INTO workflow_defaults (id, instructions, hooks, updated_at)"
+                    " VALUES (1, '', ?, ?)"
+                    " ON CONFLICT(id) DO UPDATE"
+                    " SET hooks = excluded.hooks, updated_at = excluded.updated_at",
+                    (raw, now),
+                )
+                await db.commit()
+
+    async def clear_lifecycle_hooks(self, project_id: str | None = None) -> None:
+        """Set the hooks column to NULL, removing any configured hooks.
+
+        For a project: sets hooks = NULL (falls back to global on next read).
+        Global: sets hooks = NULL (no global hooks configured).
+        No-op if the project does not exist.
+        """
+        db = self._check_connected()
+        async with self._lock:
+            if project_id is not None:
+                await db.execute(
+                    "UPDATE projects SET hooks = NULL WHERE project_id = ?",
+                    (project_id,),
+                )
+            else:
+                await db.execute("UPDATE workflow_defaults SET hooks = NULL WHERE id = 1")
+            await db.commit()
 
     # --- Audit log methods ---
 

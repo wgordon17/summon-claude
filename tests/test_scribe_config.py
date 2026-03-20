@@ -509,7 +509,7 @@ class TestGoogleIntegration:
         from summon_claude.config import find_workspace_mcp_bin
 
         bin_path = find_workspace_mcp_bin()
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             [str(bin_path), "--single-user", "--cli"],
             capture_output=True,
             text=True,
@@ -527,7 +527,7 @@ class TestGoogleIntegration:
 
         bin_path = str(find_workspace_mcp_bin())
         # workspace-mcp --help shows the valid --tools choices
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             [bin_path, "--help"],
             capture_output=True,
             text=True,

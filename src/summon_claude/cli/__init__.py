@@ -36,6 +36,14 @@ from summon_claude.cli.config import (
 )
 from summon_claude.cli.db import async_db_purge, async_db_reset, async_db_status, async_db_vacuum
 from summon_claude.cli.formatting import echo
+from summon_claude.cli.hooks import (
+    async_clear_hooks,
+    async_set_hooks,
+    async_show_hooks,
+    install_hooks,
+    run_post_worktree_cli,
+    uninstall_hooks,
+)
 from summon_claude.cli.project import (
     async_project_add,
     async_project_list,
@@ -676,6 +684,90 @@ def db_purge(ctx: click.Context, older_than: int, yes: bool) -> None:
         msg = f"Purge all completed/errored records older than {older_than} days?"
         click.confirm(msg, abort=True)
     asyncio.run(async_db_purge(older_than, ctx))
+
+
+# ---------------------------------------------------------------------------
+# hooks command group
+# ---------------------------------------------------------------------------
+
+
+@cli.group("hooks")
+def cmd_hooks() -> None:
+    """Manage lifecycle hooks and the Claude Code hook bridge."""
+
+
+@cmd_hooks.command("show")
+@click.option("--project", default=None, help="Project ID to show hooks for (default: global)")
+@click.pass_context
+def hooks_show(ctx: click.Context, project: str | None) -> None:
+    """Show configured lifecycle hooks."""
+    asyncio.run(async_show_hooks(ctx, project_id=project))
+
+
+@cmd_hooks.command("set")
+@click.argument("hooks_json", required=False, default=None)
+@click.option("--project", default=None, help="Project ID to set hooks for (default: global)")
+def hooks_set(hooks_json: str | None, project: str | None) -> None:
+    """Set lifecycle hooks via $EDITOR or from a JSON string.
+
+    If HOOKS_JSON is omitted, opens $EDITOR with current hooks for editing.
+    If provided, parses the JSON and stores it directly.
+
+    Hook types: worktree_create, project_up, project_down.
+
+    \b
+    Examples:
+      summon hooks set                                  # opens $EDITOR
+      summon hooks set '{"worktree_create": ["make setup"]}'  # inline JSON
+    """
+    asyncio.run(async_set_hooks(hooks_json, project_id=project))
+
+
+@cmd_hooks.command("clear")
+@click.option("--project", default=None, help="Project ID to clear hooks for (default: global)")
+def hooks_clear(project: str | None) -> None:
+    """Clear lifecycle hooks (sets to NULL, falling back to global defaults)."""
+    asyncio.run(async_clear_hooks(project_id=project))
+
+
+@cmd_hooks.command("install")
+def hooks_install() -> None:
+    """Install the Claude Code hook bridge (shell wrappers + settings.json entries).
+
+    Writes summon-pre-worktree.sh and summon-post-worktree.sh to
+    ~/.claude/hooks/ and registers them in ~/.claude/settings.json
+    as PreToolUse/PostToolUse handlers for EnterWorktree. Idempotent.
+    """
+    try:
+        install_hooks()
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+
+
+@cmd_hooks.command("uninstall")
+def hooks_uninstall() -> None:
+    """Remove summon-owned hook entries from settings.json and delete shell wrappers."""
+    try:
+        uninstall_hooks()
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+
+
+@cmd_hooks.group("run")
+def hooks_run() -> None:
+    """Run internal hook bridge commands (called by shell wrappers)."""
+
+
+@hooks_run.command("post-worktree")
+def hooks_run_post_worktree() -> None:
+    """Run worktree_create lifecycle hooks for the current directory.
+
+    Called automatically by the post-worktree shell wrapper after
+    EnterWorktree. Always exits 0 — hook failures are warnings only.
+    """
+    run_post_worktree_cli()
 
 
 def main() -> None:
