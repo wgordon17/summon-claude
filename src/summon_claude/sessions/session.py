@@ -727,7 +727,7 @@ async def _sync_scheduler_to_canvas(scheduler: SessionScheduler, canvas_store: C
         await canvas_store.update_section("Scheduled Jobs", "_No scheduled jobs._")
         return
     lines = [
-        "| ID | Schedule | Prompt | Type | Recurring |",
+        "| ID | Schedule | Prompt | Type | Next Fire |",
         "|-----|----------|--------|------|-----------|",
     ]
     for j in jobs:
@@ -735,9 +735,14 @@ async def _sync_scheduler_to_canvas(scheduler: SessionScheduler, canvas_store: C
             explain = CronSim(j.cron_expr, datetime.now()).explain()  # noqa: DTZ005
         except Exception:
             explain = j.cron_expr
+        try:
+            nxt = next(iter(CronSim(j.cron_expr, datetime.now())))  # noqa: DTZ005
+            next_fire = nxt.strftime("%H:%M")
+        except (StopIteration, Exception):
+            next_fire = "—"
         job_type = "System" if j.internal else "Agent"
         prompt_display = "Project scan timer" if j.internal else _sanitize_for_table(j.prompt, 60)
-        lines.append(f"| {j.id} | {explain} | {prompt_display} | {job_type} | {j.recurring} |")
+        lines.append(f"| {j.id} | {explain} | {prompt_display} | {job_type} | {next_fire} |")
     await canvas_store.update_section("Scheduled Jobs", "\n".join(lines))
 
 
