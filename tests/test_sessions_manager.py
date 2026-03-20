@@ -58,6 +58,7 @@ class _StubSession:
         self._run_count = 0
         self.channel_id: str | None = None
         self.is_pm: bool = False
+        self.project_id: str | None = None
         self._shutdown_requested = False
         self._authenticated_user_id: str | None = None
         self._authenticated_event = asyncio.Event()
@@ -342,6 +343,45 @@ class TestSupervisedSession:
         with pytest.raises(asyncio.CancelledError):
             await manager._supervised_session(stub, "s1")  # type: ignore[arg-type]
 
+    async def test_pm_clean_exit_updates_topic(self):
+        """PM session clean exit triggers _update_pm_topic."""
+        manager, mock_provider, _ = _make_manager()
+        mock_provider.conversations_setTopic = AsyncMock()
+
+        stub = _StubSession()
+        stub.is_pm = True
+        stub.project_id = "p1"
+        stub.channel_id = "C_PM"
+
+        # Add the PM to _sessions so _update_pm_topic can find it
+        manager._sessions["pm-id"] = stub  # type: ignore[assignment]
+
+        await manager._supervised_session(stub, "pm-id")  # type: ignore[arg-type]
+
+        mock_provider.conversations_setTopic.assert_awaited_once_with(
+            channel="C_PM",
+            topic="Project Manager | 0 active sessions | idle",
+        )
+
+    async def test_pm_clean_exit_skips_topic_when_cached(self):
+        """PM exit with seeded cache (matching initial topic) skips redundant API call."""
+        manager, mock_provider, _ = _make_manager()
+        mock_provider.conversations_setTopic = AsyncMock()
+
+        stub = _StubSession()
+        stub.is_pm = True
+        stub.project_id = "p1"
+        stub.channel_id = "C_PM"
+
+        manager._sessions["pm-id"] = stub  # type: ignore[assignment]
+        # Simulate _start_pm_for_project seeding the cache with initial topic
+        manager._pm_topic_cache["p1"] = "Project Manager | 0 active sessions | idle"
+
+        await manager._supervised_session(stub, "pm-id")  # type: ignore[arg-type]
+
+        # Cache matches → no API call
+        mock_provider.conversations_setTopic.assert_not_awaited()
+
     async def test_recoverable_posts_error_on_final_failure(self):
         """After exhausting retries, best-effort error message posted to channel."""
         manager, mock_provider, _ = _make_manager()
@@ -389,6 +429,24 @@ class TestOnTaskDone:
         await asyncio.sleep(0)
 
         mock_dispatcher.unregister.assert_called_with("C001")
+
+    async def test_task_done_evicts_pm_topic_cache(self):
+        """PM session exit clears its project's topic cache entry."""
+        manager, _, _ = _make_manager()
+        stub = _StubSession()
+        stub.is_pm = True
+        stub.project_id = "p1"
+
+        # Pre-populate cache as if a topic was previously set
+        manager._pm_topic_cache["p1"] = "Project Manager | 1 active session | working"
+
+        _patch_session(manager, stub)
+        await manager.create_session(make_options())
+
+        await asyncio.gather(*manager._tasks.values(), return_exceptions=True)
+        await asyncio.sleep(0)
+
+        assert "p1" not in manager._pm_topic_cache
 
 
 # ---------------------------------------------------------------------------

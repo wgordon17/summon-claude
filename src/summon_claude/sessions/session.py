@@ -288,6 +288,16 @@ _PM_SYSTEM_PROMPT_APPEND = (
 )
 
 
+_PM_WELCOME_PREFIX = "*Project Manager Status*"
+
+
+def format_pm_topic(child_count: int) -> str:
+    """Build the deterministic PM channel topic string."""
+    sessions_word = "session" if child_count == 1 else "sessions"
+    status = "working" if child_count > 0 else "idle"
+    return f"Project Manager | {child_count} active {sessions_word} | {status}"
+
+
 def _format_interval(seconds: int) -> str:
     """Format a duration in seconds as a human-readable string.
 
@@ -310,12 +320,28 @@ def _format_interval(seconds: int) -> str:
     return " ".join(parts) or "0 seconds"
 
 
-def build_pm_system_prompt(*, cwd: str, scan_interval_s: int) -> dict:
-    """Build the PM system prompt with interpolated project context."""
-    append_text = _PM_SYSTEM_PROMPT_APPEND.format(
-        scan_interval=_format_interval(scan_interval_s),
-        cwd=cwd,
-    )
+def build_pm_system_prompt(
+    *, cwd: str, scan_interval_s: int, workflow_instructions: str = ""
+) -> dict:
+    """Build the PM system prompt with interpolated project context.
+
+    When *workflow_instructions* is non-empty, a "Workflow Instructions"
+    section is appended to the system prompt.  These instructions survive
+    compaction (they live in the ``append`` field of the preset).
+    """
+    # Use .replace() instead of .format() so cwd values containing
+    # curly braces (e.g. /home/user/{project}) don't raise KeyError.
+    append_text = _PM_SYSTEM_PROMPT_APPEND.replace(
+        "{scan_interval}", _format_interval(scan_interval_s)
+    ).replace("{cwd}", cwd)
+    if workflow_instructions:
+        append_text += (
+            "\n\n## Workflow Instructions\n\n"
+            "The following workflow instructions define how you must operate. "
+            "Follow these instructions precisely — your Global PM will audit "
+            "your compliance.\n\n"
+            f"{workflow_instructions}"
+        )
     return {
         "type": "preset",
         "preset": "claude_code",
@@ -443,12 +469,21 @@ def build_scribe_system_prompt(
     external_slack_section = (
         "- External Slack: check monitored channels for new messages\n" if slack_enabled else ""
     )
-    append_text = _SCRIBE_SYSTEM_PROMPT_APPEND.format(
-        scan_interval=scan_interval,
-        user_mention=user_mention,
-        importance_keywords=importance_keywords or "urgent, action required, deadline",
-        google_section=google_section,
-        external_slack_section=external_slack_section,
+    # Use .replace() instead of .format() so user-supplied values
+    # (e.g. importance_keywords) containing curly braces don't crash.
+    # The template uses {{ts}}/{{summary}} for literal braces in output,
+    # so we convert those after placeholder replacement.
+    append_text = (
+        _SCRIBE_SYSTEM_PROMPT_APPEND.replace("{scan_interval}", str(scan_interval))
+        .replace("{user_mention}", user_mention)
+        .replace(
+            "{importance_keywords}",
+            importance_keywords or "urgent, action required, deadline",
+        )
+        .replace("{google_section}", google_section)
+        .replace("{external_slack_section}", external_slack_section)
+        .replace("{{", "{")
+        .replace("}}", "}")
     )
     return {
         "type": "preset",
@@ -741,6 +776,11 @@ class SummonSession:
         return self._pm_profile
 
     @property
+    def project_id(self) -> str | None:
+        """Project ID this session belongs to, if any."""
+        return self._project_id
+
+    @property
     def name(self) -> str:
         """Session name (from SessionOptions)."""
         return self._name
@@ -1013,10 +1053,17 @@ class SummonSession:
 
         await _post_session_header(client, self._cwd, self._model, self._session_id)
 
+        # PM-specific: welcome message, pinned status, and PM topic
+        if self._pm_profile:
+            await self._post_pm_welcome(client, web_client)
+
         git_branch = await _get_git_branch(self._cwd)
         self._last_topic_model = self._model
         self._last_topic_branch = git_branch
-        topic = _format_topic(model=self._model, cwd=self._cwd, git_branch=git_branch)
+        if self._pm_profile:
+            topic = format_pm_topic(0)
+        else:
+            topic = _format_topic(model=self._model, cwd=self._cwd, git_branch=git_branch)
         try:
             await client.set_topic(topic)
         except Exception as e:
@@ -1216,6 +1263,44 @@ class SummonSession:
         logger.info("PM: created new channel #%s", cname)
         return new_id, cname
 
+    async def _post_pm_welcome(self, client: SlackClient, web_client: AsyncWebClient) -> None:
+        """Post the PM welcome message and pin it (non-fatal).
+
+        On channel reuse (PM restart), old pins are removed first to
+        prevent accumulation of stale status messages.
+        """
+        welcome_text = (
+            f"{_PM_WELCOME_PREFIX}\n---\nNo active sessions.\n\n_Send a message to start working._"
+        )
+        # Remove stale pins from previous PM sessions (non-fatal)
+        try:
+            pins_resp = await web_client.pins_list(channel=client.channel_id)
+            for item in pins_resp.get("items") or []:
+                msg = item.get("message", {})
+                if msg.get("text", "").startswith(_PM_WELCOME_PREFIX):
+                    try:
+                        await web_client.pins_remove(
+                            channel=client.channel_id,
+                            timestamp=msg["ts"],
+                        )
+                    except Exception:
+                        logger.debug("PM: failed to unpin old status")
+        except Exception as e:
+            logger.debug("PM: failed to clean up old pins: %s", e)
+
+        try:
+            msg_ref = await client.post(welcome_text)
+            # Pin the status message
+            try:
+                await web_client.pins_add(
+                    channel=client.channel_id,
+                    timestamp=msg_ref.ts,
+                )
+            except Exception as e:
+                logger.debug("PM: failed to pin status message: %s", e)
+        except Exception as e:
+            logger.debug("PM: failed to post welcome message: %s", e)
+
     async def _init_canvas(
         self, client: SlackClient, registry: SessionRegistry
     ) -> CanvasStore | None:
@@ -1225,7 +1310,7 @@ class SummonSession:
         """
         profile = "pm" if self._pm_profile else "agent"
         template = get_canvas_template(profile)
-        markdown = template.format(model=self._model or "unknown", cwd=self._cwd)
+        markdown = template.replace("{model}", self._model or "unknown").replace("{cwd}", self._cwd)
 
         canvas_id = await client.canvas_create(markdown, title=f"{self._name} — Session Canvas")
         if not canvas_id:
@@ -1330,10 +1415,27 @@ class SummonSession:
             base_prompt += _CANVAS_PROMPT_SECTION
         system_prompt_append = base_prompt
 
+        # Fetch workflow instructions once for PM sessions (survives compaction restarts)
+        pm_workflow = ""
+        if is_pm and self._project_id:
+            try:
+                pm_workflow = await rt.registry.get_effective_workflow(self._project_id)
+            except Exception as e:
+                logger.warning("Failed to fetch workflow instructions: %s", e)
+                try:
+                    await rt.client.post(
+                        ":warning: Failed to load workflow instructions — "
+                        "operating without workflow constraints."
+                    )
+                except Exception:
+                    logger.debug("Failed to post workflow warning to Slack")
+
         while True:
             if is_pm:
                 system_prompt = build_pm_system_prompt(
-                    cwd=self._cwd, scan_interval_s=self._scan_interval_s
+                    cwd=self._cwd,
+                    scan_interval_s=self._scan_interval_s,
+                    workflow_instructions=pm_workflow,
                 )
             else:
                 system_prompt = {
@@ -1802,17 +1904,18 @@ class SummonSession:
                 except Exception:
                     logger.debug("Failed to post context warning", exc_info=True)
 
-        # Only update topic if model or branch changed
-        try:
-            current_model = self._last_model_seen or self._model
-            git_branch = await _get_git_branch(self._cwd)
-            if current_model != self._last_topic_model or git_branch != self._last_topic_branch:
-                topic = _format_topic(model=current_model, cwd=self._cwd, git_branch=git_branch)
-                await rt.client.set_topic(topic)
-                self._last_topic_model = current_model
-                self._last_topic_branch = git_branch
-        except Exception:
-            logger.warning("Post-turn topic update failed", exc_info=True)
+        # Only update topic if model or branch changed (PM manages its own topic)
+        if not self._pm_profile:
+            try:
+                current_model = self._last_model_seen or self._model
+                git_branch = await _get_git_branch(self._cwd)
+                if current_model != self._last_topic_model or git_branch != self._last_topic_branch:
+                    topic = _format_topic(model=current_model, cwd=self._cwd, git_branch=git_branch)
+                    await rt.client.set_topic(topic)
+                    self._last_topic_model = current_model
+                    self._last_topic_branch = git_branch
+            except Exception:
+                logger.warning("Post-turn topic update failed", exc_info=True)
 
     async def _heartbeat_loop(self, rt: _SessionRuntime) -> None:
         """Update registry heartbeat every 30 seconds."""
@@ -2268,7 +2371,7 @@ class SummonSession:
             return
 
         child_name = f"{self._name}-spawn-{secrets.token_hex(3)}"
-        child_options = SessionOptions(cwd=self._cwd, name=child_name)
+        child_options = SessionOptions(cwd=self._cwd, name=child_name, project_id=self._project_id)
         try:
             child_session_id = await daemon_client.create_session_with_spawn_token(
                 child_options, spawn_auth.token

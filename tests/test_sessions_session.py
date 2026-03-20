@@ -1230,6 +1230,48 @@ class TestHandleSpawn:
             text = rt.client.post.call_args[0][0]
             assert "Spawned session started" in text
 
+    async def test_handle_spawn_propagates_project_id(self, tmp_path):
+        """_handle_spawn passes parent's project_id to child SessionOptions."""
+        from summon_claude.sessions.registry import SessionRegistry
+
+        async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
+            await registry.register("sess-proj", 1234, "/tmp")
+
+            opts = SessionOptions(cwd="/tmp", name="test-pm", project_id="proj-42")
+            session = SummonSession(
+                config=make_config(),
+                options=opts,
+                auth=make_auth(session_id="sess-proj"),
+                session_id="sess-proj",
+            )
+            session._authenticated_user_id = "U_OWNER"
+            session._channel_id = "C_SELF"
+
+            rt = _SessionRuntime(
+                registry=registry,
+                client=make_mock_client("C_SELF"),
+                permission_handler=AsyncMock(),
+            )
+
+            mock_create = AsyncMock(return_value="child-sess-id")
+            with (
+                patch(
+                    "summon_claude.sessions.auth.generate_spawn_token",
+                    new=AsyncMock(
+                        return_value=AsyncMock(token="tok123", parent_session_id="sess-proj")
+                    ),
+                ),
+                patch(
+                    "summon_claude.cli.daemon_client.create_session_with_spawn_token",
+                    new=mock_create,
+                ),
+            ):
+                await session._handle_spawn(rt, user_id="U_OWNER", thread_ts=None)
+
+            # Verify project_id was propagated to child options
+            child_opts = mock_create.call_args[0][0]
+            assert child_opts.project_id == "proj-42"
+
     async def test_spawn_blocked_at_child_limit(self):
         """_handle_spawn posts limit message when active children >= limit."""
         session = make_session()

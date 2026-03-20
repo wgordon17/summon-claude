@@ -318,10 +318,12 @@ class TestBuildPmSystemPrompt:
     def test_includes_cwd(self):
         result = build_pm_system_prompt(cwd="/my/project/dir", scan_interval_s=900)
         assert "/my/project/dir" in result["append"]
+        assert "{cwd}" not in result["append"]
 
     def test_includes_scan_interval_minutes(self):
         result = build_pm_system_prompt(cwd="/tmp", scan_interval_s=600)
         assert "10 minutes" in result["append"]
+        assert "{scan_interval}" not in result["append"]
 
     def test_15min_interval(self):
         result = build_pm_system_prompt(cwd="/tmp", scan_interval_s=900)
@@ -345,6 +347,365 @@ class TestBuildPmSystemPrompt:
         result = build_pm_system_prompt(cwd="/tmp", scan_interval_s=900)
         assert isinstance(result["append"], str)
         assert len(result["append"]) > 50
+
+
+# ---------------------------------------------------------------------------
+# PM system prompt: workflow injection
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPmSystemPromptWorkflow:
+    @pytest.mark.parametrize(
+        "workflow,should_appear",
+        [
+            (None, False),
+            ("", False),
+            ("Always use TDD.", True),
+        ],
+        ids=["omitted", "empty-string", "non-empty"],
+    )
+    def test_workflow_presence(self, workflow, should_appear):
+        kwargs: dict = {"cwd": "/tmp", "scan_interval_s": 900}
+        if workflow is not None:
+            kwargs["workflow_instructions"] = workflow
+        result = build_pm_system_prompt(**kwargs)
+        if should_appear:
+            assert "## Workflow Instructions" in result["append"]
+            assert workflow in result["append"]
+        else:
+            assert "Workflow Instructions" not in result["append"]
+
+    def test_workflow_instructions_include_compliance_notice(self):
+        result = build_pm_system_prompt(
+            cwd="/tmp", scan_interval_s=900, workflow_instructions="Use TDD."
+        )
+        assert "Global PM will audit" in result["append"]
+
+    def test_workflow_instructions_after_base_prompt(self):
+        result = build_pm_system_prompt(
+            cwd="/tmp", scan_interval_s=900, workflow_instructions="custom rule"
+        )
+        append = result["append"]
+        # Base prompt content comes before workflow section
+        base_idx = append.index("Project Manager")
+        wf_idx = append.index("## Workflow Instructions")
+        assert base_idx < wf_idx
+
+    def test_workflow_preserves_structure(self):
+        result = build_pm_system_prompt(
+            cwd="/my/dir", scan_interval_s=600, workflow_instructions="rule1"
+        )
+        assert result["type"] == "preset"
+        assert result["preset"] == "claude_code"
+        assert "/my/dir" in result["append"]
+        assert "10 minutes" in result["append"]
+        assert "rule1" in result["append"]
+
+    @pytest.mark.parametrize(
+        "cwd",
+        ["/home/user/{project}", "/data/{name}/src"],
+        ids=["curly-braces", "format-placeholder"],
+    )
+    def test_cwd_with_special_characters(self, cwd):
+        """Ensure cwd containing curly braces is treated as literal text."""
+        result = build_pm_system_prompt(cwd=cwd, scan_interval_s=900)
+        assert cwd in result["append"]
+
+
+# ---------------------------------------------------------------------------
+# PM welcome message
+# ---------------------------------------------------------------------------
+
+
+class TestPostPmWelcome:
+    async def test_pm_welcome_posts_message(self):
+        from summon_claude.config import SummonConfig
+        from summon_claude.sessions.session import SessionOptions, SummonSession
+
+        config = MagicMock(spec=SummonConfig)
+        options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
+        session = SummonSession(config=config, options=options, session_id="pm-welcome-test")
+
+        client = MagicMock()
+        client.channel_id = "C_PM"
+        msg_ref = MagicMock()
+        msg_ref.ts = "1234.5678"
+        client.post = AsyncMock(return_value=msg_ref)
+
+        web_client = AsyncMock()
+        web_client.pins_list = AsyncMock(return_value={"items": []})
+
+        await session._post_pm_welcome(client, web_client)
+
+        client.post.assert_called_once()
+        posted_text = client.post.call_args[0][0]
+        assert "Project Manager Status" in posted_text
+        assert "No active sessions" in posted_text
+
+    async def test_pm_welcome_pins_message(self):
+        from summon_claude.config import SummonConfig
+        from summon_claude.sessions.session import SessionOptions, SummonSession
+
+        config = MagicMock(spec=SummonConfig)
+        options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
+        session = SummonSession(config=config, options=options, session_id="pm-pin-test")
+
+        client = MagicMock()
+        client.channel_id = "C_PM"
+        msg_ref = MagicMock()
+        msg_ref.ts = "1234.5678"
+        client.post = AsyncMock(return_value=msg_ref)
+
+        web_client = AsyncMock()
+        web_client.pins_list = AsyncMock(return_value={"items": []})
+
+        await session._post_pm_welcome(client, web_client)
+
+        web_client.pins_add.assert_called_once_with(channel="C_PM", timestamp="1234.5678")
+
+    async def test_pm_welcome_survives_pin_failure(self):
+        from summon_claude.config import SummonConfig
+        from summon_claude.sessions.session import SessionOptions, SummonSession
+
+        config = MagicMock(spec=SummonConfig)
+        options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
+        session = SummonSession(config=config, options=options, session_id="pm-pin-fail")
+
+        client = MagicMock()
+        client.channel_id = "C_PM"
+        msg_ref = MagicMock()
+        msg_ref.ts = "1234.5678"
+        client.post = AsyncMock(return_value=msg_ref)
+
+        web_client = AsyncMock()
+        web_client.pins_list = AsyncMock(return_value={"items": []})
+        web_client.pins_add = AsyncMock(side_effect=Exception("Slack API error"))
+
+        # Should not raise
+        await session._post_pm_welcome(client, web_client)
+
+    async def test_pm_welcome_survives_post_failure(self):
+        from summon_claude.config import SummonConfig
+        from summon_claude.sessions.session import SessionOptions, SummonSession
+
+        config = MagicMock(spec=SummonConfig)
+        options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
+        session = SummonSession(config=config, options=options, session_id="pm-post-fail")
+
+        client = MagicMock()
+        client.channel_id = "C_PM"
+        client.post = AsyncMock(side_effect=Exception("Post failed"))
+
+        web_client = AsyncMock()
+        web_client.pins_list = AsyncMock(return_value={"items": []})
+
+        # Should not raise
+        await session._post_pm_welcome(client, web_client)
+
+    async def test_pm_welcome_removes_old_pins(self):
+        from summon_claude.config import SummonConfig
+        from summon_claude.sessions.session import SessionOptions, SummonSession
+
+        config = MagicMock(spec=SummonConfig)
+        options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
+        session = SummonSession(config=config, options=options, session_id="pm-old-pins")
+
+        client = MagicMock()
+        client.channel_id = "C_PM"
+        msg_ref = MagicMock()
+        msg_ref.ts = "9999.0000"
+        client.post = AsyncMock(return_value=msg_ref)
+
+        web_client = AsyncMock()
+        web_client.pins_list = AsyncMock(
+            return_value={
+                "items": [
+                    {"message": {"ts": "1111.0000", "text": "*Project Manager Status*\n---\nOld"}},
+                    {"message": {"ts": "2222.0000", "text": "Some other pinned message"}},
+                ]
+            }
+        )
+
+        await session._post_pm_welcome(client, web_client)
+
+        # Should unpin old PM status but not unrelated pins
+        web_client.pins_remove.assert_called_once_with(channel="C_PM", timestamp="1111.0000")
+        # Should still pin the new message
+        web_client.pins_add.assert_called_once_with(channel="C_PM", timestamp="9999.0000")
+
+    async def test_pm_welcome_survives_pin_cleanup_failure(self):
+        from summon_claude.config import SummonConfig
+        from summon_claude.sessions.session import SessionOptions, SummonSession
+
+        config = MagicMock(spec=SummonConfig)
+        options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
+        session = SummonSession(config=config, options=options, session_id="pm-cleanup-fail")
+
+        client = MagicMock()
+        client.channel_id = "C_PM"
+        msg_ref = MagicMock()
+        msg_ref.ts = "9999.0000"
+        client.post = AsyncMock(return_value=msg_ref)
+
+        web_client = AsyncMock()
+        web_client.pins_list = AsyncMock(side_effect=Exception("API error"))
+
+        # Should not raise — cleanup failure is non-fatal
+        await session._post_pm_welcome(client, web_client)
+
+        # Should still post and pin the new message
+        client.post.assert_called_once()
+        web_client.pins_add.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# PM topic guard
+# ---------------------------------------------------------------------------
+
+
+class TestFormatPmTopic:
+    @pytest.mark.parametrize(
+        "count,expected",
+        [
+            (0, "Project Manager | 0 active sessions | idle"),
+            (1, "Project Manager | 1 active session | working"),
+            (3, "Project Manager | 3 active sessions | working"),
+        ],
+    )
+    def test_format(self, count, expected):
+        from summon_claude.sessions.session import format_pm_topic
+
+        assert format_pm_topic(count) == expected
+
+
+class TestPmTopicGuard:
+    @pytest.mark.parametrize(
+        "opts_kwargs,attr,expected",
+        [
+            ({"pm_profile": True}, "_pm_profile", True),
+            ({}, "_pm_profile", False),
+            ({"project_id": "proj-123"}, "project_id", "proj-123"),
+            ({}, "project_id", None),
+        ],
+        ids=["pm-flag-set", "pm-flag-default", "project-id-set", "project-id-default"],
+    )
+    def test_session_option_exposure(self, opts_kwargs, attr, expected):
+        from summon_claude.config import SummonConfig
+        from summon_claude.sessions.session import SessionOptions, SummonSession
+
+        config = MagicMock(spec=SummonConfig)
+        options = SessionOptions(cwd="/tmp", name="guard-test", **opts_kwargs)
+        session = SummonSession(config=config, options=options, session_id="guard-test")
+        assert getattr(session, attr) == expected
+
+
+# ---------------------------------------------------------------------------
+# PM topic: deterministic updates from SessionManager
+# ---------------------------------------------------------------------------
+
+
+class TestUpdatePmTopic:
+    def _make_session(self, *, is_pm=False, project_id=None, channel_id=None):
+        s = MagicMock()
+        s.is_pm = is_pm
+        s.project_id = project_id
+        s.channel_id = channel_id
+        return s
+
+    def _make_manager(self, sessions: dict):
+        from summon_claude.sessions.manager import SessionManager
+
+        mgr = object.__new__(SessionManager)
+        mgr._sessions = sessions
+        mgr._web_client = AsyncMock()
+        mgr._pm_topic_cache = {}
+        return mgr
+
+    async def test_updates_topic_with_child_count(self):
+        pm = self._make_session(is_pm=True, project_id="p1", channel_id="C_PM")
+        child1 = self._make_session(project_id="p1")
+        child2 = self._make_session(project_id="p1")
+        mgr = self._make_manager({"pm": pm, "c1": child1, "c2": child2})
+
+        await mgr._update_pm_topic("p1")
+
+        mgr._web_client.conversations_setTopic.assert_called_once_with(
+            channel="C_PM",
+            topic="Project Manager | 2 active sessions | working",
+        )
+
+    async def test_idle_when_no_children(self):
+        pm = self._make_session(is_pm=True, project_id="p1", channel_id="C_PM")
+        mgr = self._make_manager({"pm": pm})
+
+        await mgr._update_pm_topic("p1")
+
+        mgr._web_client.conversations_setTopic.assert_called_once_with(
+            channel="C_PM",
+            topic="Project Manager | 0 active sessions | idle",
+        )
+
+    async def test_singular_session_word(self):
+        pm = self._make_session(is_pm=True, project_id="p1", channel_id="C_PM")
+        child = self._make_session(project_id="p1")
+        mgr = self._make_manager({"pm": pm, "c1": child})
+
+        await mgr._update_pm_topic("p1")
+
+        topic = mgr._web_client.conversations_setTopic.call_args.kwargs["topic"]
+        assert "1 active session |" in topic
+
+    async def test_ignores_other_project_children(self):
+        pm = self._make_session(is_pm=True, project_id="p1", channel_id="C_PM")
+        child_p2 = self._make_session(project_id="p2")
+        mgr = self._make_manager({"pm": pm, "c1": child_p2})
+
+        await mgr._update_pm_topic("p1")
+
+        topic = mgr._web_client.conversations_setTopic.call_args.kwargs["topic"]
+        assert "0 active sessions | idle" in topic
+
+    async def test_noop_when_no_pm_for_project(self):
+        child = self._make_session(project_id="p1")
+        mgr = self._make_manager({"c1": child})
+
+        await mgr._update_pm_topic("p1")
+
+        mgr._web_client.conversations_setTopic.assert_not_called()
+
+    async def test_noop_when_pm_has_no_channel(self):
+        pm = self._make_session(is_pm=True, project_id="p1", channel_id=None)
+        mgr = self._make_manager({"pm": pm})
+
+        await mgr._update_pm_topic("p1")
+
+        mgr._web_client.conversations_setTopic.assert_not_called()
+
+    async def test_skips_redundant_api_call(self):
+        """Repeated calls with same child count should not call Slack API again."""
+        pm = self._make_session(is_pm=True, project_id="p1", channel_id="C_PM")
+        child = self._make_session(project_id="p1")
+        mgr = self._make_manager({"pm": pm, "c1": child})
+
+        await mgr._update_pm_topic("p1")
+        await mgr._update_pm_topic("p1")
+
+        mgr._web_client.conversations_setTopic.assert_called_once()
+
+    async def test_retries_after_slack_api_error(self):
+        """Failed API call should NOT cache, so next call retries."""
+        pm = self._make_session(is_pm=True, project_id="p1", channel_id="C_PM")
+        mgr = self._make_manager({"pm": pm})
+        mgr._web_client.conversations_setTopic = AsyncMock(side_effect=Exception("Slack down"))
+
+        # First call fails — should not raise
+        await mgr._update_pm_topic("p1")
+        assert "p1" not in mgr._pm_topic_cache
+
+        # Fix the API and retry — should actually call the API
+        mgr._web_client.conversations_setTopic = AsyncMock()
+        await mgr._update_pm_topic("p1")
+        mgr._web_client.conversations_setTopic.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +1217,42 @@ class TestSuspendedStatus:
         await registry.update_status("race-err-sid", final)
         result = await registry.get_session("race-err-sid")
         assert result["status"] == "suspended"
+
+
+# ---------------------------------------------------------------------------
+# Workflow instructions: registry integration
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowInstructionsRegistry:
+    @pytest.mark.parametrize(
+        "global_wf,project_wf,expected",
+        [
+            (None, "project-specific rules", "project-specific rules"),
+            ("global defaults", None, "global defaults"),
+            ("global defaults", "project override", "project override"),
+            (None, None, ""),
+        ],
+        ids=["project-only", "global-fallback", "project-overrides-global", "neither-set"],
+    )
+    async def test_effective_workflow_resolution(
+        self, registry, tmp_path, global_wf, project_wf, expected
+    ):
+        project_id = await registry.add_project("wf-test", str(tmp_path))
+        if global_wf is not None:
+            await registry.set_workflow_defaults(global_wf)
+        if project_wf is not None:
+            await registry.set_project_workflow(project_id, project_wf)
+        result = await registry.get_effective_workflow(project_id)
+        assert result == expected
+
+    async def test_clear_project_workflow_falls_back(self, registry, tmp_path):
+        project_id = await registry.add_project("wf-clear", str(tmp_path))
+        await registry.set_workflow_defaults("global defaults")
+        await registry.set_project_workflow(project_id, "project rules")
+        await registry.clear_project_workflow(project_id)
+        result = await registry.get_effective_workflow(project_id)
+        assert result == "global defaults"
 
 
 # ---------------------------------------------------------------------------

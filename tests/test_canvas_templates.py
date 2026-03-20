@@ -32,24 +32,40 @@ class TestGetCanvasTemplate:
 
 
 class TestTemplateFormatting:
+    """Canvas templates are interpolated via .replace(), not .format()."""
+
     def test_agent_template_formats(self):
-        result = AGENT_CANVAS_TEMPLATE.format(model="opus-4", cwd="/home/user/proj")
+        result = AGENT_CANVAS_TEMPLATE.replace("{model}", "opus-4").replace(
+            "{cwd}", "/home/user/proj"
+        )
         assert "opus-4" in result
         assert "/home/user/proj" in result
+        assert "{model}" not in result
+        assert "{cwd}" not in result
 
     def test_pm_template_formats(self):
-        result = PM_CANVAS_TEMPLATE.format(model="sonnet-4", cwd="/tmp")
+        result = PM_CANVAS_TEMPLATE.replace("{model}", "sonnet-4").replace("{cwd}", "/tmp")
         assert "sonnet-4" in result
         assert "Active Tasks" in result
 
     def test_scribe_template_formats(self):
-        result = SCRIBE_CANVAS_TEMPLATE.format(model="haiku-4.5", cwd="/workspace")
+        result = SCRIBE_CANVAS_TEMPLATE.replace("{model}", "haiku-4.5").replace(
+            "{cwd}", "/workspace"
+        )
         assert "haiku-4.5" in result
         assert "Session Timeline" in result
 
     def test_global_pm_template_has_no_cwd(self):
         """Global PM template should format with model only — no cwd in output."""
         assert "{cwd}" not in GLOBAL_PM_CANVAS_TEMPLATE
-        result = GLOBAL_PM_CANVAS_TEMPLATE.format(model="opus-4")
+        result = GLOBAL_PM_CANVAS_TEMPLATE.replace("{model}", "opus-4")
         assert "opus-4" in result
         assert "Active Sessions" in result
+
+    def test_cwd_with_curly_braces(self):
+        """Ensure cwd containing curly braces doesn't crash .replace()."""
+        result = AGENT_CANVAS_TEMPLATE.replace("{model}", "opus-4").replace(
+            "{cwd}", "/home/user/{project}"
+        )
+        assert "/home/user/{project}" in result
+        assert "{model}" not in result

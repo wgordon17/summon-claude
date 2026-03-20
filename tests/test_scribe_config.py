@@ -396,6 +396,31 @@ class TestScribeSystemPrompt:
         assert "CHECKPOINT" in prompt["append"]
         assert "State tracking" in prompt["append"]
 
+    def test_prompt_preserves_checkpoint_braces(self):
+        """Double-braced {{ts}}/{{summary}} in template become {ts}/{summary}."""
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="urgent",
+        )
+        assert "{ts}" in prompt["append"]
+        assert "{summary}" in prompt["append"]
+        # No raw double-braces should remain
+        assert "{{" not in prompt["append"]
+
+    def test_prompt_handles_curly_braces_in_keywords(self):
+        """Importance keywords with curly braces don't crash."""
+        from summon_claude.sessions.session import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            user_mention="<@U12345>",
+            importance_keywords="urgent, {action required}, deadline",
+        )
+        assert "{action required}" in prompt["append"]
+
 
 class TestGoogleIntegration:
     """End-to-end tests against real workspace-mcp (no mocks)."""
