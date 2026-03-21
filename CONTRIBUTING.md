@@ -47,6 +47,7 @@ Project-specific scopes for summon-claude:
 - **mcp**: MCP server and tools (`slack/mcp.py`)
 - **registry**: Session storage and SQLite operations (`sessions/registry.py`)
 - **db**: Database maintenance CLI commands (`cli/` — `summon db` group: status, reset, vacuum, purge)
+- **hooks**: Lifecycle hooks and Claude Code hook bridge (`sessions/hooks.py`, `cli/hooks.py`)
 - **plugin**: Claude Code plugin skill and manifest (`.claude-plugin/`)
 
 **Infrastructure Scopes:**
@@ -328,6 +329,7 @@ src/summon_claude/
 │   ├── db.py              # DB subcommand implementations (status, reset, vacuum, purge)
 │   ├── formatting.py      # Output formatting (echo, format_json, print_session_table)
 │   ├── helpers.py         # Session resolution (resolve_session, pick_session)
+│   ├── hooks.py           # Lifecycle hooks CLI (install/uninstall bridge, show/set/clear)
 │   ├── interactive.py     # Interactive terminal selection with TTY-aware fallback
 │   ├── session.py         # Session subcommand implementations (list, info, logs, cleanup)
 │   ├── start.py           # async_start() implementation
@@ -337,6 +339,8 @@ src/summon_claude/
 │   ├── auth.py            # Session auth tokens and short codes
 │   ├── commands.py        # !-prefixed command dispatch, aliasing, plugin skill registration
 │   ├── context.py         # Context window usage tracking via JSONL transcript parsing
+│   ├── hook_types.py      # Hook constants (VALID_HOOK_TYPES, INCLUDE_GLOBAL_TOKEN)
+│   ├── hooks.py           # Lifecycle hooks runner (worktree_create, project_up, project_down)
 │   ├── manager.py         # Session lifecycle, IPC control plane
 │   ├── migrations.py      # Schema versioning and migration functions (single source of truth)
 │   ├── permissions.py     # Tool permission handling + Slack buttons

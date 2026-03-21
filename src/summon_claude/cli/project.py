@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from typing import Any
 
@@ -9,7 +10,37 @@ import click
 
 from summon_claude.cli import daemon_client
 from summon_claude.daemon import is_daemon_running
+from summon_claude.sessions.hooks import run_lifecycle_hooks
 from summon_claude.sessions.registry import SessionRegistry
+
+logger = logging.getLogger(__name__)
+
+
+async def _run_project_hooks(hook_type: str, *, project_ids: list[str] | None = None) -> None:
+    """Run lifecycle hooks for registered projects. Failures are logged, not fatal.
+
+    If *project_ids* is given, only run hooks for those projects.
+    Otherwise run for all registered projects.
+    """
+    try:
+        async with SessionRegistry() as registry:
+            projects = await registry.list_projects()
+            if project_ids is not None:
+                id_set = set(project_ids)
+                projects = [p for p in projects if p["project_id"] in id_set]
+            for project in projects:
+                project_id = project["project_id"]
+                directory = project.get("directory", "")
+                hooks = await registry.get_lifecycle_hooks(hook_type, project_id=project_id)
+                if hooks:
+                    cwd = pathlib.Path(directory) if directory else pathlib.Path.cwd()
+                    errors = await run_lifecycle_hooks(hook_type, cwd, hooks, project_root=cwd)
+                    for err in errors:
+                        logger.warning(
+                            "%s hook error for project %s: %s", hook_type, project["name"], err
+                        )
+    except Exception as exc:
+        logger.warning("Failed to run %s hooks: %s", hook_type, exc)
 
 
 def _resolve_directory(directory: str) -> str:
@@ -73,6 +104,8 @@ async def launch_project_managers() -> None:
 
     if response.get("type") == "project_up_complete":
         click.echo("All projects already have PM agents running.")
+        # Run project_up hooks for all projects even if PMs are already running.
+        await _run_project_hooks("project_up")
         return
 
     if response.get("type") != "project_up_auth_required":
@@ -87,9 +120,13 @@ async def launch_project_managers() -> None:
     click.echo(f"\nAuthenticate in Slack: /summon {short_code}")
     click.echo("\nPM sessions will start after authentication.")
     click.echo("Run 'summon project list' to check status.")
+    # Hooks run immediately — before auth completes / PMs start.
+    # This is intentional: project_up hooks set up the environment
+    # (e.g. build deps, start services) that PMs will need once they launch.
+    await _run_project_hooks("project_up")
 
 
-async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noqa: PLR0912
+async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noqa: PLR0912, PLR0915
     """Stop active project sessions (PM + children) for registered projects.
 
     If *name* is given, only stop sessions for that project.
@@ -102,10 +139,22 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
     """
     if not is_daemon_running():
         click.echo("Daemon is not running. No PM sessions to stop.")
+        if name:
+            # Filter by name even without daemon — look up project IDs from DB.
+            matched_ids: list[str] = []
+            async with SessionRegistry() as registry:
+                all_projects = await registry.list_projects()
+                matched_ids = [p["project_id"] for p in all_projects if p["name"] == name]
+            if not matched_ids:
+                raise click.ClickException(f"No project named {name!r}.")
+            await _run_project_hooks("project_down", project_ids=matched_ids)
+        else:
+            await _run_project_hooks("project_down")
         return []
 
     stopped: list[str] = []
     suspended: list[str] = []
+    projects: list[dict[str, Any]] = []
     async with SessionRegistry() as registry:
         projects = await registry.list_projects()
         if not projects:
@@ -150,4 +199,10 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
         if suspended:
             parts.append(f"{len(suspended)} subsession{'s' if len(suspended) != 1 else ''}")
         click.echo(f"Stopped {', '.join(parts)}.")
+
+    # Run project_down hooks for all projects in the filter (even those with no
+    # active sessions — their services/environment still need teardown).
+    target_project_ids = [p["project_id"] for p in projects]
+    await _run_project_hooks("project_down", project_ids=target_project_ids)
+
     return stopped + suspended

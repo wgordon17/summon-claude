@@ -16,7 +16,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 12
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +183,18 @@ async def _migrate_10_to_11(db: aiosqlite.Connection) -> None:
     """)
 
 
+async def _migrate_11_to_12(db: aiosqlite.Connection) -> None:
+    """Add hooks column to workflow_defaults and projects tables."""
+    for table in ("workflow_defaults", "projects"):
+        try:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN hooks TEXT DEFAULT NULL")
+        except sqlite3.OperationalError as e:
+            err = str(e).lower()
+            if "duplicate column name" not in err and "no such table" not in err:
+                raise
+            logger.debug("Column hooks on %s already exists or table absent, skipping", table)
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the baseline DDL in _connect() produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
@@ -197,6 +209,7 @@ _MIGRATIONS: dict[int, Any] = {
     8: _migrate_8_to_9,
     9: _migrate_9_to_10,
     10: _migrate_10_to_11,
+    11: _migrate_11_to_12,
 }
 
 

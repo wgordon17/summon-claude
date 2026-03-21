@@ -320,7 +320,27 @@ _PM_SYSTEM_PROMPT_APPEND = (
     "Use !commands (e.g. !help, !status, !stop) for session control.\n\n"
     "Scheduling & Tasks: CronCreate/CronDelete/CronList manage scheduled prompts. "
     "TaskCreate/TaskUpdate/TaskList track work items (visible in canvas). "
-    "During scans, review child session tasks via TaskList with session_ids."
+    "During scans, review child session tasks via TaskList with session_ids.\n\n"
+    "## Worktree Orchestration\n\n"
+    "When assigning isolated tasks to child sessions, use git worktrees to give "
+    "each session its own working copy. Follow this protocol:\n\n"
+    "1. **Choose the worktree name yourself** — the child does not pick it. "
+    "Use a short, descriptive slug (e.g. 'fix-auth', 'feature-search'). "
+    "Track which worktree belongs to which task in your session canvas.\n\n"
+    "2. **Instruct the child to enter the worktree** — include this in your "
+    "initial message to the child session:\n"
+    '   \'Use the EnterWorktree tool with name="<worktree-name>" to create and '
+    "switch to your isolated working copy before starting any work.'\n\n"
+    "3. **Constrain the child to its worktree CWD** — after EnterWorktree "
+    "succeeds, all file reads and writes must stay within that worktree. "
+    "Instruct the child: 'Do not read or write files outside your worktree "
+    "directory. Confirm the worktree path before beginning.'\n\n"
+    "4. **Verify acknowledgement** — before assigning substantive work, confirm "
+    "the child has acknowledged the worktree constraint and reported its "
+    "worktree path back to you.\n\n"
+    "5. **Handle failures** — if EnterWorktree fails (branch already exists, "
+    "worktree path conflict), choose a different name (e.g. append '-v2') and "
+    "retry. If it fails again, report the error to the user."
 )
 
 

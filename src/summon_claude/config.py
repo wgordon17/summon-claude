@@ -38,6 +38,21 @@ def _xdg_dir(env_var: str, default_subdir: str, xdg_subdir: str) -> Path:
     return Path.home() / ".summon"
 
 
+def get_claude_config_dir() -> Path:
+    """Return the Claude Code configuration directory.
+
+    Respects the ``CLAUDE_CONFIG_DIR`` environment variable (set by Claude Code
+    when the user overrides the default location). Falls back to ``~/.claude``.
+    """
+    env = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if env:
+        p = Path(env)
+        if p.is_absolute():
+            return p
+        logger.warning("CLAUDE_CONFIG_DIR is not absolute (%r), using default", env)
+    return Path.home() / ".claude"
+
+
 def get_config_dir() -> Path:
     """XDG_CONFIG_HOME/summon -> ~/.config/summon -> ~/.summon (fallback)."""
     return _xdg_dir("XDG_CONFIG_HOME", ".config/summon", "summon")
