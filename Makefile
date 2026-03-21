@@ -56,7 +56,7 @@ py-test: ## Run full Python test suite
 
 py-test-slack: ## Run Slack integration tests (requires credentials)
 	@echo "Running Slack integration tests..."
-	uv run pytest tests/integration/ -v -m slack
+	uv run pytest tests/integration/ -v -m slack -n0
 
 py-test-quick: ## Run quick Python tests (exclude slow, fail-fast)
 	@echo "Running quick pytest..."

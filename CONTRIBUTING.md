@@ -164,6 +164,7 @@ make all        # Full workflow: install → lint → test
 uv run pytest tests/ -v              # All tests
 uv run pytest tests/test_auth.py -v  # Single module
 uv run pytest -k "test_name" -v      # By name pattern
+uv run pytest -n0                    # Disable parallel (serial mode)
 ```
 
 ### Linting
