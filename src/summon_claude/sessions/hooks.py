@@ -12,16 +12,20 @@ import os
 import subprocess
 from pathlib import Path
 
+from summon_claude.sessions.hook_types import INCLUDE_GLOBAL_TOKEN, VALID_HOOK_TYPES
+
 logger = logging.getLogger(__name__)
+
+# Re-export for existing importers.
+__all__ = [
+    "INCLUDE_GLOBAL_TOKEN",
+    "VALID_HOOK_TYPES",
+    "run_lifecycle_hooks",
+    "run_post_worktree_hooks",
+]
 
 # Timeout per hook subprocess in seconds. Module-level for testability.
 _HOOK_TIMEOUT_SECONDS: int = 30
-
-# Valid hook type identifiers.  Guard test pins this set.
-VALID_HOOK_TYPES: frozenset[str] = frozenset({"worktree_create", "project_up", "project_down"})
-
-# Token that project hooks can include to splice in global hooks at that position.
-INCLUDE_GLOBAL_TOKEN: str = "$INCLUDE_GLOBAL"  # noqa: S105
 
 
 async def run_lifecycle_hooks(

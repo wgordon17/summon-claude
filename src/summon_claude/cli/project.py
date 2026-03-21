@@ -126,7 +126,7 @@ async def launch_project_managers() -> None:
     await _run_project_hooks("project_up")
 
 
-async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noqa: PLR0912
+async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noqa: PLR0912, PLR0915
     """Stop active project sessions (PM + children) for registered projects.
 
     If *name* is given, only stop sessions for that project.
@@ -139,7 +139,15 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
     """
     if not is_daemon_running():
         click.echo("Daemon is not running. No PM sessions to stop.")
-        await _run_project_hooks("project_down")
+        if name:
+            # Filter by name even without daemon — look up project IDs from DB.
+            matched_ids: list[str] = []
+            async with SessionRegistry() as registry:
+                all_projects = await registry.list_projects()
+                matched_ids = [p["project_id"] for p in all_projects if p["name"] == name]
+            await _run_project_hooks("project_down", project_ids=matched_ids or None)
+        else:
+            await _run_project_hooks("project_down")
         return []
 
     stopped: list[str] = []

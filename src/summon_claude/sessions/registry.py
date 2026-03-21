@@ -17,6 +17,7 @@ from typing import Any
 import aiosqlite
 
 from summon_claude.config import get_data_dir
+from summon_claude.sessions.hook_types import INCLUDE_GLOBAL_TOKEN, VALID_HOOK_TYPES
 from summon_claude.sessions.migrations import (
     CURRENT_SCHEMA_VERSION,
     run_migrations,
@@ -1188,7 +1189,6 @@ class SessionRegistry:
         Only expands when *is_global* is False (project-level hooks).
         Prevents infinite recursion by not expanding in global hooks themselves.
         """
-        from summon_claude.sessions.hooks import INCLUDE_GLOBAL_TOKEN  # noqa: PLC0415
 
         if is_global or INCLUDE_GLOBAL_TOKEN not in commands:
             return commands
@@ -1211,7 +1211,6 @@ class SessionRegistry:
         An explicit JSON value (even ``{}``) overrides global defaults entirely.
         Commands may include ``$INCLUDE_GLOBAL`` to splice in global hooks.
         """
-        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
 
         if hook_type not in VALID_HOOK_TYPES:
             raise ValueError(
@@ -1250,7 +1249,6 @@ class SessionRegistry:
         *directory* should be the main repo root (e.g. from ``git worktree list``).
         Returns empty list if no matching project is found.
         """
-        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
 
         if hook_type not in VALID_HOOK_TYPES:
             raise ValueError(
@@ -1286,7 +1284,6 @@ class SessionRegistry:
         Validates all keys against VALID_HOOK_TYPES and all values as non-empty strings.
         Raises ``ValueError`` on invalid input; raises ``KeyError`` if project_id not found.
         """
-        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
 
         for key, val in hooks.items():
             if key not in VALID_HOOK_TYPES:
@@ -1306,8 +1303,6 @@ class SessionRegistry:
         # Reject $INCLUDE_GLOBAL in global hooks — it only makes sense in
         # project-level hooks (would be passed to shell as variable expansion).
         if project_id is None:
-            from summon_claude.sessions.hooks import INCLUDE_GLOBAL_TOKEN  # noqa: PLC0415
-
             for _key, val in hooks.items():
                 if INCLUDE_GLOBAL_TOKEN in val:
                     raise ValueError(
