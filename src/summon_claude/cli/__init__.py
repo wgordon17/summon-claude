@@ -714,11 +714,13 @@ def hooks_set(hooks_json: str | None, project: str | None) -> None:
     If provided, parses the JSON and stores it directly.
 
     Hook types: worktree_create, project_up, project_down.
+    Use "$INCLUDE_GLOBAL" in per-project hooks to include global hooks.
 
     \b
     Examples:
       summon hooks set                                  # opens $EDITOR
       summon hooks set '{"worktree_create": ["make setup"]}'  # inline JSON
+      summon hooks set --project ID '{"worktree_create": ["$INCLUDE_GLOBAL", "make setup"]}'
     """
     asyncio.run(async_set_hooks(hooks_json, project_id=project))
 

@@ -186,6 +186,53 @@ class TestLifecycleHooksExplicitEmptyOverrides:
         assert result == []
 
 
+class TestIncludeGlobalToken:
+    async def test_include_global_splices_global_hooks(self, registry, tmp_path):
+        """$INCLUDE_GLOBAL in project hooks is replaced with global hooks."""
+        await registry.set_lifecycle_hooks({"worktree_create": ["global-cmd"]})
+        project_id = await registry.add_project("include-proj", str(tmp_path))
+        await registry.set_lifecycle_hooks(
+            {"worktree_create": ["$INCLUDE_GLOBAL", "project-cmd"]}, project_id=project_id
+        )
+        result = await registry.get_lifecycle_hooks("worktree_create", project_id=project_id)
+        assert result == ["global-cmd", "project-cmd"]
+
+    async def test_include_global_preserves_ordering(self, registry, tmp_path):
+        """$INCLUDE_GLOBAL expands in-place, preserving surrounding commands."""
+        await registry.set_lifecycle_hooks({"worktree_create": ["g1", "g2"]})
+        project_id = await registry.add_project("order-proj", str(tmp_path))
+        await registry.set_lifecycle_hooks(
+            {"worktree_create": ["before", "$INCLUDE_GLOBAL", "after"]}, project_id=project_id
+        )
+        result = await registry.get_lifecycle_hooks("worktree_create", project_id=project_id)
+        assert result == ["before", "g1", "g2", "after"]
+
+    async def test_include_global_with_no_global_hooks(self, registry, tmp_path):
+        """$INCLUDE_GLOBAL expands to nothing when no global hooks configured."""
+        project_id = await registry.add_project("no-global-proj", str(tmp_path))
+        await registry.set_lifecycle_hooks(
+            {"worktree_create": ["$INCLUDE_GLOBAL", "project-only"]}, project_id=project_id
+        )
+        result = await registry.get_lifecycle_hooks("worktree_create", project_id=project_id)
+        assert result == ["project-only"]
+
+    async def test_include_global_not_expanded_in_global_hooks(self, registry):
+        """$INCLUDE_GLOBAL in global hooks is NOT expanded (prevents recursion)."""
+        await registry.set_lifecycle_hooks({"worktree_create": ["$INCLUDE_GLOBAL", "global-cmd"]})
+        result = await registry.get_lifecycle_hooks("worktree_create")
+        assert result == ["$INCLUDE_GLOBAL", "global-cmd"]
+
+    async def test_include_global_works_with_by_directory(self, registry, tmp_path):
+        """$INCLUDE_GLOBAL expands in get_lifecycle_hooks_by_directory too."""
+        await registry.set_lifecycle_hooks({"worktree_create": ["global-cmd"]})
+        project_id = await registry.add_project("dir-include-proj", str(tmp_path))
+        await registry.set_lifecycle_hooks(
+            {"worktree_create": ["$INCLUDE_GLOBAL", "local-cmd"]}, project_id=project_id
+        )
+        result = await registry.get_lifecycle_hooks_by_directory("worktree_create", tmp_path)
+        assert result == ["global-cmd", "local-cmd"]
+
+
 class TestGetLifecycleHooksByDirectory:
     async def test_resolves_directory_to_project(self, registry, tmp_path):
         """get_lifecycle_hooks_by_directory resolves directory to project."""

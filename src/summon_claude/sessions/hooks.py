@@ -20,6 +20,9 @@ _HOOK_TIMEOUT_SECONDS: int = 30
 # Valid hook type identifiers.  Guard test pins this set.
 VALID_HOOK_TYPES: frozenset[str] = frozenset({"worktree_create", "project_up", "project_down"})
 
+# Token that project hooks can include to splice in global hooks at that position.
+INCLUDE_GLOBAL_TOKEN: str = "$INCLUDE_GLOBAL"  # noqa: S105
+
 
 async def run_lifecycle_hooks(
     hook_type: str,

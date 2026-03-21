@@ -61,6 +61,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
     [ "${RESULT:-0}" -gt 0 ] || exit 0
 fi
 SUMMON_BIN='@@SUMMON_PATH@@'
+[ -x "$SUMMON_BIN" ] || SUMMON_BIN=$(command -v summon 2>/dev/null)
 [ -x "$SUMMON_BIN" ] || exit 0
 "$SUMMON_BIN" hooks run post-worktree; exit 0
 """
@@ -262,10 +263,19 @@ async def async_show_hooks(ctx: click.Context, project_id: str | None = None) ->
 
 _HOOKS_TEMPLATE = """\
 {
-  "worktree_create": [],
+  "worktree_create": ["ln -sfn $PROJECT_ROOT/hack hack"],
   "project_up": [],
   "project_down": []
 }
+"""
+
+# Explanatory header prepended when opening $EDITOR (stripped before parsing).
+_EDITOR_HEADER = """\
+// Lifecycle hooks — shell commands run at each lifecycle point.
+// $PROJECT_ROOT is set to the project directory.
+// Use "$INCLUDE_GLOBAL" in per-project hooks to include global hooks:
+//   "worktree_create": ["$INCLUDE_GLOBAL", "make setup"]
+// Delete this comment block before saving. Lines starting with // are stripped.
 """
 
 
@@ -287,11 +297,14 @@ async def async_set_hooks(hooks_json: str | None = None, *, project_id: str | No
             if existing:
                 current = json.dumps(existing, indent=2) + "\n"
 
-        edited = click.edit(current, extension=".json")
+        edited = click.edit(_EDITOR_HEADER + current, extension=".json")
         if edited is None:
             click.echo("Aborted — no changes saved.")
             return
-        hooks_json = edited
+        # Strip comment lines (// ...) before parsing as JSON.
+        hooks_json = "\n".join(
+            line for line in edited.splitlines() if not line.lstrip().startswith("//")
+        )
 
     if hooks_json is None:
         raise click.ClickException("No hooks JSON provided.")

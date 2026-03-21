@@ -1161,39 +1161,8 @@ class SessionRegistry:
 
     # --- Lifecycle hook methods ---
 
-    async def get_lifecycle_hooks(self, hook_type: str, project_id: str | None = None) -> list[str]:
-        """Return hook commands for *hook_type*, with project-level override semantics.
-
-        NULL in the hooks column means "not set — fall back to global defaults."
-        An explicit JSON value (even ``{}``) overrides global defaults entirely.
-        """
-        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
-
-        if hook_type not in VALID_HOOK_TYPES:
-            raise ValueError(
-                f"Invalid hook_type {hook_type!r}; must be one of {sorted(VALID_HOOK_TYPES)}"
-            )
-
-        db = self._check_connected()
-        raw: str | None = None
-
-        if project_id is not None:
-            async with db.execute(
-                "SELECT hooks FROM projects WHERE project_id = ?", (project_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row is not None:
-                    raw = row[0]  # may be None (NULL) or a JSON string
-
-        # Fall back to global workflow_defaults when project hooks column is NULL.
-        if raw is None:
-            async with db.execute("SELECT hooks FROM workflow_defaults WHERE id = 1") as cursor:
-                row = await cursor.fetchone()
-                raw = row[0] if row else None
-
-        if raw is None:
-            return []
-
+    def _parse_hooks_json(self, raw: str, hook_type: str) -> list[str]:
+        """Parse a hooks JSON string and extract commands for *hook_type*."""
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
@@ -1207,6 +1176,75 @@ class SessionRegistry:
             return []
         return [cmd for cmd in value if isinstance(cmd, str)]
 
+    async def _get_global_hooks_raw(self) -> str | None:
+        """Fetch the raw hooks JSON from workflow_defaults."""
+        db = self._check_connected()
+        async with db.execute("SELECT hooks FROM workflow_defaults WHERE id = 1") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    async def _expand_include_global(
+        self, commands: list[str], hook_type: str, is_global: bool
+    ) -> list[str]:
+        """Expand $INCLUDE_GLOBAL tokens in *commands* with global hooks.
+
+        Only expands when *is_global* is False (project-level hooks).
+        Prevents infinite recursion by not expanding in global hooks themselves.
+        """
+        from summon_claude.sessions.hooks import INCLUDE_GLOBAL_TOKEN  # noqa: PLC0415
+
+        if is_global or INCLUDE_GLOBAL_TOKEN not in commands:
+            return commands
+
+        global_raw = await self._get_global_hooks_raw()
+        global_cmds = self._parse_hooks_json(global_raw, hook_type) if global_raw else []
+
+        result: list[str] = []
+        for cmd in commands:
+            if cmd == INCLUDE_GLOBAL_TOKEN:
+                result.extend(global_cmds)
+            else:
+                result.append(cmd)
+        return result
+
+    async def get_lifecycle_hooks(self, hook_type: str, project_id: str | None = None) -> list[str]:
+        """Return hook commands for *hook_type*, with project-level override semantics.
+
+        NULL in the hooks column means "not set — fall back to global defaults."
+        An explicit JSON value (even ``{}``) overrides global defaults entirely.
+        Commands may include ``$INCLUDE_GLOBAL`` to splice in global hooks.
+        """
+        from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
+
+        if hook_type not in VALID_HOOK_TYPES:
+            raise ValueError(
+                f"Invalid hook_type {hook_type!r}; must be one of {sorted(VALID_HOOK_TYPES)}"
+            )
+
+        db = self._check_connected()
+        raw: str | None = None
+        is_global = True
+
+        if project_id is not None:
+            async with db.execute(
+                "SELECT hooks FROM projects WHERE project_id = ?", (project_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is not None:
+                    raw = row[0]  # may be None (NULL) or a JSON string
+                    if raw is not None:
+                        is_global = False
+
+        # Fall back to global workflow_defaults when project hooks column is NULL.
+        if raw is None:
+            raw = await self._get_global_hooks_raw()
+
+        if raw is None:
+            return []
+
+        commands = self._parse_hooks_json(raw, hook_type)
+        return await self._expand_include_global(commands, hook_type, is_global)
+
     async def get_lifecycle_hooks_by_directory(
         self, hook_type: str, directory: str | Path
     ) -> list[str]:
@@ -1214,9 +1252,6 @@ class SessionRegistry:
 
         *directory* should be the main repo root (e.g. from ``git worktree list``).
         Returns empty list if no matching project is found.
-
-        Consolidates the project-hooks + global-fallback lookup into minimal queries
-        (1 query if project has hooks, 2 if falling back to global).
         """
         from summon_claude.sessions.hooks import VALID_HOOK_TYPES  # noqa: PLC0415
 
@@ -1228,7 +1263,6 @@ class SessionRegistry:
         resolved = str(Path(directory).resolve())  # noqa: ASYNC240
         db = self._check_connected()
 
-        # Single query: fetch hooks directly by directory (avoids 2nd project_id lookup).
         async with db.execute(
             "SELECT hooks FROM projects WHERE directory = ?", (resolved,)
         ) as cursor:
@@ -1237,27 +1271,15 @@ class SessionRegistry:
                 return []  # No matching project
             raw = row[0]  # May be None (NULL) or JSON string
 
-        # NULL = fall back to global; explicit JSON (even {}) = override
+        is_global = raw is None
         if raw is None:
-            async with db.execute("SELECT hooks FROM workflow_defaults WHERE id = 1") as cursor:
-                row = await cursor.fetchone()
-                raw = row[0] if row else None
+            raw = await self._get_global_hooks_raw()
 
         if raw is None:
             return []
 
-        try:
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Could not parse hooks JSON; returning empty list")
-            return []
-
-        if not isinstance(data, dict):
-            return []
-        value = data.get(hook_type, [])
-        if not isinstance(value, list):
-            return []
-        return [cmd for cmd in value if isinstance(cmd, str)]
+        commands = self._parse_hooks_json(raw, hook_type)
+        return await self._expand_include_global(commands, hook_type, is_global)
 
     async def set_lifecycle_hooks(
         self, hooks: dict[str, list[str]], project_id: str | None = None
