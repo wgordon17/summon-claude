@@ -216,11 +216,12 @@ class TestIncludeGlobalToken:
         result = await registry.get_lifecycle_hooks("worktree_create", project_id=project_id)
         assert result == ["project-only"]
 
-    async def test_include_global_not_expanded_in_global_hooks(self, registry):
-        """$INCLUDE_GLOBAL in global hooks is NOT expanded (prevents recursion)."""
-        await registry.set_lifecycle_hooks({"worktree_create": ["$INCLUDE_GLOBAL", "global-cmd"]})
-        result = await registry.get_lifecycle_hooks("worktree_create")
-        assert result == ["$INCLUDE_GLOBAL", "global-cmd"]
+    async def test_include_global_rejected_in_global_hooks(self, registry):
+        """$INCLUDE_GLOBAL in global hooks raises ValueError."""
+        with pytest.raises(ValueError, match="global hooks"):
+            await registry.set_lifecycle_hooks(
+                {"worktree_create": ["$INCLUDE_GLOBAL", "global-cmd"]}
+            )
 
     async def test_include_global_works_with_by_directory(self, registry, tmp_path):
         """$INCLUDE_GLOBAL expands in get_lifecycle_hooks_by_directory too."""
@@ -231,6 +232,43 @@ class TestIncludeGlobalToken:
         )
         result = await registry.get_lifecycle_hooks_by_directory("worktree_create", tmp_path)
         assert result == ["global-cmd", "local-cmd"]
+
+
+class TestGetRawHooksJson:
+    async def test_raw_preserves_include_global_token(self, registry, tmp_path):
+        """get_raw_hooks_json returns unexpanded $INCLUDE_GLOBAL."""
+        project_id = await registry.add_project("raw-proj", str(tmp_path))
+        await registry.set_lifecycle_hooks(
+            {"worktree_create": ["$INCLUDE_GLOBAL", "make setup"]}, project_id=project_id
+        )
+        raw = await registry.get_raw_hooks_json(project_id=project_id)
+        assert raw is not None
+        data = json.loads(raw)
+        assert "$INCLUDE_GLOBAL" in data["worktree_create"]
+
+    async def test_raw_returns_none_for_null_hooks(self, registry, tmp_path):
+        """get_raw_hooks_json returns None when hooks column is NULL."""
+        project_id = await registry.add_project("null-proj", str(tmp_path))
+        raw = await registry.get_raw_hooks_json(project_id=project_id)
+        assert raw is None
+
+    async def test_raw_returns_none_for_nonexistent_project(self, registry):
+        """get_raw_hooks_json returns None for unknown project_id."""
+        raw = await registry.get_raw_hooks_json(project_id="nonexistent-id")
+        assert raw is None
+
+    async def test_raw_global_hooks(self, registry):
+        """get_raw_hooks_json(project_id=None) returns global hooks."""
+        await registry.set_lifecycle_hooks({"worktree_create": ["global-cmd"]})
+        raw = await registry.get_raw_hooks_json(project_id=None)
+        assert raw is not None
+        data = json.loads(raw)
+        assert data["worktree_create"] == ["global-cmd"]
+
+    async def test_raw_global_returns_none_when_empty(self, registry):
+        """get_raw_hooks_json(project_id=None) returns None when no global hooks set."""
+        raw = await registry.get_raw_hooks_json(project_id=None)
+        assert raw is None
 
 
 class TestGetLifecycleHooksByDirectory:

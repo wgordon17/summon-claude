@@ -1178,10 +1178,7 @@ class SessionRegistry:
 
     async def _get_global_hooks_raw(self) -> str | None:
         """Fetch the raw hooks JSON from workflow_defaults."""
-        db = self._check_connected()
-        async with db.execute("SELECT hooks FROM workflow_defaults WHERE id = 1") as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else None
+        return await self.get_raw_hooks_json(project_id=None)
 
     async def _expand_include_global(
         self, commands: list[str], hook_type: str, is_global: bool
@@ -1305,6 +1302,18 @@ class SessionRegistry:
                     )
                 if not item:
                     raise ValueError("Hook commands must not be empty strings")
+
+        # Reject $INCLUDE_GLOBAL in global hooks — it only makes sense in
+        # project-level hooks (would be passed to shell as variable expansion).
+        if project_id is None:
+            from summon_claude.sessions.hooks import INCLUDE_GLOBAL_TOKEN  # noqa: PLC0415
+
+            for _key, val in hooks.items():
+                if INCLUDE_GLOBAL_TOKEN in val:
+                    raise ValueError(
+                        "$INCLUDE_GLOBAL in global hooks has no effect "
+                        "(it is only expanded in per-project hooks)"
+                    )
 
         raw = json.dumps(hooks)
         db = self._check_connected()

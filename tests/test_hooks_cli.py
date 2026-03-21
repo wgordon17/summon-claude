@@ -520,6 +520,22 @@ class TestHooksCliInstallCommand:
             result = runner.invoke(cli, ["hooks", "install"])
         assert result.exit_code != 0
 
+    def test_hooks_install_fails_with_single_quote_in_path(self, tmp_path):
+        """'summon hooks install' exits non-zero when summon path has a single quote."""
+        runner = CliRunner()
+        which_map = {"summon": "/path/with'quote/summon", "sqlite3": "/usr/bin/sqlite3"}
+        patches = _patch_paths(tmp_path)
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patch("shutil.which", side_effect=which_map.get),
+        ):
+            result = runner.invoke(cli, ["hooks", "install"])
+        assert result.exit_code != 0
+        assert "single quote" in result.output.lower()
+
     def test_hooks_uninstall_command_exits_zero(self, tmp_path):
         """'summon hooks uninstall' exits 0 (even with nothing to remove)."""
         runner = CliRunner()
