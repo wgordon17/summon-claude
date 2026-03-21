@@ -8,7 +8,13 @@ from unittest.mock import patch
 
 import pytest
 
-from summon_claude.config import SummonConfig, get_config_dir, get_config_file, get_data_dir
+from summon_claude.config import (
+    SummonConfig,
+    get_claude_config_dir,
+    get_config_dir,
+    get_config_file,
+    get_data_dir,
+)
 
 
 class TestGetConfigDir:
@@ -145,3 +151,35 @@ class TestConfigLoadsFromXdg:
         content = cfg_file.read_text()
         assert "xoxb-from-xdg" in content
         assert "xapp-from-xdg" in content
+
+
+class TestGetClaudeConfigDir:
+    def test_returns_default_when_env_not_set(self, monkeypatch):
+        """Returns ~/.claude when CLAUDE_CONFIG_DIR is not set."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        result = get_claude_config_dir()
+        assert result == Path.home() / ".claude"
+
+    def test_returns_absolute_env_path(self, monkeypatch, tmp_path):
+        """Returns the CLAUDE_CONFIG_DIR value when it's an absolute path."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "custom-claude"))
+        result = get_claude_config_dir()
+        assert result == tmp_path / "custom-claude"
+
+    def test_falls_back_on_relative_path(self, monkeypatch):
+        """Falls back to ~/.claude when CLAUDE_CONFIG_DIR is relative."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "relative/path")
+        result = get_claude_config_dir()
+        assert result == Path.home() / ".claude"
+
+    def test_falls_back_on_empty_string(self, monkeypatch):
+        """Falls back to ~/.claude when CLAUDE_CONFIG_DIR is empty."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+        result = get_claude_config_dir()
+        assert result == Path.home() / ".claude"
+
+    def test_falls_back_on_whitespace_only(self, monkeypatch):
+        """Falls back to ~/.claude when CLAUDE_CONFIG_DIR is whitespace."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "   ")
+        result = get_claude_config_dir()
+        assert result == Path.home() / ".claude"

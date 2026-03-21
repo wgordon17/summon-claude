@@ -252,15 +252,11 @@ async def async_show_hooks(ctx: click.Context, project_id: str | None = None) ->
             # Check whether project has its own hooks or is falling back to global.
             raw_json = await registry.get_raw_hooks_json(project_id=project_id)
             is_fallback = raw_json is None
-            raw_hooks = {
-                ht: await registry.get_lifecycle_hooks(ht, project_id=project_id)
-                for ht in sorted(VALID_HOOK_TYPES)
-            }
             label = f"project {project_id!r}"
-        else:
-            raw_hooks = {
-                ht: await registry.get_lifecycle_hooks(ht) for ht in sorted(VALID_HOOK_TYPES)
-            }
+        raw_hooks = {
+            ht: await registry.get_lifecycle_hooks(ht, project_id=project_id)
+            for ht in sorted(VALID_HOOK_TYPES)
+        }
 
     if all(not cmds for cmds in raw_hooks.values()):
         echo(f"No lifecycle hooks configured ({label}).", ctx)
@@ -327,8 +323,6 @@ async def async_set_hooks(hooks_json: str | None = None, *, project_id: str | No
             line for line in edited.splitlines() if not line.lstrip().startswith("//")
         )
 
-    if hooks_json is None:
-        raise click.ClickException("No hooks JSON provided.")
     try:
         hooks: dict[str, list[str]] = json.loads(hooks_json)
     except json.JSONDecodeError as e:
