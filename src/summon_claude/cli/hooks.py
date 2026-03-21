@@ -29,8 +29,12 @@ PRE_WORKTREE_TEMPLATE = """\
 # summon PreToolUse:EnterWorktree hook — fetches latest code before branching
 DB="${XDG_DATA_HOME:-$HOME/.local/share}/summon/registry.db"
 [ -f "$DB" ] || exit 0
-RESULT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM projects" 2>/dev/null)
-[ "${RESULT:-0}" -gt 0 ] || exit 0
+# Fast-path: skip if no projects registered. Without sqlite3, assume projects
+# exist (DB file presence is sufficient — non-summon users won't have it).
+if command -v sqlite3 >/dev/null 2>&1; then
+    RESULT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM projects" 2>/dev/null)
+    [ "${RESULT:-0}" -gt 0 ] || exit 0
+fi
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
 if [ "$BRANCH" = "main" ]; then
     GIT_SSH='ssh -o ConnectTimeout=10 -o BatchMode=yes'
@@ -145,11 +149,12 @@ def install_hooks() -> None:
             "Cannot find 'summon' on PATH. Install summon first, then re-run."
         )
 
-    # Warn if sqlite3 CLI is absent — the pre-hook fast-path depends on it.
+    # Note if sqlite3 CLI is absent — hooks still work but skip the
+    # "no projects registered" fast-path (falls through to Python runner).
     if shutil.which("sqlite3") is None:
         click.echo(
-            "Warning: sqlite3 CLI not found on PATH. "
-            "The pre-hook fast-path will be skipped (performance impact only).",
+            "Note: sqlite3 CLI not found on PATH. "
+            "Hook fast-path will be skipped (minor performance impact).",
             err=True,
         )
 
