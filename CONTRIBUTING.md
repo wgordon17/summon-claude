@@ -142,7 +142,7 @@ BREAKING CHANGE: create_session now requires EventDispatcher reference.
 
 ```bash
 # Clone and install
-git clone https://github.com/wgordon17/summon-claude.git
+git clone https://github.com/summon-claude/summon-claude.git
 cd summon-claude
 uv sync
 

@@ -98,7 +98,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          gh api repos/wgordon17/homebrew-summon/dispatches \
+          gh api repos/summon-claude/homebrew-summon/dispatches \
             --method POST \
             -f event_type=pypi-release \
             -f 'client_payload[version]=${{ github.event.release.tag_name }}'

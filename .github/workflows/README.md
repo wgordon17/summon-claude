@@ -40,14 +40,14 @@ For first-time packages, use "pending publishers" — no existing project needed
 
 **PyPI (production):** Go to [pypi.org/manage/account/publishing](https://pypi.org/manage/account/publishing/)
 - Project name: `summon-claude`
-- GitHub owner: `wgordon17`
+- GitHub owner: `summon-claude`
 - Repository: `summon-claude`
 - Workflow: `publish.yaml`
 - Environment: `pypi`
 
 **TestPyPI:** Go to [test.pypi.org/manage/account/publishing](https://test.pypi.org/manage/account/publishing/)
 - Project name: `summon-claude`
-- GitHub owner: `wgordon17`
+- GitHub owner: `summon-claude`
 - Repository: `summon-claude`
 - Workflow: `publish.yaml`
 - Environment: `testpypi`

@@ -21,7 +21,7 @@ pipx install summon-claude
 ### Option C: Homebrew (macOS/Linux)
 
 ```bash
-brew install wgordon17/summon/summon-claude
+brew install summon-claude/summon/summon-claude
 ```
 
 ### Keeping up to date
