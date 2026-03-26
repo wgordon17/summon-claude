@@ -5,12 +5,19 @@ All tests share a single channel to stay within Slack's rate limits
 exercises lifecycle operations (create, invite, set_topic) on first use,
 providing transitive signal for those code paths. Archive is exercised
 in teardown.
+
+``EventConsumer`` maintains a Socket Mode WebSocket connection during
+tests, acknowledging all events. This serves dual purpose: enabling
+round-trip event delivery tests (HTTP API → Socket Mode → assertion)
+and preventing Slack from auto-disabling event subscriptions on the
+test app (events with no consumer trigger auto-disable).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import secrets
 import time
@@ -18,6 +25,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
+from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_bolt.async_app import AsyncApp
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.sessions.registry import SessionRegistry
@@ -125,6 +134,102 @@ class SlackTestHarness:
                 await self.client.conversations_archive(channel=cid)
 
 
+class EventConsumer:
+    """Socket Mode event consumer for integration tests.
+
+    Maintains a real WebSocket connection to Slack, acknowledging all
+    received events and collecting them in a queue for test assertions.
+
+    Serves dual purpose:
+      1. Enables round-trip event delivery tests (HTTP API → Socket Mode)
+      2. Prevents Slack from auto-disabling event subscriptions on the
+         test app (events with no consumer trigger auto-disable)
+
+    Uses ``ignoring_self_events_enabled=False`` so the bot's own actions
+    (messages, reactions) generate capturable events — essential since
+    tests can only act as the bot.
+    """
+
+    def __init__(self, bot_token: str, app_token: str, signing_secret: str) -> None:
+        self._bot_token = bot_token
+        self._app_token = app_token
+        self._signing_secret = signing_secret
+        self._events: asyncio.Queue[dict] = asyncio.Queue()
+        self._handler: AsyncSocketModeHandler | None = None
+
+    async def start(self) -> None:
+        app = AsyncApp(
+            token=self._bot_token,
+            signing_secret=self._signing_secret,
+            ignoring_self_events_enabled=False,
+        )
+        # Register handlers for all subscribed event types to ensure
+        # acknowledgment — unacknowledged events trigger retries and
+        # can lead to Slack disabling subscriptions.
+        for event_type in ("message", "reaction_added", "file_shared", "app_home_opened"):
+            app.event(event_type)(self._capture_event)
+
+        handler = AsyncSocketModeHandler(app, self._app_token)
+        await handler.connect_async()
+        self._handler = handler
+
+    async def _capture_event(self, event: dict, **kwargs: object) -> None:
+        await self._events.put(event)
+
+    async def stop(self) -> None:
+        if self._handler:
+            try:
+                await asyncio.wait_for(self._handler.close_async(), timeout=5.0)
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "EventConsumer: close error (expected)", exc_info=True
+                )
+
+    async def wait_for_event(
+        self,
+        predicate: Callable[[dict], bool],
+        timeout: float = 10.0,
+    ) -> dict:
+        """Wait for an event matching *predicate*. Returns the event dict.
+
+        Non-matching events are discarded (each test uses a unique nonce
+        so cross-test interference is impossible). On timeout, raises
+        ``TimeoutError`` with a summary of events seen for debugging.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        seen: list[dict] = []
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"No matching event within {timeout}s. "
+                    f"Received {len(seen)} non-matching: "
+                    f"{[e.get('type') for e in seen]}"
+                )
+            try:
+                event = await asyncio.wait_for(self._events.get(), timeout=remaining)
+            except TimeoutError:
+                raise TimeoutError(
+                    f"No matching event within {timeout}s. "
+                    f"Received {len(seen)} non-matching: "
+                    f"{[e.get('type') for e in seen]}"
+                ) from None
+            if predicate(event):
+                return event
+            seen.append(event)
+
+    def drain(self) -> list[dict]:
+        """Drain all events from the queue. Non-blocking."""
+        events: list[dict] = []
+        while not self._events.empty():
+            try:
+                events.append(self._events.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return events
+
+
 @pytest.fixture
 async def slack_harness():
     """Harness — skips if credentials not set."""
@@ -184,6 +289,43 @@ async def fresh_channel(slack_harness):
     yield channel_id
     with contextlib.suppress(Exception):
         await slack_harness.client.conversations_archive(channel=channel_id)
+
+
+@pytest.fixture
+async def event_consumer(slack_harness, test_channel):
+    """Socket Mode consumer — connects, verifies pipeline, disconnects.
+
+    Each test gets a fresh connection. A canary message verifies the
+    event pipeline is live before the test starts — this both proves
+    Socket Mode delivery works AND naturally drains stale events from
+    other tests that accumulated while no consumer was connected.
+    """
+    consumer = EventConsumer(
+        bot_token=slack_harness.bot_token,
+        app_token=slack_harness.app_token,
+        signing_secret=slack_harness.signing_secret,
+    )
+    try:
+        await asyncio.wait_for(consumer.start(), timeout=15.0)
+    except TimeoutError:
+        pytest.skip("Socket Mode connection timed out (15s)")
+    except Exception as exc:
+        pytest.skip(f"Socket Mode connection failed: {exc}")
+    # Canary: post a message and verify it arrives via Socket Mode.
+    # Proves the pipeline is live and drains stale events in the process.
+    canary = f"canary-{secrets.token_hex(4)}"
+    await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
+    try:
+        await consumer.wait_for_event(
+            lambda e: e.get("type") == "message" and canary in e.get("text", ""),
+            timeout=10.0,
+        )
+    except TimeoutError:
+        await consumer.stop()
+        pytest.skip("Socket Mode canary failed — events not flowing")
+    consumer.drain()  # clear any remaining stale events after canary
+    yield consumer
+    await consumer.stop()
 
 
 @pytest.fixture
