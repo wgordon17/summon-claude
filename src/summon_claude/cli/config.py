@@ -746,6 +746,36 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
             status = "installed" if installed else "not installed"
             click.echo(f"  [INFO] {label}: {status}")
 
+    # Event health check — only when daemon is running
+    from summon_claude.daemon import is_daemon_running  # noqa: PLC0415
+
+    if is_daemon_running():
+        if not quiet:
+            click.echo("  Event health: checking...", nl=False)
+        try:
+            from summon_claude.cli import daemon_client  # noqa: PLC0415
+
+            result = asyncio.run(daemon_client.health_check())
+            healthy = result.get("healthy")
+            details = result.get("details", "")
+            remediation_url = result.get("remediation_url")
+
+            if healthy is True:
+                if not quiet:
+                    click.echo("\r  [PASS] Event health: OK")
+            elif healthy is None:
+                if not quiet:
+                    click.echo(f"\r  [INFO] Event health: {details}")
+            else:
+                click.echo(f"\r  [FAIL] Event health: {details}")
+                if remediation_url and not quiet:
+                    click.echo(f"         Fix at: {remediation_url}")
+                all_pass = False
+        except Exception as e:
+            click.echo(f"\r  [WARN] Event health check failed: {e}")
+    elif not quiet:
+        click.echo("  [INFO] Event health: skipped (daemon not running)")
+
     # Feature inventory — surface external flows so users know they exist
     if not quiet:
         click.echo()

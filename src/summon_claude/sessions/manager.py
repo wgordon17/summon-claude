@@ -46,6 +46,7 @@ from summon_claude.summon_cli_mcp import MAX_SYSTEM_PROMPT_CHARS
 if TYPE_CHECKING:
     from summon_claude.config import SummonConfig
     from summon_claude.event_dispatcher import EventDispatcher
+    from summon_claude.slack.bolt import EventProbe
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +69,13 @@ class SessionManager:
         web_client: AsyncWebClient,
         bot_user_id: str,
         dispatcher: EventDispatcher,
+        event_probe: EventProbe | None = None,
     ) -> None:
         self._config = config
         self._web_client = web_client
         self._bot_user_id = bot_user_id
         self._dispatcher = dispatcher
+        self._event_probe = event_probe
         self._tasks: dict[str, asyncio.Task] = {}  # session_id → task
         self._sessions: dict[str, SummonSession] = {}  # session_id → session
         self._grace_timer: asyncio.TimerHandle | None = None
@@ -82,6 +85,11 @@ class SessionManager:
         self._resuming_channels: set[str] = set()  # guard against concurrent resume
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._pm_topic_cache: dict[str, str] = {}  # project_id → last-set topic
+        self._suspend_on_shutdown: bool = False  # set by health monitor on event pipeline failure
+
+    def set_suspend_on_shutdown(self) -> None:
+        """Mark for session suspension on shutdown (called on event pipeline failure)."""
+        self._suspend_on_shutdown = True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -265,11 +273,29 @@ class SessionManager:
     async def shutdown(self) -> None:
         """Three-phase graceful shutdown of all sessions.
 
-        Phase 1: Signal every session to stop.
-        Phase 2: Wait up to 30 seconds for tasks to drain.
-        Phase 3: Force-cancel any remaining tasks.
+        If _suspend_on_shutdown, project sessions are pre-set to 'suspended'
+        before signalling stop, so they can be resumed via 'summon project up'.
         """
         self._cancel_grace_timer()
+
+        # Suspend project sessions on health failure so they can be resumed
+        if self._suspend_on_shutdown and self._sessions:
+            async with SessionRegistry() as registry:
+                for sid, session in list(self._sessions.items()):
+                    try:
+                        if session.project_id:
+                            await registry.update_status(sid, "suspended")
+                        else:
+                            await registry.update_status(
+                                sid,
+                                "errored",
+                                error_message="Daemon shutdown: event pipeline failure",
+                            )
+                    except Exception:
+                        logger.debug(
+                            "SessionManager: failed to update status for %s on suspend shutdown",
+                            sid,
+                        )
 
         # Phase 1 — signal
         for session in list(self._sessions.values()):
@@ -543,8 +569,48 @@ class SessionManager:
             case "project_up":
                 return await self._handle_project_up(msg)
 
+            case "health_check":
+                return await self._handle_health_check()
+
             case _:
                 return {"type": "error", "message": f"Unknown command: {msg.get('type')}"}
+
+    async def _handle_health_check(self) -> dict[str, Any]:
+        """IPC handler for ``health_check``."""
+        if self._event_probe is None:
+            return {
+                "type": "health_check_result",
+                "healthy": None,
+                "reason": "skipped",
+                "details": "Event probe not available.",
+                "remediation_url": None,
+            }
+        try:
+            result = await asyncio.wait_for(self._event_probe.run_probe(timeout=5.0), timeout=10.0)
+            return {
+                "type": "health_check_result",
+                "healthy": result.healthy,
+                "reason": result.reason,
+                "details": result.details,
+                "remediation_url": result.remediation_url,
+            }
+        except TimeoutError:
+            return {
+                "type": "health_check_result",
+                "healthy": None,
+                "reason": "timeout",
+                "details": "Health check timed out.",
+                "remediation_url": None,
+            }
+        except Exception as e:
+            logger.warning("health_check IPC: probe failed with exception: %s", e)
+            return {
+                "type": "health_check_result",
+                "healthy": None,
+                "reason": "error",
+                "details": f"Probe error: {redact_secrets(str(e))}",
+                "remediation_url": None,
+            }
 
     # ------------------------------------------------------------------
     # Internal helpers

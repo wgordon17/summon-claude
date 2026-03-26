@@ -108,6 +108,10 @@ class EventDispatcher:
         """Return True if a session is registered for this channel."""
         return channel_id in self._sessions
 
+    def has_active_sessions(self) -> bool:
+        """Return True if any sessions are currently registered."""
+        return bool(self._sessions)
+
     # ------------------------------------------------------------------
     # Command handler (for /summon slash commands)
     # ------------------------------------------------------------------

@@ -478,6 +478,28 @@ class SummonConfig(BaseSettings):
         finally:
             os.environ.update(stashed)
 
+    @functools.cached_property
+    def slack_app_id(self) -> str | None:
+        """Parse the Slack App ID from the xapp- token. Returns None if unavailable."""
+        token = self.slack_app_token
+        if not token:
+            return None
+        m = re.search(r"xapp-\d+-([A-Z][A-Z0-9]+)-", token)
+        if not m:
+            return None
+        app_id = m.group(1)
+        if not re.fullmatch(r"A[A-Z0-9]{9,11}", app_id):
+            return None
+        return app_id
+
+    @functools.cached_property
+    def slack_app_url(self) -> str:
+        """Return the Slack app settings URL for diagnostic messages."""
+        app_id = self.slack_app_id
+        if app_id:
+            return f"https://api.slack.com/apps/{app_id}"
+        return "https://api.slack.com/apps"
+
     @field_validator("default_effort")
     @classmethod
     def validate_effort_level(cls, v: str) -> str:

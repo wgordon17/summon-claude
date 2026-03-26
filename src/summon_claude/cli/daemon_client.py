@@ -168,6 +168,15 @@ async def list_sessions() -> list[dict[str, Any]]:
     return sessions
 
 
+async def health_check() -> dict[str, Any]:
+    """Run an event pipeline health check via daemon IPC.
+
+    Returns a dict with keys: healthy, reason, details, remediation_url.
+    Uses a 12-second timeout (probe itself takes up to 10s + overhead).
+    """
+    return await _request({"type": "health_check"}, recv_timeout=12.0)
+
+
 async def stop_all_sessions() -> list[tuple[str, bool]]:
     """Stop every active session via a single ``stop_all`` IPC message.
 

@@ -23,10 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -38,6 +41,8 @@ from slack_sdk.http_retry.builtin_async_handlers import (
 from slack_sdk.web.async_client import AsyncWebClient
 
 if TYPE_CHECKING:
+    from aiohttp import WSMessage
+
     from summon_claude.config import SummonConfig
     from summon_claude.event_dispatcher import EventDispatcher
 
@@ -88,6 +93,306 @@ class _RateLimiter:
 
 
 # ---------------------------------------------------------------------------
+# DiagnosticResult + EventProbe — active event pipeline health verification
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DiagnosticResult:
+    """Result of an event pipeline health probe or diagnostic cascade."""
+
+    healthy: bool
+    reason: str  # machine-readable key
+    details: str  # user-facing message
+    remediation_url: str | None = None
+
+
+_PROBE_REACTION = "white_check_mark"
+_PROBE_CHANNEL_NAME = "summon-health-probe"
+_PROBE_ANCHOR_TEXT = "Event health probe anchor (do not delete)"
+
+
+class EventProbe:
+    """Active event pipeline health probe using reaction round-trip verification.
+
+    Creates a private Slack channel, posts an anchor message, and periodically
+    adds a reaction to verify the full event pipeline (Socket Mode → reaction_added
+    event → raw WS listener) is functioning end-to-end.
+    """
+
+    def __init__(
+        self,
+        web_client: AsyncWebClient,
+        config: SummonConfig,
+    ) -> None:
+        self._web_client = web_client
+        self._config = config
+        self._anchor_channel_id: str | None = None
+        self._anchor_ts: str | None = None
+        self._event_received: asyncio.Event = asyncio.Event()
+        self._last_disconnect_reason: str | None = None
+        self._probe_cancelled: bool = False
+        self._probe_lock: asyncio.Lock = asyncio.Lock()
+
+    async def setup_anchor(self) -> None:
+        """Create or find the private health probe channel and post an anchor message."""
+        if self._anchor_channel_id is not None:
+            return
+
+        channel_id = await self._resolve_probe_channel()
+        if channel_id is None:
+            raise RuntimeError("EventProbe: could not find or create probe channel")
+
+        # Post anchor message
+        resp = await self._web_client.chat_postMessage(
+            channel=channel_id,
+            text=_PROBE_ANCHOR_TEXT,
+        )
+        self._anchor_channel_id = channel_id
+        self._anchor_ts = resp["ts"]
+        self._save_channel_cache(channel_id)
+        logger.debug("EventProbe: anchor posted in %s at ts=%s", channel_id, self._anchor_ts)
+
+    async def _resolve_probe_channel(self) -> str | None:
+        """Resolve the probe channel: cached ID → create → random-suffix fallback."""
+        import secrets  # noqa: PLC0415
+
+        # 1. Try cached channel ID (1 API call to validate)
+        cached_id = self._load_channel_cache()
+        if cached_id is not None:
+            try:
+                resp = await self._web_client.conversations_info(channel=cached_id)
+                ch = resp.get("channel", {})
+                if ch.get("is_archived"):
+                    with contextlib.suppress(Exception):
+                        await self._web_client.conversations_unarchive(channel=cached_id)
+                logger.debug("EventProbe: reusing cached probe channel %s", cached_id)
+                return cached_id
+            except Exception:
+                logger.debug("EventProbe: cached channel %s is stale, creating new", cached_id)
+                self._clear_channel_cache()
+
+        # 2. Try to create the channel (canonical name first, then random suffix)
+        for name in (_PROBE_CHANNEL_NAME, f"{_PROBE_CHANNEL_NAME}-{secrets.token_hex(3)}"):
+            try:
+                resp = await self._web_client.conversations_create(
+                    name=name,
+                    is_private=True,
+                )
+                channel_id = resp["channel"]["id"]  # type: ignore[index]
+                logger.debug("EventProbe: created probe channel %s (%s)", channel_id, name)
+                return channel_id
+            except Exception as e:
+                if "name_taken" not in str(e):
+                    raise
+        return None
+
+    @staticmethod
+    def _channel_cache_path() -> Path:
+        from summon_claude.config import get_data_dir  # noqa: PLC0415
+
+        return get_data_dir() / "probe-channel-id"
+
+    @staticmethod
+    def _load_channel_cache() -> str | None:
+        path = EventProbe._channel_cache_path()
+        try:
+            content = path.read_text().strip()
+            return content if content else None
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _save_channel_cache(channel_id: str) -> None:
+        path = EventProbe._channel_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(channel_id)
+
+    @staticmethod
+    def _clear_channel_cache() -> None:
+        EventProbe._channel_cache_path().unlink(missing_ok=True)
+
+    async def run_probe(self, timeout: float = 10.0) -> DiagnosticResult:  # noqa: ASYNC109
+        """Run an active event probe."""
+        if self._anchor_channel_id is None or self._anchor_ts is None:
+            return DiagnosticResult(
+                healthy=False,
+                reason="unknown",
+                details="Probe anchor not set up.",
+            )
+
+        async with self._probe_lock:
+            return await self._run_probe_locked(timeout, self._anchor_channel_id, self._anchor_ts)
+
+    async def _run_probe_locked(
+        self, wait_seconds: float, channel_id: str, anchor_ts: str
+    ) -> DiagnosticResult:
+        """Probe implementation — must be called under _probe_lock."""
+        self._event_received.clear()
+        self._probe_cancelled = False
+        self._last_disconnect_reason = None
+
+        # Step 1: Remove existing reaction (best-effort, ignore no_reaction)
+        with contextlib.suppress(Exception):
+            await self._web_client.reactions_remove(
+                channel=channel_id,
+                timestamp=anchor_ts,
+                name=_PROBE_REACTION,
+            )
+
+        # Step 2: Add reaction
+        try:
+            await self._web_client.reactions_add(
+                channel=channel_id,
+                timestamp=anchor_ts,
+                name=_PROBE_REACTION,
+            )
+        except Exception as e:
+            if "already_reacted" not in str(e):
+                return DiagnosticResult(
+                    healthy=False,
+                    reason="unknown",
+                    details=f"Failed to add reaction: {e}",
+                )
+            # already_reacted: remove stuck reaction and retry
+            try:
+                await self._web_client.reactions_remove(
+                    channel=channel_id,
+                    timestamp=anchor_ts,
+                    name=_PROBE_REACTION,
+                )
+                await self._web_client.reactions_add(
+                    channel=channel_id,
+                    timestamp=anchor_ts,
+                    name=_PROBE_REACTION,
+                )
+            except Exception as e2:
+                if "already_reacted" in str(e2):
+                    logger.warning(
+                        "EventProbe: reaction irrecoverably stuck — skipping probe cycle"
+                    )
+                    return DiagnosticResult(
+                        healthy=True,
+                        reason="healthy",
+                        details="Probe skipped (reaction stuck).",
+                    )
+                return DiagnosticResult(
+                    healthy=False,
+                    reason="unknown",
+                    details=f"Failed to add reaction after retry: {e2}",
+                )
+
+        # Step 3: Wait for event (or cancellation via cancel_probe setting _event_received)
+        try:
+            await asyncio.wait_for(self._event_received.wait(), timeout=wait_seconds)
+        except TimeoutError:
+            if not self._probe_cancelled:
+                return await self._run_diagnostic_cascade()
+            # Cancelled during timeout — fall through to cancelled result below
+
+        if self._probe_cancelled:
+            return DiagnosticResult(
+                healthy=True,
+                reason="cancelled",
+                details="Probe cancelled during reconnect.",
+            )
+        return DiagnosticResult(healthy=True, reason="healthy", details="Event pipeline OK.")
+
+    async def _run_diagnostic_cascade(self) -> DiagnosticResult:
+        """Sequential diagnostic checks to identify the root cause of probe failure."""
+        app_url = self._config.slack_app_url
+
+        # 1. api.test — check network/Slack reachability
+        try:
+            await self._web_client.api_test()
+        except Exception:
+            return DiagnosticResult(
+                healthy=False,
+                reason="slack_down",
+                details="Slack API is unreachable. Check network connectivity.",
+            )
+
+        # 2. auth.test — check token validity
+        try:
+            await self._web_client.auth_test()
+        except Exception:
+            return DiagnosticResult(
+                healthy=False,
+                reason="token_revoked",
+                details="Bot token is invalid or revoked.",
+                remediation_url=f"{app_url}/oauth",
+            )
+
+        # 3. link_disabled disconnect reason (auth_test already confirmed token is valid)
+        if self._last_disconnect_reason == "link_disabled":
+            return DiagnosticResult(
+                healthy=False,
+                reason="socket_disabled",
+                details="Socket Mode was disabled.",
+                remediation_url=f"{app_url}/socket-mode",
+            )
+
+        # 4. Socket connected but no events
+        return DiagnosticResult(
+            healthy=False,
+            reason="events_disabled",
+            details=(
+                "Socket Mode is connected but events are not being delivered."
+                " Check Event Subscriptions."
+            ),
+            remediation_url=f"{app_url}/event-subscriptions",
+        )
+
+    async def on_ws_message(self, message: WSMessage) -> None:
+        """Raw WebSocket message listener registered on SocketModeClient."""
+        import aiohttp  # noqa: PLC0415
+
+        try:
+            if message.type != aiohttp.WSMsgType.TEXT:
+                return
+            data = json.loads(message.data)
+            msg_type = data.get("type", "")
+
+            if msg_type == "events_api" and self._anchor_channel_id is not None:
+                payload = data.get("payload", {})
+                event = payload.get("event", {})
+                if event.get("type") == "reaction_added":
+                    item = event.get("item", {})
+                    if (
+                        item.get("channel") == self._anchor_channel_id
+                        and item.get("ts") == self._anchor_ts
+                    ):
+                        self._event_received.set()
+
+            elif msg_type == "disconnect":
+                reason = data.get("reason")
+                if reason and isinstance(reason, str):
+                    self._last_disconnect_reason = reason[:64]
+                    logger.debug("EventProbe: disconnect reason=%s", reason)
+
+        except Exception as e:
+            logger.debug("EventProbe.on_ws_message: parse error (ignored): %s", e)
+
+    def cancel_probe(self) -> None:
+        """Mark any in-flight probe as cancelled (called before reconnect)."""
+        self._probe_cancelled = True
+        self._event_received.set()
+
+    def reset_cancel(self) -> None:
+        """Clear the cancelled flag (called after reconnect completes)."""
+        self._probe_cancelled = False
+
+    def format_alert(self, result: DiagnosticResult) -> str:
+        """Format a diagnostic result as a Slack alert message string."""
+        from summon_claude.slack.client import redact_secrets  # noqa: PLC0415
+
+        lines = [f":x: *Event pipeline failure detected*\n{result.details}"]
+        if result.remediation_url:
+            lines.append(result.remediation_url)
+        return redact_secrets("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
 # _HealthMonitor — inlined from socket_health.py
 # ---------------------------------------------------------------------------
 
@@ -95,27 +400,40 @@ class _RateLimiter:
 class _HealthMonitor:
     """Monitors slack-sdk socket client health and triggers reconnection."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         socket_handler: AsyncSocketModeHandler,
         on_reconnect_needed: Callable[[], Awaitable[None]],
         on_exhausted: Callable[[], Awaitable[None]],
         check_interval: float = 10.0,
         max_reconnect_attempts: int = 5,
+        event_probe: EventProbe | None = None,
+        dispatcher: EventDispatcher | None = None,
     ) -> None:
         self._socket_handler = socket_handler
         self._on_reconnect_needed = on_reconnect_needed
         self._on_exhausted = on_exhausted
         self._check_interval = check_interval
         self._max_reconnect_attempts = max_reconnect_attempts
+        self._event_probe = event_probe
+        self._dispatcher = dispatcher
         self._consecutive_failures = 0
+        self._consecutive_probe_failures = 0
+        self._last_diagnostic: DiagnosticResult | None = None
         self._stop_event = asyncio.Event()
+
+    @property
+    def last_diagnostic(self) -> DiagnosticResult | None:
+        """Return the most recent diagnostic result from a failed probe."""
+        return self._last_diagnostic
 
     def update_handler(self, socket_handler: AsyncSocketModeHandler) -> None:
         """Switch to a new socket handler after reconnection."""
         self._socket_handler = socket_handler
         self._consecutive_failures = 0
-        logger.debug("_HealthMonitor: handler updated, failure counter reset")
+        self._consecutive_probe_failures = 0
+        self._last_diagnostic = None
+        logger.debug("_HealthMonitor: handler updated, failure counters reset")
 
     def stop(self) -> None:
         """Signal the monitoring loop to stop."""
@@ -128,17 +446,75 @@ class _HealthMonitor:
             if not self._stop_event.is_set() and not await self._is_healthy():
                 await self._handle_unhealthy()
 
-    async def _is_healthy(self) -> bool:
+    async def _is_healthy(self) -> bool:  # noqa: PLR0911
         """Check if the socket client is connected and responsive."""
         try:
             client = self._socket_handler.client
-            return await client.is_connected()
+            connected = await client.is_connected()
         except Exception as e:
             logger.debug("_HealthMonitor: health check exception: %s", e)
+            self._last_diagnostic = None  # clear stale probe diagnostic
             return False
+
+        if not connected:
+            self._last_diagnostic = None  # clear stale probe diagnostic
+            return False
+
+        # Skip event probe if no sessions are active or probe is not available
+        if self._event_probe is None:
+            return True
+        if self._dispatcher is not None and not self._dispatcher.has_active_sessions():
+            return True
+
+        # Run event probe
+        try:
+            result = await self._event_probe.run_probe()
+        except Exception as e:
+            logger.debug("_HealthMonitor: event probe exception: %s", e)
+            return True  # probe error ≠ unhealthy socket
+
+        if result.healthy:
+            self._consecutive_probe_failures = 0
+            self._last_diagnostic = None
+            return True
+
+        self._last_diagnostic = result
+        return False
 
     async def _handle_unhealthy(self) -> None:
         """Attempt recovery when socket is unhealthy."""
+        diagnostic = self._last_diagnostic
+
+        # Definitive signals — skip reconnect attempts, go straight to exhaustion
+        if diagnostic is not None and diagnostic.reason in ("socket_disabled", "token_revoked"):
+            logger.error(
+                "Socket health: definitive failure (%s) — triggering exhaustion immediately",
+                diagnostic.reason,
+            )
+            self._stop_event.set()
+            await self._on_exhausted()
+            return
+
+        # Probe-specific failures (events_disabled, unknown) — require 3 consecutive
+        if diagnostic is not None and diagnostic.reason in ("events_disabled", "unknown"):
+            self._consecutive_probe_failures += 1
+            logger.warning(
+                "Event probe failure %d/3: %s",
+                self._consecutive_probe_failures,
+                diagnostic.reason,
+            )
+            if self._consecutive_probe_failures < 3:
+                return  # not yet at threshold
+            logger.error(
+                "Event probe failed 3 consecutive times (%s) — triggering exhaustion",
+                diagnostic.reason,
+            )
+            self._stop_event.set()
+            await self._on_exhausted()
+            return
+
+        # Socket-level failures or slack_down — use existing reconnect logic
+        self._consecutive_probe_failures = 0
         self._consecutive_failures += 1
         if self._consecutive_failures <= self._max_reconnect_attempts:
             logger.warning(
@@ -186,12 +562,15 @@ class BoltRouter:
         self._app: AsyncApp | None = None
         self._socket_handler: AsyncSocketModeHandler | None = None
         self.bot_user_id: str | None = None
+        self._event_probe: EventProbe | None = None
 
         # Health monitor — created by start_health_monitor()
         self._health_monitor: _HealthMonitor | None = None
         self._exhausted_notice_task: asyncio.Task[None] | None = None
         self._health_monitor_task: asyncio.Task[None] | None = None
         self.shutdown_callback: Callable[[], None] | None = None
+        # Called before shutdown_callback when exhaustion is due to event pipeline failure
+        self.event_failure_callback: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -203,17 +582,33 @@ class BoltRouter:
         self._app, self._socket_handler = self._build_app()
         self._register_handlers(self._app)
         await self._socket_handler.connect_async()
-        # Only fetch bot_user_id on first start — it never changes across reconnects
+        # Only fetch bot_user_id and create EventProbe on first start
         if self.bot_user_id is None:
             resp = await self.web_client.auth_test()
             self.bot_user_id = resp["user_id"]
             logger.debug("BoltRouter: bot_user_id cached as %s", self.bot_user_id)
+
+            # Create EventProbe — degrade gracefully if setup fails
+            probe = EventProbe(web_client=self.web_client, config=self._config)
+            try:
+                await probe.setup_anchor()
+                self._event_probe = probe
+                self._socket_handler.client.on_message_listeners.append(probe.on_ws_message)
+                logger.info("BoltRouter: EventProbe setup complete")
+            except Exception as e:
+                logger.warning("BoltRouter: EventProbe setup failed (probe disabled): %s", e)
+                self._event_probe = None
 
     async def stop(self) -> None:
         """Gracefully close the Socket Mode connection and health monitor."""
         logger.info("BoltRouter: stopping")
         self.stop_health_monitor()
         await self._close_socket()
+
+    @property
+    def event_probe(self) -> EventProbe | None:
+        """Return the EventProbe instance, or None if setup failed."""
+        return self._event_probe
 
     async def reconnect(self) -> None:
         """Close the old socket and start a fresh connection.
@@ -222,10 +617,19 @@ class BoltRouter:
         new handler so it resets its failure counter.
         """
         logger.info("BoltRouter: reconnecting")
+        # Cancel any in-flight probe to avoid misdiagnosis during reconnect
+        if self._event_probe is not None:
+            self._event_probe.cancel_probe()
         await self._close_socket()
         await self.start()
         if self._health_monitor is not None and self._socket_handler is not None:
             self._health_monitor.update_handler(self._socket_handler)
+        # Re-register WS listener on new handler and reset cancel flag
+        if self._event_probe is not None and self._socket_handler is not None:
+            self._event_probe.reset_cancel()
+            listeners = self._socket_handler.client.on_message_listeners
+            if self._event_probe.on_ws_message not in listeners:
+                listeners.append(self._event_probe.on_ws_message)
         logger.info("BoltRouter: reconnected")
 
     async def _close_socket(self) -> None:
@@ -257,6 +661,8 @@ class BoltRouter:
             on_exhausted=self._on_reconnect_exhausted,
             check_interval=_HEALTH_CHECK_INTERVAL_S,
             max_reconnect_attempts=_MAX_RECONNECT_ATTEMPTS,
+            event_probe=self._event_probe,
+            dispatcher=self._dispatcher,
         )
         self._health_monitor_task = asyncio.create_task(
             self._health_monitor.run(), name="bolt-health-monitor"
@@ -281,6 +687,21 @@ class BoltRouter:
         logger.error(
             "BoltRouter: socket reconnection exhausted — posting to sessions and shutting down"
         )
+        # If exhaustion is due to event pipeline failure (not socket/network),
+        # signal for session suspension so sessions can be resumed after fixing.
+        diagnostic = (
+            self._health_monitor.last_diagnostic if self._health_monitor is not None else None
+        )
+        if (
+            diagnostic is not None
+            and diagnostic.reason in ("events_disabled", "unknown")
+            and self.event_failure_callback is not None
+        ):
+            try:
+                self.event_failure_callback()
+            except Exception:
+                logger.exception("BoltRouter: event_failure_callback raised")
+
         # Trigger daemon shutdown via registered callback
         if self.shutdown_callback is None:
             logger.warning("BoltRouter: no shutdown callback registered — daemon will hang")
@@ -309,16 +730,32 @@ class BoltRouter:
 
     async def _post_exhausted_notice(self, channel_id: str) -> None:
         """Post a permanent disconnect notice to a single channel."""
+        from summon_claude.slack.client import redact_secrets  # noqa: PLC0415
+
         with contextlib.suppress(Exception):
-            # Raw web_client call — accepted exception to single-output-path rule.
-            # These are last-resort crash-path messages sent before SlackClient exists.
-            await self.web_client.chat_postMessage(
-                channel=channel_id,
-                text=(
+            # Build diagnostic-aware notice text
+            diagnostic = (
+                self._health_monitor.last_diagnostic if self._health_monitor is not None else None
+            )
+            if diagnostic is not None and self._event_probe is not None:
+                notice_text = self._event_probe.format_alert(diagnostic)
+                if diagnostic.reason in ("events_disabled", "unknown"):
+                    notice_text += (
+                        "\nFix the issue, then run `summon project up` to resume"
+                        " project sessions or `summon start` for new sessions."
+                    )
+                else:
+                    notice_text += "\nAll sessions are terminating. Restart with `summon start`."
+            else:
+                notice_text = (
                     ":x: *Slack connection lost permanently.*\n"
                     f"The daemon could not reconnect after {_MAX_RECONNECT_ATTEMPTS} attempts.\n"
                     "All sessions are terminating. Restart with `summon start`."
-                ),
+                )
+            # Raw web_client call — pre-redacted per security constraint C3.
+            await self.web_client.chat_postMessage(
+                channel=channel_id,
+                text=redact_secrets(notice_text),
             )
 
     # ------------------------------------------------------------------

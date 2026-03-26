@@ -615,3 +615,56 @@ class TestBoolTrueConstant:
         assert "true" in _BOOL_TRUE
         assert "1" in _BOOL_TRUE
         assert "yes" in _BOOL_TRUE
+
+
+# ---------------------------------------------------------------------------
+# Config check: event health probe section
+# ---------------------------------------------------------------------------
+
+
+class TestConfigCheckEventHealth:
+    """Tests for the event health check section in summon config check."""
+
+    def test_config_check_health_daemon_not_running(self, capsys):
+        """When daemon is not running, health check should show skip message."""
+        from summon_claude.cli.config import config_check
+
+        with patch("summon_claude.daemon.is_daemon_running", return_value=False):
+            config_check(quiet=False)
+        output = capsys.readouterr().out
+        assert "daemon not running" in output
+
+    def test_config_check_health_daemon_healthy(self, capsys):
+        """When daemon returns healthy, should show OK."""
+        from summon_claude.cli.config import config_check
+
+        healthy_result = {"healthy": True, "reason": "healthy", "details": "OK"}
+
+        with (
+            patch("summon_claude.daemon.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.daemon_client.health_check", return_value=healthy_result),
+            patch("asyncio.run", return_value=healthy_result),
+        ):
+            config_check(quiet=False)
+        output = capsys.readouterr().out
+        assert "Event health: OK" in output
+
+    def test_config_check_health_daemon_unhealthy(self, capsys):
+        """When daemon returns unhealthy, should show FAIL with details."""
+        from summon_claude.cli.config import config_check
+
+        unhealthy_result = {
+            "healthy": False,
+            "reason": "events_disabled",
+            "details": "Events not delivered",
+            "remediation_url": "https://api.slack.com/apps/A123/event-subscriptions",
+        }
+
+        with (
+            patch("summon_claude.daemon.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.daemon_client.health_check", return_value=unhealthy_result),
+            patch("asyncio.run", return_value=unhealthy_result),
+        ):
+            config_check(quiet=False)
+        output = capsys.readouterr().out
+        assert "Events not delivered" in output

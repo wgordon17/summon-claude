@@ -140,6 +140,36 @@ class TestGitHubPAT:
         assert result["headers"]["Authorization"] == "Bearer ghp_testtoken123"
 
 
+class TestSlackAppId:
+    def test_parses_valid_app_id(self):
+        cfg = _make_config(slack_app_token="xapp-1-A0123ABCDE-12345-abc")
+        assert cfg.slack_app_id == "A0123ABCDE"
+
+    def test_parses_12_char_app_id(self):
+        cfg = _make_config(slack_app_token="xapp-1-A0123ABCDE12-12345-abc")
+        assert cfg.slack_app_id == "A0123ABCDE12"
+
+    def test_returns_none_for_malformed_token(self):
+        cfg = _make_config(slack_app_token="xapp-test-token")
+        assert cfg.slack_app_id is None
+
+    def test_returns_none_for_non_conforming_app_id(self):
+        cfg = _make_config(slack_app_token="xapp-1-abc12345678-12345-xyz")
+        assert cfg.slack_app_id is None
+
+    def test_returns_none_for_app_id_too_short(self):
+        cfg = _make_config(slack_app_token="xapp-1-A01234-12345-abc")
+        assert cfg.slack_app_id is None
+
+    def test_slack_app_url_with_app_id(self):
+        cfg = _make_config(slack_app_token="xapp-1-A0123ABCDE-12345-abc")
+        assert cfg.slack_app_url == "https://api.slack.com/apps/A0123ABCDE"
+
+    def test_slack_app_url_without_app_id(self):
+        cfg = _make_config(slack_app_token="xapp-test-token")
+        assert cfg.slack_app_url == "https://api.slack.com/apps"
+
+
 class TestSecretFieldsHiddenFromRepr:
     """Sensitive fields must not appear in repr() or str() output."""
 

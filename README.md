@@ -338,7 +338,7 @@ Slack input flows through `BoltRouter` (a single shared Bolt app per daemon), wh
 | `sessions/commands.py` | `!`-prefixed command dispatch: local handlers, passthrough, blocking, aliasing, plugin skills |
 | `sessions/context.py` | Context window usage tracking via JSONL transcript parsing |
 | `sessions/registry.py` | SQLite session registry with WAL mode, schema versioning, heartbeat, audit log |
-| `slack/bolt.py` | Slack Bolt app, rate limiter, health monitor, event routing |
+| `slack/bolt.py` | Slack Bolt app, rate limiter, health monitor, event health probe, event routing |
 | `slack/canvas_store.py` | SQLite-backed canvas markdown state with background Slack sync |
 | `slack/canvas_templates.py` | Canvas markdown templates for different agent profiles |
 | `slack/client.py` | Channel-bound Slack output client (post, update, react, upload, canvas) |

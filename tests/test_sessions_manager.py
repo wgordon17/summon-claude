@@ -2387,3 +2387,136 @@ class TestValidateResumeTargetEdgeCases:
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
             with pytest.raises(ValueError, match="no associated channel"):
                 await manager._validate_resume_target("s-no-chan")
+
+
+# ---------------------------------------------------------------------------
+# Tests: _suspend_on_shutdown in shutdown()
+# ---------------------------------------------------------------------------
+
+
+class TestSuspendOnShutdown:
+    """Verify SessionManager.shutdown() suspends project sessions on health failure."""
+
+    @pytest.mark.asyncio
+    async def test_suspend_marks_project_sessions_suspended(self):
+        """Project sessions marked 'suspended' when _suspend_on_shutdown is set."""
+        manager, _provider, _dispatcher = _make_manager()
+
+        # Create mock sessions with project affiliation
+        mock_project_session = MagicMock()
+        mock_project_session.project_id = "proj-1"
+        mock_project_session.channel_id = "C123"
+        mock_project_session.request_shutdown = MagicMock()
+
+        mock_adhoc_session = MagicMock()
+        mock_adhoc_session.project_id = None
+        mock_adhoc_session.channel_id = "C456"
+        mock_adhoc_session.request_shutdown = MagicMock()
+
+        manager._sessions = {"sid-1": mock_project_session, "sid-2": mock_adhoc_session}
+        manager._tasks = {"sid-1": MagicMock(), "sid-2": MagicMock()}
+        manager._suspend_on_shutdown = True
+
+        mock_reg = MagicMock()
+        mock_reg.update_status = AsyncMock()
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_reg)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("summon_claude.sessions.manager.SessionRegistry", return_value=mock_ctx):
+            await manager.shutdown()
+
+        # Project session should be suspended
+        mock_reg.update_status.assert_any_call("sid-1", "suspended")
+        # Ad-hoc session should be errored
+        calls = [c for c in mock_reg.update_status.call_args_list if c[0][0] == "sid-2"]
+        assert len(calls) == 1
+        assert calls[0][0][1] == "errored"
+
+    @pytest.mark.asyncio
+    async def test_no_suspend_when_flag_is_false(self):
+        """Normal shutdown should NOT pre-set session statuses."""
+        manager, _provider, _dispatcher = _make_manager()
+
+        mock_session = MagicMock()
+        mock_session.project_id = "proj-1"
+        mock_session.channel_id = "C123"
+        mock_session.request_shutdown = MagicMock()
+
+        manager._sessions = {"sid-1": mock_session}
+        manager._tasks = {"sid-1": MagicMock()}
+        manager._suspend_on_shutdown = False
+
+        mock_reg = MagicMock()
+        mock_reg.update_status = AsyncMock()
+
+        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_cls:
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            await manager.shutdown()
+
+        # update_status should NOT be called for pre-suspend
+        mock_reg.update_status.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: _handle_health_check IPC handler
+# ---------------------------------------------------------------------------
+
+
+class TestHealthCheckIPC:
+    """Tests for _handle_health_check IPC handler."""
+
+    @pytest.mark.asyncio
+    async def test_health_check_no_probe(self):
+        """When event_probe is None, returns skipped."""
+        manager, _provider, _dispatcher = _make_manager()
+        manager._event_probe = None
+        result = await manager._handle_health_check()
+        assert result["reason"] == "skipped"
+        assert result["healthy"] is None
+
+    @pytest.mark.asyncio
+    async def test_health_check_healthy(self):
+        """When probe returns healthy, returns healthy result."""
+        from summon_claude.slack.bolt import DiagnosticResult
+
+        manager, _provider, _dispatcher = _make_manager()
+        mock_probe = MagicMock()
+        mock_probe.run_probe = AsyncMock(
+            return_value=DiagnosticResult(healthy=True, reason="healthy", details="OK")
+        )
+        manager._event_probe = mock_probe
+        result = await manager._handle_health_check()
+        assert result["healthy"] is True
+        assert result["reason"] == "healthy"
+
+    @pytest.mark.asyncio
+    async def test_health_check_probe_raises(self):
+        """When probe raises, returns error."""
+        manager, _provider, _dispatcher = _make_manager()
+        mock_probe = MagicMock()
+        mock_probe.run_probe = AsyncMock(side_effect=RuntimeError("probe crashed"))
+        manager._event_probe = mock_probe
+        result = await manager._handle_health_check()
+        assert result["healthy"] is None
+        assert result["reason"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_health_check_timeout(self):
+        """When probe times out, returns timeout result."""
+        manager, _provider, _dispatcher = _make_manager()
+        mock_probe = MagicMock()
+        mock_probe.run_probe = AsyncMock(side_effect=TimeoutError)
+        manager._event_probe = mock_probe
+        result = await manager._handle_health_check()
+        assert result["healthy"] is None
+        assert result["reason"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_set_suspend_on_shutdown(self):
+        """set_suspend_on_shutdown() sets the flag via public API."""
+        manager, _provider, _dispatcher = _make_manager()
+        assert manager._suspend_on_shutdown is False
+        manager.set_suspend_on_shutdown()
+        assert manager._suspend_on_shutdown is True

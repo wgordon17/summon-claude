@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Event health probe** — Active detection of Slack Events API failures at startup and runtime. `EventProbe` in `bolt.py` uses reaction-based round-trip verification in a private `summon-health-probe` channel. Startup probe hard-fails on definitive signals (`token_revoked`, `socket_disabled`), soft-fails on non-definitive. Runtime probe runs within `_HealthMonitor` with 3-consecutive-failure threshold. Diagnostic cascade provides specific remediation URLs. Sessions are suspended on health failure (resumable via `summon project up`). `summon config check` includes event health status when daemon is running.
 - **Unique session names** — `summon start --name` now auto-generates names with a 6-hex-char suffix (e.g. `myproject-a1b2c3`) to prevent collisions. Active session names are unique at the DB level via a partial unique index (#40)
 - **Effort configuration** — `summon start --effort LEVEL` and `SUMMON_DEFAULT_EFFORT` config variable. In-session `!effort` command to switch effort dynamically via SDK `/effort` (#40)
 - **Channel canvases** — Each session creates a persistent Slack canvas in its channel. `CanvasStore` provides SQLite-backed local markdown state with background sync to Slack (`slack/canvas_store.py`, `slack/canvas_templates.py`) (#42)
