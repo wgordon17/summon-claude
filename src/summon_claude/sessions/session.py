@@ -1209,6 +1209,13 @@ class SummonSession:
         The message is processed as a regular user turn. This bypasses Slack
         event dispatch — the message goes directly into the internal queue.
 
+        **Security: no identity verification.** This method bypasses the
+        centralized identity gate in ``_process_incoming_event``. Callers
+        are responsible for verifying authorization before calling. Current
+        callers: daemon IPC ``send_message`` (Unix socket 0600 provides
+        OS-level access control) and ``session_message`` MCP tool (enforces
+        parent-child scope guard + user ownership check).
+
         Args:
             text: Message text to inject.
             sender_info: Human-readable source (e.g., "myapp-pm (#C12345)").
