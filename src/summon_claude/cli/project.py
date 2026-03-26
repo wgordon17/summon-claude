@@ -176,6 +176,10 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
             pname = project["name"]
             sessions = await registry.get_project_sessions(project["project_id"])
             active = [s for s in sessions if s.get("status") in ("pending_auth", "active")]
+            # Stop children before PMs so PMs don't react to disappearing
+            # children during their final turn (children first = is_pm False
+            # sorts before True).
+            active.sort(key=lambda s: "-pm-" in s.get("session_name", ""))
             for session in active:
                 sid = session["session_id"]
                 sname = session.get("session_name", "")

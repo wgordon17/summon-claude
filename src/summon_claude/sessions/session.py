@@ -1181,10 +1181,19 @@ class SummonSession:
         return self._name
 
     def request_shutdown(self) -> None:
-        """Signal this session to shut down gracefully."""
+        """Signal this session to shut down gracefully.
+
+        Aborts any in-flight SDK turn so the session stops promptly
+        instead of waiting for the current turn to complete naturally.
+        Without this, a PM mid-turn during ``project down`` would keep
+        running tool calls (e.g. ``session_stop``) until the turn finishes.
+        """
         if not self._shutdown_event.is_set():
             logger.info("Session %s: shutdown requested", self._session_id)
             self._shutdown_event.set()
+            # Abort the current turn so the session doesn't linger while
+            # Claude finishes tool calls.
+            self._abort_current_turn()
             # Unblock the raw event queue poll
             try:
                 self._raw_event_queue.put_nowait(None)
