@@ -29,6 +29,7 @@ from summon_claude.sessions.session import (
     SessionOptions,
     SummonSession,
     _format_file_references,
+    _PendingTurn,
     _SessionRestartError,
     _SessionRuntime,
 )
@@ -303,6 +304,22 @@ class TestSessionShutdownControl:
         assert session._current_turn_task is None
         session.request_shutdown()  # must not raise
         assert session._abort_event.is_set()
+
+    async def test_handle_user_message_skips_turn_on_shutdown(self):
+        """_handle_user_message returns immediately when _shutdown_event is set."""
+        session = make_session()
+        session._shutdown_event.set()
+
+        rt = MagicMock(spec=_SessionRuntime)
+        rt.client = AsyncMock()
+        pending = _PendingTurn(message="hello", message_ts="1234.5", pre_sent=True)
+
+        await session._handle_user_message(rt, MagicMock(), MagicMock(), pending)
+
+        # Turn was never executed — total_turns stays at 0
+        assert session._total_turns == 0
+        # inbox_tray emoji was cleaned up
+        rt.client.unreact.assert_awaited_once_with("1234.5", "inbox_tray")
 
     def test_authenticate_sets_event_and_user(self):
         session = make_session()
