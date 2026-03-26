@@ -325,7 +325,8 @@ src/summon_claude/
 ├── summon_cli_mcp.py      # MCP tools for session lifecycle management (session_list, _info, _start, _stop)
 ├── cli/
 │   ├── __init__.py        # Click wiring, root group, setup_logging
-│   ├── config.py          # Config subcommands (show, set, path, edit, check, google-auth)
+│   ├── auth.py            # Auth group: unified auth commands for GitHub, Google, Slack
+│   ├── config.py          # Config subcommands (show, set, path, edit, check)
 │   ├── daemon_client.py   # Typed async client for daemon Unix socket API
 │   ├── db.py              # DB subcommand implementations (status, vacuum, purge)
 │   ├── formatting.py      # Output formatting (echo, format_json, print_session_table)
@@ -334,7 +335,7 @@ src/summon_claude/
 │   ├── interactive.py     # Interactive terminal selection with TTY-aware fallback
 │   ├── reset.py           # Reset command implementations (data, config)
 │   ├── session.py         # Session subcommand implementations (list, info, logs, cleanup)
-│   ├── slack_auth.py      # External Slack workspace auth (slack-auth, slack-channels, slack-status)
+│   ├── slack_auth.py      # External Slack workspace auth helpers (browser login, channel picker)
 │   ├── start.py           # async_start() implementation
 │   ├── stop.py            # async_stop() implementation
 │   └── update_check.py    # PyPI update checker with 24h cache

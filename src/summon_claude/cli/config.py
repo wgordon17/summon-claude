@@ -384,43 +384,86 @@ def google_auth() -> None:
         click.echo(f"Credentials stored in {get_google_credentials_dir()}")
     except subprocess.CalledProcessError:
         click.echo("Google auth flow did not complete.", err=True)
-        click.echo("Run `summon config google-status` to check auth state.")
+        click.echo("Run `summon auth google status` to check auth state.")
         sys.exit(1)
 
 
-def _check_github_pat(pat: str, *, quiet: bool = False) -> bool:
-    """Check GitHub PAT by calling the /user endpoint.
+async def github_auth_cmd() -> None:
+    """Interactive GitHub OAuth device flow authentication.
 
-    Returns True if valid, False if the token is rejected.
+    Runs the device flow, prompting the user to visit GitHub and enter a code.
+    Stores the resulting token for use by all sessions.
     """
-    import json  # noqa: PLC0415
-    import urllib.error  # noqa: PLC0415
-    import urllib.request  # noqa: PLC0415
+    import aiohttp  # noqa: PLC0415
 
-    # Strip CRLF to prevent header injection from hand-edited config or env vars.
-    pat = pat.replace("\r", "").replace("\n", "")
-    req = urllib.request.Request(
-        "https://api.github.com/user",
-        headers={"Authorization": f"Bearer {pat}", "Accept": "application/vnd.github+json"},
-    )
+    from summon_claude.github_auth import GitHubAuthError, run_device_flow  # noqa: PLC0415
+
+    def _print_device_code(user_code: str, verification_uri: str) -> None:
+        safe_uri = re.sub(r"[^\x20-\x7e]", "", verification_uri)
+        safe_code = re.sub(r"[^\x20-\x7e]", "", user_code)
+        click.echo(f"Visit {safe_uri} and enter code: {safe_code}")
+        click.echo("Verify the authorization page shows 'summon-claude' as the app name.")
+        click.echo("Waiting for GitHub authorization...")
+
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-            data = json.loads(resp.read(65536))
-            login = re.sub(r"[^a-zA-Z0-9\-]", "", data.get("login", "unknown")) or "unknown"
-            if not quiet:
-                click.echo(f"  [PASS] GitHub PAT: valid (user: {login})")
-            return True
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            click.echo(
-                "  [FAIL] GitHub PAT: invalid or expired (summon config set SUMMON_GITHUB_PAT)"
-            )
-            return False
-        click.echo(f"  [WARN] GitHub PAT: API returned {e.code}")
-        return True  # non-auth HTTP error, don't fail the check
-    except Exception as e:
-        click.echo(f"  [WARN] GitHub PAT: check skipped ({e})")
-        return True  # network issue, not a token problem
+        result = await run_device_flow(on_code=_print_device_code)
+        login = re.sub(r"[^a-zA-Z0-9-]", "", result.login) or "unknown"
+        click.echo(f"Authenticated as {login}. Token saved to {result.token_path}.")
+    except aiohttp.ClientError as e:
+        click.echo(f"Network error during GitHub auth: {e}", err=True)
+        sys.exit(1)
+    except GitHubAuthError as e:
+        click.echo(f"GitHub authentication failed: {e}", err=True)
+        sys.exit(1)
+
+
+def github_logout() -> None:
+    """Remove the stored GitHub OAuth token."""
+    from summon_claude.github_auth import remove_token  # noqa: PLC0415
+
+    removed = remove_token()
+    if removed:
+        click.echo("GitHub token removed.")
+    else:
+        click.echo("No GitHub token stored.")
+
+
+def _check_github_status(*, prefix: str = "", quiet: bool = False) -> bool | None:
+    """Check GitHub OAuth token status.
+
+    Returns True if valid, False if broken, None if not configured.
+    """
+    import aiohttp  # noqa: PLC0415
+
+    from summon_claude.github_auth import (  # noqa: PLC0415
+        GitHubAuthError,
+        load_token,
+        validate_token,
+    )
+
+    token = load_token()
+    if not token:
+        if not quiet:
+            click.echo(f"{prefix}[INFO] GitHub: not configured (run `summon auth github login`)")
+        return None
+
+    try:
+        result = asyncio.run(validate_token(token))
+    except (OSError, aiohttp.ClientError, GitHubAuthError):
+        if not quiet:
+            click.echo(f"{prefix}[WARN] GitHub: token found (validation skipped — network error)")
+        return True
+
+    if result is None:
+        if not quiet:
+            click.echo(f"{prefix}[FAIL] GitHub: token invalid — run `summon auth github login`")
+        return False
+
+    if not quiet:
+        login = re.sub(r"[^a-zA-Z0-9-]", "", result["login"]) or "unknown"
+        scopes = re.sub(r"[^\x20-\x7e]", "", result["scopes"])
+        click.echo(f"{prefix}[PASS] GitHub: authenticated as {login} (scopes: {scopes})")
+    return True
 
 
 def _check_google_status(
@@ -443,7 +486,7 @@ def _check_google_status(
     creds_dir = get_google_credentials_dir()
     if not creds_dir.exists():
         if not quiet:
-            click.echo(f"{prefix}Google: not configured (run `summon config google-auth`)")
+            click.echo(f"{prefix}Google: not configured (run `summon auth google login`)")
         return None
 
     store = LocalDirectoryCredentialStore(str(creds_dir))
@@ -473,7 +516,7 @@ def _check_google_status(
         elif cred.expired and cred.refresh_token:
             status = "expired (will refresh on next use)"
         else:
-            click.echo(f"{prefix}Google: invalid — re-run `summon config google-auth` ({user})")
+            click.echo(f"{prefix}Google: invalid — re-run `summon auth google login` ({user})")
             all_ok = False
             continue
 
@@ -484,7 +527,7 @@ def _check_google_status(
             click.echo(f"{prefix}Google: {status} but missing scopes ({user})")
             if not quiet:
                 click.echo(f"{prefix}  Missing: {', '.join(sorted(missing)[:3])}...")
-                click.echo(f"{prefix}  Re-run `summon config google-auth` to grant scopes")
+                click.echo(f"{prefix}  Re-run `summon auth google login` to grant scopes")
             all_ok = False
         elif not quiet:
             click.echo(f"{prefix}Google: {status} ({user})")
@@ -707,17 +750,10 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         except Exception as e:
             click.echo(f"  [WARN] Slack API check skipped: {e}")
 
-    # GitHub PAT (optional, with connectivity check)
-    github_pat = values.get("SUMMON_GITHUB_PAT", "")
-    if github_pat:
-        gh_status = _check_github_pat(github_pat, quiet=quiet)
-        if gh_status is False:
-            all_pass = False
-    elif not quiet:
-        click.echo(
-            "  [INFO] GitHub PAT: not set — sessions won't have GitHub tools"
-            " (summon config set SUMMON_GITHUB_PAT <token>)"
-        )
+    # GitHub OAuth (optional, with connectivity check)
+    github_result = _check_github_status(prefix="  ", quiet=quiet)
+    if github_result is False:
+        all_pass = False
 
     # Google Workspace (optional, only if credentials exist)
     google_result = _check_google_status(
@@ -732,7 +768,7 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
             click.echo("  [FAIL] Google Workspace credentials have issues")
             all_pass = False
     elif not quiet:
-        click.echo("  [INFO] Google Workspace: not configured (summon config google-auth)")
+        click.echo("  [INFO] Google Workspace: not configured (summon auth google login)")
 
     # Optional extras availability (informational)
     if not quiet:
@@ -838,7 +874,7 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
             has_creds = False
         if not has_creds:
             click.echo(
-                "  [INFO] Scribe enabled but Google not configured (summon config google-auth)"
+                "  [INFO] Scribe enabled but Google not configured (summon auth google login)"
             )
 
     # Getting started nudge (only when count is confirmed 0, not on DB failure)

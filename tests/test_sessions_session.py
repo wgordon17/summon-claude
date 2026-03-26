@@ -1251,7 +1251,8 @@ class TestMCPRegistration:
         return captured
 
     async def test_github_mcp_wired_when_configured(self):
-        result = await self._capture_mcp_servers_with_config(github_pat="ghp_test123")
+        with patch("summon_claude.github_auth.load_token", return_value="gho_test123"):
+            result = await self._capture_mcp_servers_with_config()
         assert "github" in result["mcp_servers"]
         assert result["mcp_servers"]["github"]["type"] == "http"
 
@@ -1267,7 +1268,7 @@ class TestMCPRegistration:
         _run_session_tasks — it propagates to the caller (start()'s
         finally block marks the session as errored).
         """
-        cfg = make_config(github_pat="ghp_unreachable_test")
+        cfg = make_config()
         session = SummonSession(
             config=cfg,
             options=make_options(),
@@ -1287,6 +1288,7 @@ class TestMCPRegistration:
         )
 
         with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_unreachable"),
             patch(
                 "summon_claude.sessions.session.ClaudeSDKClient",
                 return_value=mock_client,

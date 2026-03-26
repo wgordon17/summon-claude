@@ -106,38 +106,33 @@ class TestSummonConfigValidate:
         assert "SUMMON_SLACK_SIGNING_SECRET" in msg
 
 
-class TestGitHubPAT:
-    def test_github_pat_default_none(self):
+class TestGitHubMCPConfig:
+    def test_github_mcp_config_returns_none_when_no_token(self):
+        from unittest.mock import patch
+
         cfg = _make_config()
-        assert cfg.github_pat is None
+        with patch("summon_claude.github_auth.load_token", return_value=None):
+            assert cfg.github_mcp_config() is None
 
-    def test_github_pat_classic_prefix(self):
-        cfg = _make_config(github_pat="ghp_abc123")
-        assert cfg.github_pat == "ghp_abc123"
+    def test_github_mcp_config_returns_dict_when_token_exists(self):
+        from unittest.mock import patch
 
-    def test_github_pat_fine_grained_prefix(self):
-        cfg = _make_config(github_pat="github_pat_abc123")
-        assert cfg.github_pat == "github_pat_abc123"
-
-    def test_github_pat_empty_string_treated_as_unset(self):
-        cfg = _make_config(github_pat="")
-        assert cfg.github_mcp_config() is None
-
-    def test_github_pat_invalid_prefix(self):
-        with pytest.raises(ValueError, match=r"ghp_.*github_pat_"):
-            _make_config(github_pat="gho_invalid_token")
-
-    def test_github_mcp_config_returns_none_when_not_set(self):
         cfg = _make_config()
-        assert cfg.github_mcp_config() is None
-
-    def test_github_mcp_config_returns_dict_when_set(self):
-        cfg = _make_config(github_pat="ghp_testtoken123")
-        result = cfg.github_mcp_config()
+        with patch("summon_claude.github_auth.load_token", return_value="gho_test123"):
+            result = cfg.github_mcp_config()
         assert result is not None
         assert result["type"] == "http"
         assert result["url"] == "https://api.githubcopilot.com/mcp/"
-        assert result["headers"]["Authorization"] == "Bearer ghp_testtoken123"
+        assert result["headers"]["Authorization"] == "Bearer gho_test123"
+
+    def test_github_mcp_config_dict_structure(self):
+        from unittest.mock import patch
+
+        cfg = _make_config()
+        with patch("summon_claude.github_auth.load_token", return_value="gho_xyz"):
+            result = cfg.github_mcp_config()
+        assert set(result.keys()) == {"type", "url", "headers"}
+        assert "Authorization" in result["headers"]
 
 
 class TestSlackAppId:
@@ -174,9 +169,8 @@ class TestSecretFieldsHiddenFromRepr:
     """Sensitive fields must not appear in repr() or str() output."""
 
     def test_repr_hides_secrets(self):
-        cfg = _make_config(github_pat="ghp_shouldntsee")
+        cfg = _make_config()
         r = repr(cfg)
-        assert "ghp_shouldntsee" not in r
         assert "xoxb-test-token" not in r
         assert "xapp-test-token" not in r
         assert "abc123def456" not in r

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import aiohttp
 import pytest
 from click.testing import CliRunner
 
@@ -58,7 +60,7 @@ class TestCmdInit:
         config_file = tmp_path / "config.env"
 
         # Core prompts: 3 secrets, 1 text (model), 1 choice (effort),
-        # 1 text (prefix), 1 flag (scribe), 1 secret (github_pat),
+        # 1 text (prefix), 1 flag (scribe),
         # then "Configure advanced settings?" (no)
         inputs = (
             "\n".join(
@@ -70,7 +72,6 @@ class TestCmdInit:
                     "high",  # default_effort (choice)
                     "",  # channel_prefix (text, accept default)
                     "n",  # scribe_enabled (flag)
-                    "",  # github_pat (secret, empty = skip)
                     "n",  # Configure advanced settings? (no)
                 ]
             )
@@ -109,7 +110,6 @@ class TestCmdInit:
                     "high",  # default_effort
                     "",  # channel_prefix
                     "n",  # scribe_enabled
-                    "",  # github_pat (skip)
                     "y",  # Configure advanced settings? (YES)
                     "",  # max_inline_chars (accept default)
                     "",  # permission_debounce_ms (accept default)
@@ -157,7 +157,6 @@ class TestCmdInit:
                     "high",  # default_effort
                     "",  # channel_prefix
                     "n",  # scribe_enabled
-                    "",  # github_pat (skip)
                     "n",  # Configure advanced settings?
                 ]
             )
@@ -531,146 +530,329 @@ class TestCheckClaudeCli:
         assert result.version is None
 
 
-class TestCheckGithubPat:
-    """Tests for _check_github_pat function."""
+class TestCheckGithubStatus:
+    """Tests for _check_github_status function."""
 
-    def test_valid_pat_returns_true(self, capsys):
-        """200 OK response returns True and prints PASS."""
-        import json
-        import urllib.request
+    def test_returns_none_when_no_token(self, capsys):
+        """No stored token returns None."""
+        from summon_claude.cli.config import _check_github_status
 
-        from summon_claude.cli.config import _check_github_pat
+        with patch("summon_claude.github_auth.load_token", return_value=None):
+            result = _check_github_status()
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"login": "testuser"}).encode()
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "not configured" in captured.out
 
-        with patch.object(urllib.request, "urlopen", return_value=mock_resp):
-            result = _check_github_pat("ghp_test123")
+    def test_returns_true_when_valid(self, capsys):
+        """Valid token returns True with user info."""
+        from summon_claude.cli.config import _check_github_status
+
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch(
+                "summon_claude.cli.config.asyncio.run",
+                return_value={"login": "testuser", "scopes": "repo"},
+            ),
+        ):
+            result = _check_github_status()
 
         assert result is True
         captured = capsys.readouterr()
-        assert "PASS" in captured.out
         assert "testuser" in captured.out
 
-    def test_invalid_pat_returns_false(self, capsys):
-        """401 response returns False and prints FAIL."""
-        import urllib.error
+    def test_sanitizes_login_with_escape_sequences(self, capsys):
+        """Login containing terminal escape sequences is stripped before display."""
+        from summon_claude.cli.config import _check_github_status
 
-        from summon_claude.cli.config import _check_github_pat
-
-        with patch(
-            "urllib.request.urlopen",
-            side_effect=urllib.error.HTTPError(
-                url="",
-                code=401,
-                msg="Unauthorized",
-                hdrs=None,
-                fp=None,  # type: ignore[arg-type]
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch(
+                "summon_claude.cli.config.asyncio.run",
+                return_value={"login": "evil\x1b[31muser", "scopes": "repo\x1b[0m"},
             ),
         ):
-            result = _check_github_pat("ghp_bad")
+            result = _check_github_status()
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert "\x1b" not in captured.out
+        assert "evil" in captured.out
+        assert "[31m" not in captured.out  # bracket stripped from ANSI sequence
+
+    def test_returns_false_when_invalid(self, capsys):
+        """Invalid token returns False."""
+        from summon_claude.cli.config import _check_github_status
+
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_bad"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch("summon_claude.cli.config.asyncio.run", return_value=None),
+        ):
+            result = _check_github_status()
 
         assert result is False
         captured = capsys.readouterr()
-        assert "FAIL" in captured.out
+        assert "invalid" in captured.out
 
-    def test_non_auth_http_error_returns_true(self, capsys):
-        """Non-401 HTTP error returns True with WARN."""
-        import urllib.error
+    def test_returns_true_on_network_error(self, capsys):
+        """Network error returns True (token exists, can't validate)."""
+        from summon_claude.cli.config import _check_github_status
 
-        from summon_claude.cli.config import _check_github_pat
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch("summon_claude.cli.config.asyncio.run", side_effect=OSError("timeout")),
+        ):
+            result = _check_github_status()
 
-        with patch(
-            "urllib.request.urlopen",
-            side_effect=urllib.error.HTTPError(
-                url="",
-                code=500,
-                msg="Server Error",
-                hdrs=None,
-                fp=None,  # type: ignore[arg-type]
+        assert result is True
+        captured = capsys.readouterr()
+        assert "network error" in captured.out
+
+    def test_returns_true_on_github_auth_error(self, capsys):
+        """GitHubAuthError during validation returns True (network error path)."""
+        from summon_claude.cli.config import _check_github_status
+        from summon_claude.github_auth import GitHubAuthError
+
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch(
+                "summon_claude.cli.config.asyncio.run",
+                side_effect=GitHubAuthError("HTTP 503"),
             ),
         ):
-            result = _check_github_pat("ghp_test")
+            result = _check_github_status()
 
         assert result is True
         captured = capsys.readouterr()
-        assert "WARN" in captured.out
+        assert "network error" in captured.out
 
-    def test_network_error_returns_true(self, capsys):
-        """Network exception returns True with WARN."""
-        from summon_claude.cli.config import _check_github_pat
+    def test_returns_true_on_aiohttp_client_error(self, capsys):
+        """aiohttp.ClientError during validation returns True (network error path)."""
+        from summon_claude.cli.config import _check_github_status
 
-        with patch("urllib.request.urlopen", side_effect=OSError("Connection refused")):
-            result = _check_github_pat("ghp_test")
-
-        assert result is True
-        captured = capsys.readouterr()
-        assert "WARN" in captured.out
-
-    def test_quiet_mode_suppresses_pass(self, capsys):
-        """quiet=True suppresses PASS output."""
-        import json
-        import urllib.request
-
-        from summon_claude.cli.config import _check_github_pat
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"login": "testuser"}).encode()
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch.object(urllib.request, "urlopen", return_value=mock_resp):
-            result = _check_github_pat("ghp_test123", quiet=True)
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch(
+                "summon_claude.cli.config.asyncio.run",
+                side_effect=aiohttp.ServerDisconnectedError(),
+            ),
+        ):
+            result = _check_github_status()
 
         assert result is True
         captured = capsys.readouterr()
-        assert "PASS" not in captured.out
+        assert "network error" in captured.out
 
+    def test_quiet_mode_no_token(self, capsys):
+        """quiet=True suppresses output when no token stored."""
+        from summon_claude.cli.config import _check_github_status
 
-class TestCheckGithubPatSanitization:
-    """Tests for login field sanitization in _check_github_pat."""
+        with (
+            patch("summon_claude.github_auth.load_token", return_value=None),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+        ):
+            result = _check_github_status(quiet=True)
 
-    def test_login_with_special_chars_sanitized(self, capsys):
-        """Login with terminal escape sequences is stripped."""
-        import json
-        import urllib.request
+        assert result is None
+        assert capsys.readouterr().out == ""
 
-        from summon_claude.cli.config import _check_github_pat
+    def test_quiet_mode_valid_token(self, capsys):
+        """quiet=True suppresses output when token is valid."""
+        from summon_claude.cli.config import _check_github_status
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"login": "evil<>user\x1b[31m"}).encode()
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch.object(urllib.request, "urlopen", return_value=mock_resp):
-            result = _check_github_pat("ghp_test")
-
-        assert result is True
-        captured = capsys.readouterr()
-        assert "eviluser" in captured.out
-        assert "<>" not in captured.out
-        assert "\x1b" not in captured.out
-
-    def test_login_strips_to_empty_falls_back(self, capsys):
-        """Login that strips to empty string falls back to 'unknown'."""
-        import json
-        import urllib.request
-
-        from summon_claude.cli.config import _check_github_pat
-
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = json.dumps({"login": "!!!"}).encode()
-        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch.object(urllib.request, "urlopen", return_value=mock_resp):
-            result = _check_github_pat("ghp_test")
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch(
+                "summon_claude.cli.config.asyncio.run",
+                return_value={"login": "testuser", "scopes": "repo"},
+            ),
+        ):
+            result = _check_github_status(quiet=True)
 
         assert result is True
-        captured = capsys.readouterr()
-        assert "unknown" in captured.out
+        assert capsys.readouterr().out == ""
+
+    def test_quiet_mode_invalid_token(self, capsys):
+        """quiet=True suppresses output when token is invalid."""
+        from summon_claude.cli.config import _check_github_status
+
+        with (
+            patch("summon_claude.github_auth.load_token", return_value="gho_bad"),
+            patch("summon_claude.github_auth.validate_token", new=MagicMock()),
+            patch("summon_claude.cli.config.asyncio.run", return_value=None),
+        ):
+            result = _check_github_status(quiet=True)
+
+        assert result is False
+        assert capsys.readouterr().out == ""
+
+
+class TestAuthStatus:
+    """Tests for summon auth status command."""
+
+    def test_auth_status_no_providers(self, tmp_path):
+        """auth status shows guidance when no providers configured."""
+        with (
+            patch("summon_claude.cli.auth._check_github_status", return_value=None),
+            patch("summon_claude.cli.auth._check_google_status", return_value=None),
+            patch("summon_claude.cli.auth.get_workspace_config_path", return_value=tmp_path / "x"),
+            patch("summon_claude.cli.auth.get_config_file", return_value=tmp_path / "cfg"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "status"])
+        assert result.exit_code == 0
+        assert "No authentication configured" in result.output
+        assert "summon auth github login" in result.output
+
+    def test_auth_status_github_configured(self, tmp_path):
+        """auth status shows GitHub status when token exists."""
+        with (
+            patch("summon_claude.cli.auth._check_github_status", return_value=True),
+            patch("summon_claude.cli.auth._check_google_status", return_value=None),
+            patch("summon_claude.cli.auth.get_workspace_config_path", return_value=tmp_path / "x"),
+            patch("summon_claude.cli.auth.get_config_file", return_value=tmp_path / "cfg"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "status"])
+        assert result.exit_code == 0
+        assert "No authentication configured" not in result.output
+
+    def test_auth_status_corrupted_workspace_json(self, tmp_path):
+        """auth status handles corrupted workspace JSON gracefully."""
+        ws_file = tmp_path / "ws.json"
+        ws_file.write_text("not valid json{{{")
+        with (
+            patch("summon_claude.cli.auth._check_github_status", return_value=None),
+            patch("summon_claude.cli.auth._check_google_status", return_value=None),
+            patch("summon_claude.cli.auth.get_workspace_config_path", return_value=ws_file),
+            patch("summon_claude.cli.auth.get_config_file", return_value=tmp_path / "cfg"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "status"])
+        assert result.exit_code == 0
+        assert "corrupted" in result.output
+        assert "summon auth slack login" in result.output
+
+
+class TestGitHubAuthCLI:
+    """Tests for auth github login/logout Click commands."""
+
+    def test_github_auth_success(self):
+        from unittest.mock import AsyncMock
+
+        from summon_claude.github_auth import DeviceFlowResult
+
+        mock_result = DeviceFlowResult(
+            token="gho_test",
+            login="octocat",
+            scopes="repo",
+            token_path=Path("/fake/path"),
+        )
+        with patch(
+            "summon_claude.github_auth.run_device_flow",
+            new=AsyncMock(return_value=mock_result),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "github", "login"])
+
+        assert result.exit_code == 0
+        assert "octocat" in result.output
+
+    def test_github_auth_sanitizes_device_code_output(self):
+        """Device code callback strips non-printable chars from user_code and verification_uri."""
+        from unittest.mock import AsyncMock
+
+        from summon_claude.github_auth import DeviceFlowResult
+
+        mock_result = DeviceFlowResult(
+            token="gho_test",
+            login="user",
+            scopes="repo",
+            token_path=Path("/fake"),
+        )
+
+        async def _fake_flow(on_code=None, **_kwargs):
+            if on_code:
+                on_code("AB\x1b[31mCD", "https://github.com/login/device\x1b[0m")
+            return mock_result
+
+        with patch(
+            "summon_claude.github_auth.run_device_flow",
+            new=AsyncMock(side_effect=_fake_flow),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "github", "login"])
+
+        assert result.exit_code == 0
+        # ESC byte stripped — ANSI sequence can't be interpreted by terminal
+        assert "\x1b" not in result.output
+        assert "AB" in result.output
+        assert "CD" in result.output
+
+    def test_github_auth_error(self):
+        from unittest.mock import AsyncMock
+
+        from summon_claude.github_auth import GitHubAuthError
+
+        with patch(
+            "summon_claude.github_auth.run_device_flow",
+            new=AsyncMock(side_effect=GitHubAuthError("test error")),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "github", "login"])
+
+        assert result.exit_code != 0
+        assert "test error" in result.output
+
+    def test_github_auth_network_error(self):
+        """aiohttp.ClientError prints network error and exits non-zero."""
+        from unittest.mock import AsyncMock
+
+        with patch(
+            "summon_claude.github_auth.run_device_flow",
+            new=AsyncMock(side_effect=aiohttp.ClientError("Connection refused")),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "github", "login"])
+
+        assert result.exit_code != 0
+        assert "Network error" in result.output
+
+    def test_github_auth_keyboard_interrupt(self):
+        """Ctrl+C during auth prints cancellation message."""
+        from unittest.mock import AsyncMock
+
+        with patch(
+            "summon_claude.github_auth.run_device_flow",
+            new=AsyncMock(side_effect=KeyboardInterrupt),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "github", "login"])
+
+        assert "cancelled" in result.output.lower()
+
+    def test_github_logout_with_token(self):
+        with patch("summon_claude.github_auth.remove_token", return_value=True):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "github", "logout"])
+
+        assert result.exit_code == 0
+        assert "removed" in result.output
+
+    def test_github_logout_no_token(self):
+        with patch("summon_claude.github_auth.remove_token", return_value=False):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "github", "logout"])
+
+        assert result.exit_code == 0
+        assert "No GitHub token" in result.output
 
 
 class TestConfigSetChoiceValidation:

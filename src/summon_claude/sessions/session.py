@@ -421,7 +421,7 @@ _PM_SYSTEM_PROMPT_APPEND = (
     "\n\n"
     "## PR Review\n\n"
     "Skip this section entirely if GitHub MCP tools are not available "
-    "(no `github_pat` configured).\n\n"
+    "(no GitHub token configured — run `summon auth github login` to authenticate).\n\n"
     "After each periodic scan, check for completed sub-sessions that may have "
     "produced pull requests:\n\n"
     '1. Use `session_list` with `filter="mine"` to get all your child sessions, '

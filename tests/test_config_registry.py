@@ -250,20 +250,6 @@ class TestConfigShowIntegration:
         out = capsys.readouterr().out
         assert "\x1b[" not in out, "ANSI escape codes found in --no-color output"
 
-    def test_config_show_github_pat_masked(self, tmp_path, capsys):
-        """config show masks github_pat value."""
-        from summon_claude.cli.config import config_show
-
-        config_file = tmp_path / "config.env"
-        config_file.write_text("SUMMON_GITHUB_PAT=ghp_secret123abc\n")
-
-        with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
-            config_show(color=False)
-
-        out = capsys.readouterr().out
-        assert "ghp_secret123abc" not in out
-        assert "configured" in out
-
 
 class TestConfigShowBoolSourceLabel:
     """Test that config_show correctly labels bool fields as (default) vs (set)."""

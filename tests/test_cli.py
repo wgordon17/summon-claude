@@ -166,6 +166,59 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert "Usage" in result.output
 
+    def test_auth_group_exists(self):
+        """Test that auth group is available."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["auth", "--help"])
+        assert result.exit_code == 0
+        assert "Manage authentication" in result.output
+        assert "github" in result.output
+        assert "google" in result.output
+        assert "slack" in result.output
+        assert "status" in result.output
+
+    def test_auth_github_subgroup_exists(self):
+        """Test that auth github subgroup has login/logout."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["auth", "github", "--help"])
+        assert result.exit_code == 0
+        assert "login" in result.output
+        assert "logout" in result.output
+
+    def test_auth_google_subgroup_exists(self):
+        """Test that auth google subgroup has login/status."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["auth", "google", "--help"])
+        assert result.exit_code == 0
+        assert "login" in result.output
+        assert "status" in result.output
+
+    def test_auth_slack_subgroup_exists(self):
+        """Test that auth slack subgroup has login/logout/status/channels."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["auth", "slack", "--help"])
+        assert result.exit_code == 0
+        assert "login" in result.output
+        assert "logout" in result.output
+        assert "status" in result.output
+        assert "channels" in result.output
+
+    def test_auth_commands_not_under_config(self):
+        """Test that old auth commands are no longer under config."""
+        runner = CliRunner()
+        for cmd in [
+            "github-auth",
+            "github-logout",
+            "google-auth",
+            "google-status",
+            "slack-auth",
+            "slack-status",
+            "slack-remove",
+            "slack-channels",
+        ]:
+            result = runner.invoke(cli, ["config", cmd])
+            assert result.exit_code != 0, f"'{cmd}' should not be under config"
+
     def test_old_toplevel_commands_removed(self):
         """Test that old top-level status/sessions/logs/cleanup are gone."""
         runner = CliRunner()

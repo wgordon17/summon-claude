@@ -701,10 +701,10 @@ class TestSlackAuthValidatesUrl:
         """slack_auth exits with code 1 for non-Slack URLs."""
         from click.testing import CliRunner
 
-        from summon_claude.cli.__init__ import cmd_config
+        from summon_claude.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cmd_config, ["slack-auth", "https://evil.example.com"])
+        result = runner.invoke(cli, ["auth", "slack", "login", "https://evil.example.com"])
         assert result.exit_code != 0
         assert "slack.com" in result.output.lower() or "Expected" in result.output
 
@@ -712,20 +712,20 @@ class TestSlackAuthValidatesUrl:
         """slack_auth exits with code 1 for http:// (non-https) Slack URLs."""
         from click.testing import CliRunner
 
-        from summon_claude.cli.__init__ import cmd_config
+        from summon_claude.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cmd_config, ["slack-auth", "http://myteam.slack.com"])
+        result = runner.invoke(cli, ["auth", "slack", "login", "http://myteam.slack.com"])
         assert result.exit_code != 0
 
     def test_slack_auth_rejects_slack_substring_in_query(self):
         """slack_auth rejects URLs with 'slack.com' in query string (not domain)."""
         from click.testing import CliRunner
 
-        from summon_claude.cli.__init__ import cmd_config
+        from summon_claude.cli import cli
 
         runner = CliRunner()
-        result = runner.invoke(cmd_config, ["slack-auth", "https://evil.com?ref=slack.com"])
+        result = runner.invoke(cli, ["auth", "slack", "login", "https://evil.com?ref=slack.com"])
         assert result.exit_code != 0
 
 
@@ -833,6 +833,10 @@ class TestCheckExistingSlackAuth:
             "summon_claude.cli.slack_auth.get_workspace_config_path",
             lambda: ws_config,
         )
+        monkeypatch.setattr(
+            "summon_claude.cli.slack_auth.get_browser_auth_dir",
+            lambda: tmp_path,
+        )
 
         result = _check_existing_slack_auth()
         assert result is not None
@@ -869,6 +873,10 @@ class TestCheckExistingSlackAuth:
         monkeypatch.setattr(
             "summon_claude.cli.slack_auth.get_workspace_config_path",
             lambda: ws_config,
+        )
+        monkeypatch.setattr(
+            "summon_claude.cli.slack_auth.get_browser_auth_dir",
+            lambda: tmp_path,
         )
 
         result = _check_existing_slack_auth()

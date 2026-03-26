@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import summon_claude.github_auth
 from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.sessions.scheduler import SessionScheduler
 
@@ -36,6 +37,7 @@ def _isolate_data_dir(tmp_path_factory):
         patch("summon_claude.cli.session.get_data_dir", return_value=data_dir),
         patch("summon_claude.cli.config.get_data_dir", return_value=data_dir),
         patch("summon_claude.daemon.get_data_dir", return_value=data_dir),
+        patch("summon_claude.github_auth.get_config_dir", return_value=data_dir),
     ):
         yield
 

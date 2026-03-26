@@ -25,15 +25,13 @@ import threading
 import click
 
 from summon_claude import __version__
-from summon_claude.cli import slack_auth as slack_auth_cmds
+from summon_claude.cli.auth import cmd_auth
 from summon_claude.cli.config import (
     config_check,
     config_edit,
     config_path,
     config_set,
     config_show,
-    google_auth,
-    google_status,
 )
 from summon_claude.cli.db import async_db_purge, async_db_status, async_db_vacuum
 from summon_claude.cli.formatting import echo
@@ -782,46 +780,11 @@ def config_set_cmd(ctx: click.Context, key: str, value: str) -> None:
     config_set(key, value, config_path_override)
 
 
-@cmd_config.command("google-auth")
-def config_google_auth_cmd() -> None:
-    """Authenticate with Google Workspace for scribe monitoring."""
-    google_auth()
+# ---------------------------------------------------------------------------
+# auth command group (defined in cli/auth.py)
+# ---------------------------------------------------------------------------
 
-
-@cmd_config.command("google-status")
-def config_google_status_cmd() -> None:
-    """Check Google Workspace authentication status."""
-    google_status()
-
-
-@cmd_config.command("slack-auth")
-@click.argument("workspace")
-def config_slack_auth_cmd(workspace: str) -> None:
-    """Authenticate with an external Slack workspace for scribe monitoring.
-
-    WORKSPACE can be a name (myteam), enterprise (acme.enterprise),
-    or full URL (https://myteam.slack.com).
-    """
-    slack_auth_cmds.slack_auth(workspace)
-
-
-@cmd_config.command("slack-status")
-def config_slack_status_cmd() -> None:
-    """Show external Slack workspace auth status."""
-    slack_auth_cmds.slack_status()
-
-
-@cmd_config.command("slack-remove")
-def config_slack_remove_cmd() -> None:
-    """Remove external Slack workspace auth state."""
-    slack_auth_cmds.slack_remove()
-
-
-@cmd_config.command("slack-channels")
-@click.option("--refresh", is_flag=True, help="Re-fetch channels from Slack")
-def config_slack_channels_cmd(refresh: bool) -> None:
-    """Update monitored channel selection (no re-auth needed)."""
-    slack_auth_cmds.slack_channels(refresh=refresh)
+cli.add_command(cmd_auth)
 
 
 # ---------------------------------------------------------------------------

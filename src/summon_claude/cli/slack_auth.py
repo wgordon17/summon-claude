@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 def _pick_channels(channels: list[dict[str, str]] | None) -> str:
     """Interactive channel picker. Returns comma-separated channel IDs.
 
-    Reusable by both ``slack-auth`` and ``slack-channels`` commands.
+    Reusable by both ``auth slack login`` and ``auth slack channels`` commands.
     Includes an empty-selection guard: if the user confirms with nothing
     selected (likely pressed Enter instead of Space), offers a retry.
     """
@@ -195,9 +195,17 @@ def _check_existing_slack_auth() -> dict[str, str] | None:
     if not workspace_config_path.exists():
         return None
 
-    workspace = json.loads(workspace_config_path.read_text())
+    try:
+        workspace = json.loads(workspace_config_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
     state_path = Path(workspace.get("auth_state_path", ""))
-    if not state_path.is_file():
+
+    # [SEC] Validate path exists and is within expected directory (mirrors slack_remove guard)
+    expected_dir = get_browser_auth_dir()
+    if not state_path.is_file() or (
+        state_path.name and not state_path.resolve().is_relative_to(expected_dir.resolve())
+    ):
         return None
 
     # Check the primary auth cookie ("d") for expiry.
@@ -334,7 +342,10 @@ def _save_workspace_config(
 
     click.echo(f"Workspace config saved to {config_path}")
     if not user_id:
-        click.echo("Note: @mention detection disabled (no user ID). Re-run slack-auth to add it.")
+        click.echo(
+            "Note: @mention detection disabled (no user ID)."
+            " Re-run `summon auth slack login` to add it."
+        )
 
 
 def slack_status() -> None:
@@ -342,13 +353,17 @@ def slack_status() -> None:
     config_path = get_workspace_config_path()
     if not config_path.exists():
         click.echo("No external Slack workspace configured.")
-        click.echo("Run: summon config slack-auth <workspace-url>")
+        click.echo("Run: summon auth slack login <workspace-url>")
         return
 
-    workspace = json.loads(config_path.read_text())
+    try:
+        workspace = json.loads(config_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        click.echo("Workspace config is corrupted. Re-run: summon auth slack login")
+        return
     click.echo(f"Workspace URL: {workspace.get('url', 'N/A')}")
     user_id = workspace.get("user_id", "")
-    click.echo(f"User ID: {user_id or 'not set (re-run slack-auth to add)'}")
+    click.echo(f"User ID: {user_id or 'not set (re-run `summon auth slack login` to add)'}")
 
     state_path = Path(workspace.get("auth_state_path", ""))
     if state_path.exists():
@@ -357,7 +372,7 @@ def slack_status() -> None:
         mtime = datetime.datetime.fromtimestamp(state_path.stat().st_mtime, tz=datetime.UTC)
         click.echo(f"Auth state: {state_path} (saved {mtime.isoformat()})")
     else:
-        click.echo("Auth state: MISSING (re-run slack-auth)")
+        click.echo("Auth state: MISSING (re-run `summon auth slack login`)")
 
     channels = os.environ.get("SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS", "")
     if channels:
@@ -381,7 +396,13 @@ def slack_remove() -> None:
     if not click.confirm("Remove Slack auth state? This cannot be undone."):
         return
 
-    workspace = json.loads(config_path.read_text())
+    try:
+        workspace = json.loads(config_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        click.echo("Workspace config is corrupted — removing config file only.")
+        with contextlib.suppress(FileNotFoundError):
+            config_path.unlink()
+        return
     state_path = Path(workspace.get("auth_state_path", ""))
 
     # [SEC] Validate path is within expected directory before unlinking
@@ -410,10 +431,14 @@ def slack_channels(*, refresh: bool = False) -> None:
     config_path = get_workspace_config_path()
     if not config_path.exists():
         click.echo("No external Slack workspace configured.")
-        click.echo("Run: summon config slack-auth <workspace>")
+        click.echo("Run: summon auth slack login <workspace>")
         return
 
-    workspace = json.loads(config_path.read_text())
+    try:
+        workspace = json.loads(config_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        click.echo("Workspace config is corrupted. Re-run: summon auth slack login")
+        return
     workspace_url = workspace.get("url", "")
     cached_channels = workspace.get("channels")
 
@@ -433,7 +458,7 @@ def slack_channels(*, refresh: bool = False) -> None:
 
     if not channels:
         click.echo("Could not load channels — auth state may be expired.")
-        click.echo(f"Re-run: summon config slack-auth {workspace_url}")
+        click.echo(f"Re-run: summon auth slack login {workspace_url}")
         return
 
     monitored = _pick_channels(channels)
@@ -450,7 +475,7 @@ def _fetch_channels_via_playwright(
 
     if not state_path.is_file():
         click.echo("Auth state expired or missing.")
-        click.echo(f"Re-run: summon config slack-auth {workspace_url}")
+        click.echo(f"Re-run: summon auth slack login {workspace_url}")
         return None
 
     try:

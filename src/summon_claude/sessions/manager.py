@@ -1207,7 +1207,7 @@ class SessionManager:
 
             creds_dir = get_google_credentials_dir()
             if not creds_dir.is_dir() or not any(creds_dir.glob("*.json")):
-                logger.error("Run 'summon config google-auth' before starting scribe")
+                logger.error("Run 'summon auth google login' before starting scribe")
                 return
 
         if self._config.scribe_slack_enabled:
@@ -1223,7 +1223,7 @@ class SessionManager:
 
             ws_config = get_workspace_config_path()
             if not ws_config.is_file():
-                logger.error("Run 'summon config slack-auth' before enabling scribe Slack")
+                logger.error("Run 'summon auth slack login' before enabling scribe Slack")
                 return
 
         # Resolve CWD

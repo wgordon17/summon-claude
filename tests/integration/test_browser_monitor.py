@@ -925,7 +925,7 @@ class TestRapidFireMessages:
 # Real Slack e2e tests — only run when browser auth state exists
 #
 # One-time setup:
-#   summon config slack-auth https://YOUR-WORKSPACE.slack.com
+#   summon auth slack login https://YOUR-WORKSPACE.slack.com
 #
 # Everything else is derived automatically:
 #   - Workspace URL: from bot token via auth.test()
@@ -981,7 +981,7 @@ def _resolve_real_slack_config() -> tuple[dict[str, str] | None, str]:
         workspace_name = workspace_url.removeprefix("https://").removesuffix(".slack.com")
         return None, (
             f"Browser auth state not found at {browser_auth_dir}. "
-            f"One-time setup: summon config slack-auth {workspace_name}"
+            f"One-time setup: summon auth slack login {workspace_name}"
         )
 
     return {
@@ -1291,7 +1291,7 @@ def _print_mode_conclusions(
         return
 
     print("  [!!] Headless mode FAILS with all cookies")
-    print("  ACTION: Re-run summon config slack-auth")
+    print("  ACTION: Re-run summon auth slack login")
 
     if headless_all.has_login_form:
         print("  [!!] Login form visible — SSO cookies expired")
@@ -1568,7 +1568,7 @@ async def _start_real_monitor(
     except Exception:
         await monitor.stop()
         pytest.skip(
-            f"Browser cookies expired — re-run: summon config slack-auth {cfg['workspace_url']}"
+            f"Browser cookies expired — re-run: summon auth slack login {cfg['workspace_url']}"
         )
 
     # Give Slack's WebSocket time to connect and stabilize
@@ -1586,7 +1586,7 @@ class TestRealSlack:
     actual WebSocket protocol, frame format, and cross-origin behavior.
 
     All config is derived from the bot token and the browser auth state
-    that ``summon config slack-auth`` saves. No extra env vars needed.
+    that ``summon auth slack login`` saves. No extra env vars needed.
     """
 
     @pytest.fixture
@@ -1638,7 +1638,7 @@ class TestRealSlack:
         cfg = real_slack
         browser_user = _get_browser_user_id()
         if not browser_user:
-            pytest.skip("No browser user ID configured — run summon config slack-auth")
+            pytest.skip("No browser user ID configured — run summon auth slack login")
 
         nonce = secrets.token_hex(8)
 
@@ -1745,7 +1745,7 @@ class TestRealSlack:
         except Exception:
             await monitor.stop()
             pytest.skip(
-                f"Browser cookies expired — re-run: summon config slack-auth {cfg['workspace_url']}"
+                f"Browser cookies expired — re-run: summon auth slack login {cfg['workspace_url']}"
             )
 
         await monitor.stop()

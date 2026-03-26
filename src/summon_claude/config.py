@@ -432,12 +432,6 @@ class SummonConfig(BaseSettings):
     show_thinking: bool = False  # Route ThinkingBlock content to Slack turn thread
 
     # ------------------------------------------------------------------
-    # GitHub integration
-    # ------------------------------------------------------------------
-
-    github_pat: str | None = Field(default=None, repr=False)  # GitHub PAT for remote MCP
-
-    # ------------------------------------------------------------------
     # Scribe agent settings
     # ------------------------------------------------------------------
 
@@ -599,23 +593,18 @@ class SummonConfig(BaseSettings):
             )
         return v
 
-    @field_validator("github_pat")
-    @classmethod
-    def _check_github_pat(cls, v: str | None) -> str | None:
-        if v and not v.startswith(("ghp_", "github_pat_")):
-            msg = "github_pat must start with 'ghp_' (classic) or 'github_pat_' (fine-grained)"
-            raise ValueError(msg)
-        return v
-
     def github_mcp_config(self) -> dict | None:
         """Return GitHub remote MCP server config, or None if not configured."""
-        if not self.github_pat:
+        from summon_claude.github_auth import load_token  # noqa: PLC0415
+
+        token = load_token()
+        if not token:
             return None
         return {
             "type": "http",
             "url": "https://api.githubcopilot.com/mcp/",
             "headers": {
-                "Authorization": f"Bearer {self.github_pat}",
+                "Authorization": f"Bearer {token}",
             },
         }
 
@@ -922,24 +911,6 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Comma-separated Slack channel names for the scribe collector",
         input_type="text",
         visible=_scribe_slack_enabled,
-    ),
-    # GitHub
-    ConfigOption(
-        field_name="github_pat",
-        env_key="SUMMON_GITHUB_PAT",
-        group="GitHub",
-        label="GitHub PAT",
-        help_text="GitHub Personal Access Token for the GitHub remote MCP server",
-        input_type="secret",
-        help_hint=(
-            "Gives all sessions GitHub tools (search code, read PRs, etc)."
-            " Create at: github.com/settings/tokens"
-        ),
-        validate_fn=lambda v: (
-            None
-            if not v or v.startswith(("ghp_", "github_pat_"))
-            else "Must start with ghp_ or github_pat_"
-        ),
     ),
     # Advanced options below this point
     # Display
