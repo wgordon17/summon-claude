@@ -2506,7 +2506,11 @@ class SummonSession:
                 except _SessionRestartError as e:
                     restart = e
                 finally:
-                    if restart is None and self._total_turns > 0:
+                    if (
+                        restart is None
+                        and self._total_turns > 0
+                        and not self._shutdown_event.is_set()
+                    ):
                         try:
                             await asyncio.wait_for(
                                 self._post_session_summary(router, claude),
@@ -2670,6 +2674,10 @@ class SummonSession:
         # erase the abort signal set by request_shutdown().
         if self._shutdown_event.is_set():
             logger.info("Turn skipped: shutdown requested before turn start")
+            # Clean up inbox_tray emoji added by the preprocessor
+            if pending.message_ts:
+                with contextlib.suppress(Exception):
+                    await rt.client.unreact(pending.message_ts, "inbox_tray")
             return
 
         # Reset abort event for this turn
