@@ -140,7 +140,7 @@ class PermissionHandler:
         self,
         router: ThreadRouter,
         config: SummonConfig,
-        authenticated_user_id: str = "",
+        authenticated_user_id: str,
     ) -> None:
         self._router = router
         self._authenticated_user_id = authenticated_user_id
@@ -576,12 +576,13 @@ class PermissionHandler:
         """Return True if we're waiting for free-text input from the user (Other)."""
         return self._ask_user.pending_other is not None
 
-    async def receive_text_input(self, text: str, user_id: str = "") -> None:
+    async def receive_text_input(self, text: str, *, user_id: str) -> None:
         """Receive free-text input from the user for an 'Other' answer.
 
         Args:
             text: The free-text answer.
             user_id: Slack user ID of the sender. Verified against session owner.
+                     Required — callers must always provide identity context.
         """
         if not self._ask_user.pending_other:
             return

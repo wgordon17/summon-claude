@@ -323,13 +323,13 @@ class TestPermissionEphemeral:
         handler, _, _ = make_handler(authenticated_user_id="U_CUSTOM")
         assert handler._authenticated_user_id == "U_CUSTOM"
 
-    async def test_authenticated_user_id_default(self):
-        """PermissionHandler should default authenticated_user_id to empty string."""
+    def test_authenticated_user_id_is_required(self):
+        """PermissionHandler must require authenticated_user_id (no default)."""
         client = make_mock_slack_client()
         router = ThreadRouter(client)
         config = make_config()
-        handler = PermissionHandler(router, config)
-        assert handler._authenticated_user_id == ""
+        with pytest.raises(TypeError, match="authenticated_user_id"):
+            PermissionHandler(router, config)  # type: ignore[call-arg]
 
     async def test_permission_ping_goes_to_main_channel(self):
         """Permission notification ping should go to main channel, not thread."""

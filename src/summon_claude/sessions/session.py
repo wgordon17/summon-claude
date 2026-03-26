@@ -1596,9 +1596,11 @@ class SummonSession:
         logger.info("Connected to channel (id=%s)", channel_id)
 
         router = ThreadRouter(client)
-        permission_handler = PermissionHandler(
-            router, self._config, self._authenticated_user_id or ""
-        )
+        if not self._authenticated_user_id:
+            raise RuntimeError(
+                f"Session {self._session_id}: cannot build runtime without authenticated_user_id"
+            )
+        permission_handler = PermissionHandler(router, self._config, self._authenticated_user_id)
 
         rt = _SessionRuntime(
             registry=registry,
@@ -1616,7 +1618,7 @@ class SummonSession:
                 message_queue=self._raw_event_queue,
                 permission_handler=permission_handler,
                 abort_callback=self._abort_current_turn,
-                authenticated_user_id=self._authenticated_user_id or "",
+                authenticated_user_id=self._authenticated_user_id,
             )
             self._dispatcher.register(channel_id, handle)
 
