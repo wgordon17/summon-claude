@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from summon_claude.config import get_data_dir
+from summon_claude.config import get_data_dir, is_local_install
 from summon_claude.event_dispatcher import EventDispatcher
 from summon_claude.sessions.manager import SessionManager
 from summon_claude.sessions.registry import SessionRegistry
@@ -114,12 +114,21 @@ def _validate_socket_path(sock: Path) -> None:
     """
     sock_str = str(sock)
     if len(sock_str) > _UNIX_SOCKET_PATH_MAX:
+        if is_local_install():
+            hint = (
+                "Use SUMMON_LOCAL=0 to fall back to global paths, or move your "
+                "project to a shorter path."
+            )
+        else:
+            hint = (
+                "Set XDG_DATA_HOME to a shorter path (e.g. export "
+                "XDG_DATA_HOME=~/.local/share) or use the default ~/.summon directory."
+            )
         raise SocketPathTooLongError(
             f"Daemon socket path is {len(sock_str)} chars, exceeding the "
             f"Unix limit of {_UNIX_SOCKET_PATH_MAX}.\n"
             f"  Path: {sock_str}\n"
-            f"Set XDG_DATA_HOME to a shorter path (e.g. export "
-            f"XDG_DATA_HOME=~/.local/share) or use the default ~/.summon directory."
+            f"{hint}"
         )
 
 

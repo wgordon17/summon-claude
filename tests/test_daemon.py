@@ -615,8 +615,24 @@ class TestValidateSocketPath:
         with pytest.raises(SocketPathTooLongError) as exc_info:
             _validate_socket_path(sock)
         msg = str(exc_info.value)
+        # Autouse fixture forces global mode — hint shows XDG_DATA_HOME
         assert "XDG_DATA_HOME" in msg
         assert "daemon.sock" in msg
+
+    def test_error_message_includes_local_mode_hint(self, tmp_path, monkeypatch):
+        from summon_claude.config import _detect_install_mode
+        from summon_claude.daemon import SocketPathTooLongError, _validate_socket_path
+
+        (tmp_path / "pyproject.toml").touch()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SUMMON_LOCAL", "1")
+        _detect_install_mode.cache_clear()
+
+        sock = Path("/" + "x" * 200 + "/daemon.sock")
+        with pytest.raises(SocketPathTooLongError) as exc_info:
+            _validate_socket_path(sock)
+        msg = str(exc_info.value)
+        assert "SUMMON_LOCAL=0" in msg
 
     def test_accepts_path_at_exact_limit(self):
         from summon_claude.daemon import _UNIX_SOCKET_PATH_MAX, _validate_socket_path

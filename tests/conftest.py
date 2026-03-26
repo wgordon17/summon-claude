@@ -53,6 +53,29 @@ def _cleanup_root_logger_handlers():
                 handler.close()
 
 
+@pytest.fixture(autouse=True)
+def _reset_install_mode(monkeypatch):
+    """Clear local install detection cache and force global mode for all tests.
+
+    Without this, ``uv run pytest`` sets VIRTUAL_ENV and the repo has
+    pyproject.toml, so every test would detect local mode.
+    """
+    from summon_claude.config import _detect_install_mode, _find_project_root
+
+    _detect_install_mode.cache_clear()
+    _find_project_root.cache_clear()
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.delenv("SUMMON_LOCAL", raising=False)
+    yield
+    # Import fresh in case importlib.reload() created a new function object
+    from summon_claude.config import _detect_install_mode as fresh
+    from summon_claude.config import _find_project_root as fresh_root
+
+    fresh.cache_clear()
+    if hasattr(fresh_root, "cache_clear"):
+        fresh_root.cache_clear()
+
+
 @pytest.fixture
 def temp_db_path(tmp_path: Path) -> Path:
     """Provide a temporary SQLite database path."""

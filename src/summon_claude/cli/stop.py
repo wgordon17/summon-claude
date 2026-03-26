@@ -8,7 +8,7 @@ from typing import Any
 import click
 
 from summon_claude.cli import daemon_client
-from summon_claude.cli.helpers import resolve_or_pick, stop_and_report
+from summon_claude.cli.helpers import print_local_daemon_hint, resolve_or_pick, stop_and_report
 from summon_claude.cli.interactive import format_session_option, interactive_select, is_interactive
 from summon_claude.daemon import is_daemon_running
 from summon_claude.sessions.registry import SessionRegistry
@@ -82,6 +82,7 @@ async def _notify_pm_of_child_stop(session: dict[str, Any]) -> None:
 async def async_stop(ctx: click.Context, session: str | None, stop_all: bool) -> None:
     if not is_daemon_running():
         click.echo("Daemon is not running.")
+        print_local_daemon_hint()
         return
 
     try:

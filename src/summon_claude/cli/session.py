@@ -19,7 +19,7 @@ from summon_claude.cli.formatting import (
     print_session_detail,
     print_session_table,
 )
-from summon_claude.cli.helpers import resolve_or_pick
+from summon_claude.cli.helpers import print_local_daemon_hint, resolve_or_pick
 from summon_claude.cli.interactive import (
     LOG_PICKER_HEADER,
     format_log_option,
@@ -57,6 +57,7 @@ async def async_session_list(
                 click.echo(f"Daemon: running (status unavailable: {e})")
         else:
             click.echo("Daemon: not running")
+            print_local_daemon_hint()
 
     async with SessionRegistry() as registry:
         if show_all:

@@ -63,7 +63,7 @@ from summon_claude.cli.session import (
 )
 from summon_claude.cli.start import async_start
 from summon_claude.cli.stop import async_stop
-from summon_claude.config import SummonConfig, get_config_file, get_data_dir
+from summon_claude.config import SummonConfig, get_config_file, get_data_dir, is_local_install
 from summon_claude.daemon import start_daemon
 from summon_claude.sessions import registry as _registry
 
@@ -713,6 +713,15 @@ def cmd_init(ctx: click.Context) -> None:
 
     click.echo()
     click.echo(f"Configuration saved to {config_file}")
+    if is_local_install():
+        # Defense-in-depth: write .gitignore inside .summon/ to prevent accidental commits
+        summon_dir = get_data_dir()
+        summon_dir.mkdir(parents=True, exist_ok=True)
+        gitignore = summon_dir / ".gitignore"
+        if not gitignore.exists():
+            with contextlib.suppress(OSError):
+                gitignore.write_text("*\n")
+        click.echo("Note: Add .summon/ to your project's .gitignore to avoid committing secrets.")
     click.echo()
 
     # Auto-run config check — validates connectivity and shows feature inventory

@@ -229,6 +229,55 @@ class TestCmdInit:
 
         assert "xapp-" in result.output or "Error" in result.output
 
+    def test_init_local_mode_creates_gitignore(self, tmp_path, monkeypatch):
+        """init in local mode writes .gitignore inside .summon/ and prints warning."""
+        summon_dir = tmp_path / ".summon"
+        summon_dir.mkdir(parents=True)
+        config_file = summon_dir / "config.env"
+
+        (tmp_path / "pyproject.toml").touch()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SUMMON_LOCAL", "1")
+
+        from summon_claude.config import _detect_install_mode, _find_project_root
+
+        _detect_install_mode.cache_clear()
+        _find_project_root.cache_clear()
+
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "",  # github_pat
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert "Add .summon/ to your project's .gitignore" in result.output
+        gitignore = summon_dir / ".gitignore"
+        assert gitignore.exists()
+        assert gitignore.read_text() == "*\n"
+
 
 class TestConfigShow:
     def test_config_show_hides_secrets(self, tmp_path, capsys):

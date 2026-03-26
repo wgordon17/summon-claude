@@ -201,6 +201,9 @@ $XDG_CONFIG_HOME/summon/config.env   # if XDG_CONFIG_HOME is set
 
 Use `summon config path` to see which path is active. Use `summon init` to create the file interactively.
 
+When running as a local install (e.g., `uv run summon`), all paths resolve to
+`.summon/` in the project root instead. Use `SUMMON_LOCAL=0` to force global paths.
+
 ### Required variables
 
 | Variable | Description |

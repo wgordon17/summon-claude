@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -42,6 +43,94 @@ def _xdg_dir(env_var: str, default_subdir: str, xdg_subdir: str) -> Path:
     return Path.home() / ".summon"
 
 
+@functools.lru_cache(maxsize=1)
+def _find_project_root() -> Path | None:
+    """Walk up from CWD looking for pyproject.toml. Return containing dir or None.
+
+    Stops at the user's home directory parent to avoid picking up stray
+    ``pyproject.toml`` files in system directories.  Uses a single ``lstat``
+    call per candidate to atomically reject symlinks.
+    """
+    current = Path.cwd().resolve()
+    home_parent = Path.home().resolve().parent
+    for parent in [current, *current.parents]:
+        if parent in (home_parent, parent.parent):
+            break
+        sentinel = parent / "pyproject.toml"
+        try:
+            st = sentinel.lstat()
+            if stat.S_ISREG(st.st_mode):
+                return parent
+        except OSError:
+            pass
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _detect_install_mode() -> tuple[str, Path | None]:
+    """Detect whether this is a local or global install.
+
+    Returns ("local", project_root) or ("global", None).
+    Cached — CWD and env vars are frozen at first call (before daemon
+    ``os.chdir``).
+    """
+    project_root = _find_project_root()
+
+    # Explicit override — bypasses home-directory restriction
+    summon_local = os.environ.get("SUMMON_LOCAL", "").strip()
+    if summon_local == "0":
+        return ("global", None)
+    if summon_local == "1":
+        return ("local", project_root) if project_root is not None else ("global", None)
+    if summon_local:
+        logger.warning("SUMMON_LOCAL=%r not recognized (use '0' or '1'), ignoring", summon_local)
+
+    # Auto-detect: restrict to $HOME to avoid triggering on system projects
+    if project_root is not None:
+        home = Path.home().resolve()
+        if not project_root.is_relative_to(home):
+            return ("global", None)
+
+    # Auto-detect: VIRTUAL_ENV under project root
+    venv_str = os.environ.get("VIRTUAL_ENV", "").strip()
+    if venv_str and project_root is not None:
+        venv_path = Path(venv_str)
+        if venv_path.is_absolute() and venv_path.resolve().is_relative_to(project_root.resolve()):
+            return ("local", project_root)
+
+    return ("global", None)
+
+
+def is_local_install() -> bool:
+    """Return True if running as a local (project-scoped) install."""
+    mode, _ = _detect_install_mode()
+    return mode == "local"
+
+
+def get_local_root() -> Path | None:
+    """Return the project root when running as a local install, else None."""
+    _, root = _detect_install_mode()
+    return root
+
+
+def find_local_daemon_hint() -> str | None:
+    """Check if a local-mode daemon socket exists nearby when in global mode.
+
+    Returns a user-facing hint string if a ``.summon/daemon.sock`` is found
+    via CWD walk-up while the current process is in global mode.  Returns
+    ``None`` if already in local mode or no local daemon socket is found.
+    """
+    if is_local_install():
+        return None
+    root = _find_project_root()
+    if root is not None and (root / ".summon" / "daemon.sock").exists():
+        return (
+            f"A local-mode daemon may be running at {root / '.summon'}.\n"
+            "Activate your project's virtualenv or set SUMMON_LOCAL=1 to reach it."
+        )
+    return None
+
+
 def get_claude_config_dir() -> Path:
     """Return the Claude Code configuration directory.
 
@@ -58,12 +147,18 @@ def get_claude_config_dir() -> Path:
 
 
 def get_config_dir() -> Path:
-    """XDG_CONFIG_HOME/summon -> ~/.config/summon -> ~/.summon (fallback)."""
+    """XDG config path, or project_root/.summon in local mode."""
+    root = get_local_root()
+    if root is not None:
+        return root / ".summon"
     return _xdg_dir("XDG_CONFIG_HOME", ".config/summon", "summon")
 
 
 def get_data_dir() -> Path:
-    """XDG_DATA_HOME/summon -> ~/.local/share/summon -> ~/.summon (fallback)."""
+    """XDG data path, or project_root/.summon in local mode."""
+    root = get_local_root()
+    if root is not None:
+        return root / ".summon"
     return _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
 
 

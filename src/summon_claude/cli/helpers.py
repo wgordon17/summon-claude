@@ -6,7 +6,15 @@ import click
 
 from summon_claude.cli import daemon_client
 from summon_claude.cli.interactive import format_session_option, interactive_select
+from summon_claude.config import find_local_daemon_hint
 from summon_claude.sessions.registry import SessionRegistry
+
+
+def print_local_daemon_hint() -> None:
+    """Print a hint if a local-mode daemon socket exists nearby in global mode."""
+    hint = find_local_daemon_hint()
+    if hint:
+        click.echo(hint, err=True)
 
 
 async def resolve_session(identifier: str) -> tuple[dict | None, list[dict]]:  # pyright: ignore[reportReturnType]

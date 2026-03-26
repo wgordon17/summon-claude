@@ -16,7 +16,7 @@ from typing import Any
 
 import aiosqlite
 
-from summon_claude.config import get_data_dir
+from summon_claude.config import get_data_dir, is_local_install
 from summon_claude.sessions.hook_types import INCLUDE_GLOBAL_TOKEN, VALID_HOOK_TYPES
 from summon_claude.sessions.migrations import (
     CURRENT_SCHEMA_VERSION,
@@ -112,7 +112,7 @@ def default_db_path() -> Path:
     new_path = get_data_dir() / "registry.db"
     old_path = Path.home() / ".summon" / "registry.db"
 
-    if old_path.exists() and not new_path.exists():
+    if not is_local_install() and old_path.exists() and not new_path.exists():
         new_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(old_path), str(new_path))
         logger.info("Migrated registry from %s to %s", old_path, new_path)

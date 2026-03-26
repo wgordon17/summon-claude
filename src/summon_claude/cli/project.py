@@ -10,6 +10,7 @@ from typing import Any
 import click
 
 from summon_claude.cli import daemon_client
+from summon_claude.cli.helpers import print_local_daemon_hint
 from summon_claude.daemon import is_daemon_running
 from summon_claude.sessions.hook_types import INCLUDE_GLOBAL_TOKEN
 from summon_claude.sessions.hooks import run_lifecycle_hooks
@@ -142,6 +143,7 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
     """
     if not is_daemon_running():
         click.echo("Daemon is not running. No PM sessions to stop.")
+        print_local_daemon_hint()
         if name:
             # Filter by name even without daemon — look up project IDs from DB.
             matched_ids: list[str] = []
