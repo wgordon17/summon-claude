@@ -1191,8 +1191,6 @@ class SummonSession:
         if not self._shutdown_event.is_set():
             logger.info("Session %s: shutdown requested", self._session_id)
             self._shutdown_event.set()
-            # Abort the current turn so the session doesn't linger while
-            # Claude finishes tool calls.
             self._abort_current_turn()
             # Unblock the raw event queue poll
             try:
@@ -2666,6 +2664,13 @@ class SummonSession:
         logger.info(
             "Processing turn (%d chars, pre_sent=%s)", len(pending.message), pending.pre_sent
         )
+
+        # If shutdown was signalled while this turn was queued, skip it
+        # entirely. Without this guard, _abort_event.clear() below would
+        # erase the abort signal set by request_shutdown().
+        if self._shutdown_event.is_set():
+            logger.info("Turn skipped: shutdown requested before turn start")
+            return
 
         # Reset abort event for this turn
         self._abort_event.clear()

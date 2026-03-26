@@ -1073,6 +1073,37 @@ class TestStopProjectManagersOutput:
         reg.update_status.assert_any_call("pm-sid", "suspended")
         reg.update_status.assert_any_call("child-sid", "suspended")
 
+    async def test_children_stopped_before_pm(self):
+        """Children must be stopped before PMs during project down."""
+        from summon_claude.cli.project import stop_project_managers
+
+        projects = [{"project_id": "p1", "name": "my-proj", "channel_prefix": "my-proj"}]
+        # PM listed first to prove the sort overrides input order
+        sessions = [
+            {"session_id": "pm-sid", "session_name": "my-proj-pm-abc123", "status": "active"},
+            {"session_id": "child-sid", "session_name": "my-proj-def456", "status": "active"},
+        ]
+
+        with (
+            patch("summon_claude.cli.project.is_daemon_running", return_value=True),
+            patch("summon_claude.cli.project.SessionRegistry") as mock_reg_cls,
+            patch("summon_claude.cli.project.daemon_client") as mock_dc,
+        ):
+            reg = AsyncMock()
+            reg.list_projects = AsyncMock(return_value=projects)
+            reg.get_project_sessions = AsyncMock(return_value=sessions)
+            reg.update_status = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_dc.stop_session = AsyncMock(return_value=True)
+
+            await stop_project_managers()
+
+        call_order = [call.args[0] for call in mock_dc.stop_session.call_args_list]
+        child_idx = call_order.index("child-sid")
+        pm_idx = call_order.index("pm-sid")
+        assert child_idx < pm_idx, f"child stopped at {child_idx}, PM at {pm_idx}"
+
     async def test_stop_daemon_not_running(self):
         """project down returns empty when daemon is not running."""
         from summon_claude.cli.project import stop_project_managers

@@ -284,6 +284,26 @@ class TestSessionShutdownControl:
         session.request_shutdown()  # must not raise
         assert session._shutdown_event.is_set()
 
+    def test_request_shutdown_sets_abort_event(self):
+        """request_shutdown() must set _abort_event to cancel in-flight turns."""
+        session = make_session()
+        session.request_shutdown()
+        assert session._abort_event.is_set()
+
+    async def test_request_shutdown_cancels_current_turn_task(self):
+        """request_shutdown() cancels the active turn task if one is running."""
+        session = make_session()
+        session._current_turn_task = asyncio.ensure_future(asyncio.sleep(999))
+        session.request_shutdown()
+        assert session._current_turn_task.cancelled() or session._current_turn_task.cancelling() > 0
+
+    def test_request_shutdown_no_turn_task_safe(self):
+        """request_shutdown() with _current_turn_task=None must not raise."""
+        session = make_session()
+        assert session._current_turn_task is None
+        session.request_shutdown()  # must not raise
+        assert session._abort_event.is_set()
+
     def test_authenticate_sets_event_and_user(self):
         session = make_session()
         assert not session._authenticated_event.is_set()
