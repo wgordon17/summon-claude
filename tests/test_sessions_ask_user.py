@@ -323,7 +323,7 @@ class TestOtherTextInput:
         await _click(handler, req_id, 0, "other")
         assert handler.has_pending_text_input()
 
-        await handler.receive_text_input("My custom answer")
+        await handler.receive_text_input("My custom answer", user_id="U1")
         assert not handler.has_pending_text_input()
 
         result = await asyncio.wait_for(task, timeout=2.0)
@@ -408,7 +408,7 @@ class TestEdgeCases:
 
     async def test_receive_text_without_pending_is_noop(self):
         handler, _, _ = _make_handler()
-        await handler.receive_text_input("stray text")
+        await handler.receive_text_input("stray text", user_id="U1")
         assert not handler.has_pending_text_input()
 
     async def test_ask_user_not_auto_approved(self):

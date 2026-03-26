@@ -351,7 +351,7 @@ class PermissionHandler:
         Must be called AFTER ack() (the 3-second deadline is the caller's responsibility).
         Channel routing is handled by ``EventDispatcher.dispatch_action``.
         """
-        if self._authenticated_user_id and user_id != self._authenticated_user_id:
+        if user_id != self._authenticated_user_id:
             logger.warning(
                 "Permission action from unauthorized user %s (expected %s)",
                 user_id,
@@ -463,7 +463,7 @@ class PermissionHandler:
 
         Value format: ``{request_id}|{question_idx}|{option_idx_or_other_or_done}``
         """
-        if self._authenticated_user_id and user_id != self._authenticated_user_id:
+        if user_id != self._authenticated_user_id:
             logger.warning(
                 "Ask user action from unauthorized user %s (expected %s)",
                 user_id,
@@ -576,9 +576,22 @@ class PermissionHandler:
         """Return True if we're waiting for free-text input from the user (Other)."""
         return self._ask_user.pending_other is not None
 
-    async def receive_text_input(self, text: str) -> None:
-        """Receive free-text input from the user for an 'Other' answer."""
+    async def receive_text_input(self, text: str, user_id: str = "") -> None:
+        """Receive free-text input from the user for an 'Other' answer.
+
+        Args:
+            text: The free-text answer.
+            user_id: Slack user ID of the sender. Verified against session owner.
+        """
         if not self._ask_user.pending_other:
+            return
+
+        if user_id != self._authenticated_user_id:
+            logger.warning(
+                "Free-text input from unauthorized user %s (expected %s)",
+                user_id,
+                self._authenticated_user_id,
+            )
             return
 
         request_id, q_idx = self._ask_user.pending_other

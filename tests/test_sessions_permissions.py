@@ -526,3 +526,55 @@ class TestGitHubMCPGuardTests:
             assert not tool.startswith(_GITHUB_MCP_AUTO_APPROVE_PREFIXES), (
                 f"{tool} matches an auto-approve prefix"
             )
+
+
+class TestIdentityVerificationFailClosed:
+    """Guard tests: identity checks are fail-closed (no truthy bypass)."""
+
+    async def test_handle_action_rejects_when_authenticated_user_empty(self):
+        """handle_action should reject even if authenticated_user_id is empty string."""
+        handler, _, _ = make_handler(authenticated_user_id="")
+        batch_id = "test-batch"
+        event = asyncio.Event()
+        handler._batch.events[batch_id] = event
+
+        await handler.handle_action(
+            value=f"approve:{batch_id}",
+            user_id="U_INTRUDER",
+        )
+
+        assert batch_id not in handler._batch.decisions
+        assert not event.is_set()
+
+    async def test_handle_ask_user_action_rejects_when_authenticated_user_empty(self):
+        """handle_ask_user_action should reject even if authenticated_user_id is empty."""
+        handler, _, _ = make_handler(authenticated_user_id="")
+
+        await handler.handle_ask_user_action(
+            value="fake|0|0",
+            user_id="U_INTRUDER",
+        )
+
+    async def test_receive_text_input_rejects_non_owner(self):
+        """receive_text_input should reject messages from non-owner users."""
+        handler, _, _ = make_handler(authenticated_user_id="U_OWNER")
+        handler._ask_user.pending_other = ("req-1", 0)
+        handler._ask_user.questions["req-1"] = [{"question": "Q?", "header": "H", "options": []}]
+
+        await handler.receive_text_input("hacked answer", user_id="U_INTRUDER")
+
+        # Pending should still be set (not consumed)
+        assert handler._ask_user.pending_other is not None
+
+    async def test_receive_text_input_accepts_owner(self):
+        """receive_text_input should accept messages from the session owner."""
+        handler, _, _ = make_handler(authenticated_user_id="U_OWNER")
+        handler._ask_user.pending_other = ("req-1", 0)
+        handler._ask_user.questions["req-1"] = [{"question": "Q?", "header": "H", "options": []}]
+        handler._ask_user.answers["req-1"] = {}
+        handler._ask_user.events["req-1"] = asyncio.Event()
+
+        await handler.receive_text_input("valid answer", user_id="U_OWNER")
+
+        # Pending should be consumed
+        assert handler._ask_user.pending_other is None

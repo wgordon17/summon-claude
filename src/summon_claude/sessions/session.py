@@ -3833,10 +3833,11 @@ class SummonSession:
 
         1. Subtype filtering — bot/system messages are ignored.
         2. Empty text / empty user_id filtering.
-        3. Message truncation at ``_MAX_USER_MESSAGE_CHARS``.
-        4. File reference extraction via ``format_file_references``.
-        5. AskUserQuestion free-text capture via ``permission_handler``.
-        6. Command detection via ``find_commands`` (standalone and mid-message).
+        3. Identity verification — non-owner users are rejected.
+        4. Message truncation at ``_MAX_USER_MESSAGE_CHARS``.
+        5. File reference extraction via ``format_file_references``.
+        6. AskUserQuestion free-text capture via ``permission_handler``.
+        7. Command detection via ``find_commands`` (standalone and mid-message).
 
         Returns ``(full_text, thread_ts)`` when the message should be forwarded
         to Claude, or ``None`` when it has been handled/filtered internally.
@@ -3855,12 +3856,23 @@ class SummonSession:
         if subtype or not text or not user_id:
             return None
 
-        # 3: Truncate oversized messages
+        # 3: Identity verification — reject messages from non-owner users.
+        # This is the centralized security gate: all regular Slack messages
+        # (commands, free-text, permission input) flow through here.
+        if user_id != self._authenticated_user_id:
+            logger.warning(
+                "Rejected message from non-owner %s (session owner: %s)",
+                user_id,
+                self._authenticated_user_id,
+            )
+            return None
+
+        # 4: Truncate oversized messages
         if len(text) > _MAX_USER_MESSAGE_CHARS:
             logger.warning("Message from %s truncated (%d chars)", user_id, len(text))
             text = text[:_MAX_USER_MESSAGE_CHARS] + "\n[message truncated]"
 
-        # 4: Append file references
+        # 5: Append file references
         files = event.get("files", [])
         full_text = text
         if files:
@@ -3870,12 +3882,12 @@ class SummonSession:
 
         thread_ts: str | None = event.get("ts")
 
-        # 5: Route to permission handler's pending free-text input if waiting
+        # 6: Route to permission handler's pending free-text input if waiting
         if rt.permission_handler.has_pending_text_input():
-            await rt.permission_handler.receive_text_input(text)
+            await rt.permission_handler.receive_text_input(text, user_id=user_id)
             return None
 
-        # 6: Detect commands (!cmd or /cmd) anywhere in the message
+        # 7: Detect commands (!cmd or /cmd) anywhere in the message
         # Fast path: skip regex scan if no command prefixes present
         if "!" not in full_text and "/" not in full_text:
             return full_text, thread_ts

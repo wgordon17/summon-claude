@@ -749,6 +749,15 @@ class TestSessionHandleRegistration:
 class TestProcessIncomingEvent:
     """Tests for _process_incoming_event — the message pre-processing pipeline."""
 
+    # All events in this class use "U001" as the sender.
+    _TEST_USER = "U001"
+
+    def _make_session(self, **kwargs):
+        """Create a session authenticated as the test user."""
+        session = make_session(**kwargs)
+        session._authenticated_user_id = self._TEST_USER
+        return session
+
     def _make_rt(self, permission_handler=None):
         """Build a minimal mock _SessionRuntime."""
         if permission_handler is None:
@@ -765,7 +774,7 @@ class TestProcessIncomingEvent:
 
     async def test_normal_message_returns_text_and_ts(self):
         """A normal user message returns (full_text, thread_ts)."""
-        session = make_session()
+        session = self._make_session()
 
         rt = self._make_rt()
 
@@ -779,7 +788,7 @@ class TestProcessIncomingEvent:
 
     async def test_synthetic_event_bypasses_preprocessing(self):
         """Synthetic events (scan triggers) bypass all Slack preprocessing."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {
@@ -797,7 +806,7 @@ class TestProcessIncomingEvent:
 
     async def test_synthetic_event_without_user_id_still_passes(self):
         """Synthetic events bypass user_id validation."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"text": "Scan now", "_synthetic": True}
@@ -810,7 +819,7 @@ class TestProcessIncomingEvent:
 
     async def test_synthetic_event_empty_text_filtered(self):
         """Synthetic events with empty text are filtered out."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"text": "", "_synthetic": True}
@@ -819,7 +828,7 @@ class TestProcessIncomingEvent:
 
     async def test_subtype_message_filtered(self):
         """Messages with a subtype (bot messages etc.) are filtered out."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "Hello", "subtype": "bot_message", "ts": "1"}
@@ -828,7 +837,7 @@ class TestProcessIncomingEvent:
 
     async def test_empty_text_filtered(self):
         """Messages with empty text are filtered out."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "", "ts": "1"}
@@ -837,7 +846,7 @@ class TestProcessIncomingEvent:
 
     async def test_no_user_filtered(self):
         """Messages without a user_id (system events) are filtered out."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"text": "Hello", "ts": "1"}
@@ -848,7 +857,7 @@ class TestProcessIncomingEvent:
         """Messages exceeding _MAX_USER_MESSAGE_CHARS are truncated."""
         from summon_claude.sessions.session import _MAX_USER_MESSAGE_CHARS
 
-        session = make_session()
+        session = self._make_session()
 
         rt = self._make_rt()
 
@@ -863,7 +872,7 @@ class TestProcessIncomingEvent:
 
     async def test_file_references_appended(self):
         """File attachments are appended to the text."""
-        session = make_session()
+        session = self._make_session()
 
         rt = self._make_rt()
 
@@ -882,7 +891,7 @@ class TestProcessIncomingEvent:
 
     async def test_pending_text_input_consumed(self):
         """When permission handler is waiting for free-text, message is consumed."""
-        session = make_session()
+        session = self._make_session()
 
         mock_ph = AsyncMock()
         mock_ph.has_pending_text_input = MagicMock(return_value=True)
@@ -893,11 +902,11 @@ class TestProcessIncomingEvent:
         result = await session._process_incoming_event(event, rt)
 
         assert result is None
-        mock_ph.receive_text_input.assert_awaited_once_with("My free-text answer")
+        mock_ph.receive_text_input.assert_awaited_once_with("My free-text answer", user_id="U001")
 
     async def test_command_prefix_dispatched(self):
         """Messages with ! prefix are dispatched as commands and return None."""
-        session = make_session()
+        session = self._make_session()
 
         rt = self._make_rt()
 
@@ -911,7 +920,7 @@ class TestProcessIncomingEvent:
 
     async def test_regular_message_not_command(self):
         """A message without ! prefix is returned as-is for Claude."""
-        session = make_session()
+        session = self._make_session()
 
         rt = self._make_rt()
 
@@ -929,7 +938,7 @@ class TestProcessIncomingEvent:
 
     async def test_standalone_unknown_command_posts_error(self):
         """!xyznotreal at start should post 'Unknown command' and return None."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "!xyznotreal", "ts": "1"}
@@ -942,7 +951,7 @@ class TestProcessIncomingEvent:
 
     async def test_standalone_blocked_command_posts_reason(self):
         """!config at start should post 'not available' and return None."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "!config", "ts": "1"}
@@ -955,7 +964,7 @@ class TestProcessIncomingEvent:
 
     async def test_standalone_passthrough_dispatched(self):
         """!review at start should call _dispatch_command with name='review'."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         with patch.object(session, "_dispatch_command", new=AsyncMock()) as mock_dispatch:
@@ -969,7 +978,7 @@ class TestProcessIncomingEvent:
 
     async def test_standalone_local_dispatched(self):
         """!status at start should call _dispatch_command with name='status'."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         with patch.object(session, "_dispatch_command", new=AsyncMock()) as mock_dispatch:
@@ -987,7 +996,7 @@ class TestProcessIncomingEvent:
 
     async def test_mid_message_passthrough_swaps_prefix(self):
         """'please !review this' should return modified text with '/review'."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "please !review this", "ts": "1"}
@@ -1000,7 +1009,7 @@ class TestProcessIncomingEvent:
 
     async def test_mid_message_blocked_annotated(self):
         """'try !config please' should post annotation and return modified text."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         event = {"user": "U001", "text": "try !config please", "ts": "1"}
@@ -1014,7 +1023,7 @@ class TestProcessIncomingEvent:
 
     async def test_mid_message_local_executed(self):
         """'please !status and then continue' should dispatch status and remove it from text."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         with patch(
@@ -1038,7 +1047,7 @@ class TestProcessIncomingEvent:
         COMMAND_ACTIONS["test-plug:short-cmd"] = CommandDef(description="test")
         _ALIAS_LOOKUP["short-cmd"] = "test-plug:short-cmd"
         try:
-            session = make_session()
+            session = self._make_session()
             rt = self._make_rt()
 
             event = {"user": "U001", "text": "please !short-cmd this", "ts": "1"}
@@ -1055,7 +1064,7 @@ class TestProcessIncomingEvent:
 
     async def test_plain_text_fast_path(self):
         """Text with no '!' or '/' should return unchanged (no find_commands called)."""
-        session = make_session()
+        session = self._make_session()
         rt = self._make_rt()
 
         with patch("summon_claude.sessions.session.find_commands") as mock_find:
@@ -1068,6 +1077,100 @@ class TestProcessIncomingEvent:
         assert ts == "42"
         # find_commands should NOT have been called (fast path)
         mock_find.assert_not_called()
+
+
+class TestIdentityVerification:
+    """Security tests: non-owner messages are rejected at the centralized gate."""
+
+    def _make_rt(self, permission_handler=None):
+        if permission_handler is None:
+            mock_ph = AsyncMock()
+            mock_ph.has_pending_text_input = MagicMock(return_value=False)
+            mock_ph.receive_text_input = AsyncMock()
+        else:
+            mock_ph = permission_handler
+        return _SessionRuntime(
+            registry=AsyncMock(),
+            client=make_mock_client("C_TEST"),
+            permission_handler=mock_ph,
+        )
+
+    async def test_non_owner_message_rejected(self):
+        """Messages from a user who is not the session owner are silently dropped."""
+        session = make_session()
+        session._authenticated_user_id = "U_OWNER"
+        rt = self._make_rt()
+
+        event = {"user": "U_INTRUDER", "text": "Hello Claude", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is None
+
+    async def test_non_owner_command_rejected(self):
+        """Commands from a non-owner user are rejected before dispatch."""
+        session = make_session()
+        session._authenticated_user_id = "U_OWNER"
+        rt = self._make_rt()
+
+        with patch.object(session, "_dispatch_command", new=AsyncMock()) as mock_dispatch:
+            event = {"user": "U_INTRUDER", "text": "!end", "ts": "1"}
+            result = await session._process_incoming_event(event, rt)
+
+        assert result is None
+        mock_dispatch.assert_not_awaited()
+
+    async def test_non_owner_free_text_rejected(self):
+        """Free-text input from a non-owner is rejected before consumption."""
+        session = make_session()
+        session._authenticated_user_id = "U_OWNER"
+        mock_ph = AsyncMock()
+        mock_ph.has_pending_text_input = MagicMock(return_value=True)
+        mock_ph.receive_text_input = AsyncMock()
+        rt = self._make_rt(permission_handler=mock_ph)
+
+        event = {"user": "U_INTRUDER", "text": "my answer", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is None
+        mock_ph.receive_text_input.assert_not_awaited()
+
+    async def test_owner_message_accepted(self):
+        """Messages from the session owner pass through normally."""
+        session = make_session()
+        session._authenticated_user_id = "U_OWNER"
+        rt = self._make_rt()
+
+        event = {"user": "U_OWNER", "text": "Hello Claude", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is not None
+        text, _ = result
+        assert text == "Hello Claude"
+
+    async def test_synthetic_event_bypasses_identity_check(self):
+        """Synthetic (internal) events bypass identity verification."""
+        session = make_session()
+        session._authenticated_user_id = "U_OWNER"
+        rt = self._make_rt()
+
+        event = {"text": "Scheduled scan", "_synthetic": True, "user": "U_DIFFERENT"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is not None
+        text, _ = result
+        assert text == "Scheduled scan"
+
+    async def test_unauthenticated_session_rejects_all(self):
+        """Before authentication completes, all messages are rejected."""
+        session = make_session()
+        # _authenticated_user_id is None by default
+        assert session._authenticated_user_id is None
+        rt = self._make_rt()
+
+        event = {"user": "U_ANYONE", "text": "Hello", "ts": "1"}
+        result = await session._process_incoming_event(event, rt)
+
+        assert result is None
 
 
 class TestPendingTurn:
