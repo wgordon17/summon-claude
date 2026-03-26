@@ -549,10 +549,21 @@ class TestIdentityVerificationFailClosed:
     async def test_handle_ask_user_action_rejects_when_authenticated_user_empty(self):
         """handle_ask_user_action should reject even if authenticated_user_id is empty."""
         handler, _, _ = make_handler(authenticated_user_id="")
+        # Set up state so the request_id exists — ensures rejection is from
+        # the identity check, not the "request_id not in events" early return.
+        handler._ask_user.events["req-1"] = asyncio.Event()
+        handler._ask_user.questions["req-1"] = [
+            {"question": "Q?", "header": "H", "options": [{"label": "A", "description": ""}]}
+        ]
 
         await handler.handle_ask_user_action(
-            value="fake|0|0",
+            value="req-1|0|0",
             user_id="U_INTRUDER",
+        )
+
+        # Answer should NOT have been recorded (identity check rejected it)
+        assert "req-1" not in handler._ask_user.answers or not handler._ask_user.answers.get(
+            "req-1"
         )
 
     async def test_receive_text_input_rejects_non_owner(self):
