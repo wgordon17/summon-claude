@@ -8,8 +8,10 @@ on:
       - 'mkdocs.yml'
       - 'src/**/*.py'
       - 'README.md'
+      - '.github/workflows/docs.yaml'
   pull_request:
     types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
 
 # Permissions scoped per-job to prevent PR preview builds from getting write access (SEC-001)
 permissions:
