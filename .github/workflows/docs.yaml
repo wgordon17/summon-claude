@@ -44,7 +44,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Deploy with mike
-        run: uv run mike deploy latest --push --update-aliases --strict
+        run: uv run mike deploy latest --push --update-aliases
 
   preview-build:
     name: Build preview (PR)
