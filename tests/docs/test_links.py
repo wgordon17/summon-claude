@@ -77,8 +77,8 @@ def _fetch(url: str, method: str = "HEAD") -> int:
     req = Request(  # noqa: S310
         url, headers={"User-Agent": "summon-claude-docs-linkcheck/1.0"}, method=method
     )
-    resp = urlopen(req, timeout=_TIMEOUT)  # noqa: S310
-    return resp.status
+    with urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
+        return resp.status
 
 
 def _check_url(url: str) -> tuple[bool, str]:

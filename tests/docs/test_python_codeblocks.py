@@ -8,11 +8,7 @@ Block classification (all notest on day one):
 - docs/concepts/security.md: 5 blocks (frozenset definitions, Path assertions)
 - docs/development/testing.md: 5 blocks (async test patterns, fixture examples)
 - docs/development/contributing.md: 1 block (aiosqlite migration example)
+
+Actual collection happens via: uv run pytest --markdown-docs docs/ tests/docs/
+See Makefile docs-test target.
 """
-
-import pytest
-
-pytestmark = pytest.mark.docs
-
-# Actual collection happens via: uv run pytest --markdown-docs docs/ tests/docs/
-# See Makefile docs-test target.

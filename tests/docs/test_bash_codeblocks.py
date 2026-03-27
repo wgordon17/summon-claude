@@ -61,9 +61,10 @@ TIER1_COMMANDS: frozenset[str] = frozenset(
 )
 
 # Code fence regex — matches ```bash but not ```bash notest
-_BASH_FENCE_RE = re.compile(r"^```bash\s*$", re.MULTILINE)
-_BASH_NOTEST_FENCE_RE = re.compile(r"^```bash\s+notest\s*$", re.MULTILINE)
-_FENCE_CLOSE_RE = re.compile(r"^```\s*$", re.MULTILINE)
+# No re.MULTILINE needed: these are used with .match() on individual lines
+_BASH_FENCE_RE = re.compile(r"^```bash\s*$")
+_BASH_NOTEST_FENCE_RE = re.compile(r"^```bash\s+notest\s*$")
+_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 
 # Summon command line regex — matches "$ summon ..." or bare "summon ..."
 _SUMMON_CMD_RE = re.compile(r"^\$?\s*(summon\s+.+)$", re.MULTILINE)
