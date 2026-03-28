@@ -6,7 +6,7 @@ After creating your Slack app and collecting credentials, configure summon-claud
 
 The fastest way to configure summon-claude is the interactive setup wizard:
 
-```bash notest
+```{ .bash .notest }
 summon init
 ```
 
@@ -90,7 +90,7 @@ Every `[PASS]` line is a check that succeeded. `[INFO]` lines report status or s
 
 To change a single setting without re-running the full wizard:
 
-```bash notest
+```{ .bash .notest }
 summon config set SUMMON_DEFAULT_MODEL claude-sonnet-4-20250514
 ```
 

@@ -27,7 +27,7 @@ Key behaviors:
 
 ### Step 1: Enable the scribe
 
-```bash notest
+```{ .bash .notest }
 summon config set SUMMON_SCRIBE_ENABLED true
 ```
 
@@ -37,13 +37,13 @@ The scribe has two data collectors, each with its own enable flag. Enable at lea
 
 #### Google Workspace
 
-```bash notest
+```{ .bash .notest }
 summon config set SUMMON_SCRIBE_GOOGLE_ENABLED true
 ```
 
 Then authenticate with Google:
 
-```bash notest
+```{ .bash .notest }
 summon auth google login
 ```
 
@@ -63,7 +63,7 @@ See [Scribe Integrations — Slack Browser Monitoring](scribe-integrations.md#sl
 
 The scribe auto-spawns when you run:
 
-```bash notest
+```{ .bash .notest }
 summon project up
 ```
 
@@ -95,7 +95,7 @@ All scribe configuration uses `SUMMON_SCRIBE_*` environment variables. These can
 
 **Example with keyword filtering and quiet hours:**
 
-```bash notest
+```{ .bash .notest }
 summon config set SUMMON_SCRIBE_IMPORTANCE_KEYWORDS urgent,outage,deploy,PagerDuty
 summon config set SUMMON_SCRIBE_QUIET_HOURS 23:00-07:00
 ```
@@ -109,7 +109,7 @@ summon config set SUMMON_SCRIBE_QUIET_HOURS 23:00-07:00
 
 The default services are `gmail`, `calendar`, `drive`. The full set of supported services is: `gmail`, `calendar`, `drive`, `docs`, `sheets`, `chat`, `forms`, `slides`, `tasks`, `contacts`, `search`, `appscript`.
 
-```bash notest
+```{ .bash .notest }
 # Monitor only Gmail and Calendar, not Drive
 summon config set SUMMON_SCRIBE_GOOGLE_SERVICES gmail,calendar
 ```
@@ -202,7 +202,7 @@ The canvas is updated after each scan cycle. See [Canvas Integration](canvas.md)
 
 ## Full configuration example
 
-```bash notest
+```{ .bash .notest }
 # ~/.config/summon/config.env (or environment variables)
 
 # Enable scribe

@@ -29,13 +29,13 @@ Projects make it easier to keep related work organized: the PM agent knows which
 
 Register a new project:
 
-```bash notest
+```{ .bash .notest }
 summon project add NAME [DIR]
 ```
 
 `DIR` defaults to the current working directory if omitted.
 
-```bash notest
+```{ .bash .notest }
 # Register the current directory as a project
 summon project add my-api
 
@@ -63,7 +63,7 @@ summon project list --output json
 
 Start PM agents for all registered projects:
 
-```bash notest
+```{ .bash .notest }
 summon project up
 ```
 
@@ -76,13 +76,13 @@ Each project gets one PM session. If a PM is already running for a project, `up`
 
 Stop all sessions associated with a project:
 
-```bash notest
+```{ .bash .notest }
 summon project down my-api
 ```
 
 `down` stops the PM and all child sessions it manages. All sessions (PM and children) are marked **suspended** rather than completed — this lets `project up` restart them deterministically later (cascade restart). Each session's Slack channel is renamed with a `zzz-` prefix on disconnect (e.g., `my-api-worker-a1b2c3` becomes `zzz-my-api-worker-a1b2c3`), making it easy to visually identify inactive sessions in the Slack sidebar.
 
-```bash notest
+```{ .bash .notest }
 # Stop all projects (omit NAME to stop all)
 summon project down
 ```
@@ -93,7 +93,7 @@ summon project down
 
 Remove a project from the registry:
 
-```bash notest
+```{ .bash .notest }
 summon project remove my-api
 # or by project ID
 summon project remove proj-a1b2c3
@@ -116,7 +116,7 @@ No default workflows ship with summon-claude — workflow instructions are entir
 
 After registering a project, set its workflow instructions:
 
-```bash notest
+```{ .bash .notest }
 summon project add my-api ~/code/my-api
 summon project workflow set my-api
 ```
@@ -181,7 +181,7 @@ Good workflow instructions are specific and actionable. A few guidelines:
 
 Use `summon project workflow` to view, edit, and clear workflow instructions after a project is registered:
 
-```bash notest
+```{ .bash .notest }
 # Show global workflow defaults
 summon project workflow show
 

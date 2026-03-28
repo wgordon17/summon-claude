@@ -15,7 +15,7 @@ The `local_scheme = "no-local-version"` setting in `pyproject.toml` strips the l
 
 The `make release` target handles the full flow interactively:
 
-```bash notest
+```{ .bash .notest }
 make release
 ```
 
@@ -28,7 +28,7 @@ This script:
 6. Creates a GitHub Release with auto-generated notes
 
 Alternatively, use the GitHub CLI directly:
-```bash notest
+```{ .bash .notest }
 gh release create v0.2.0 --generate-notes
 ```
 
@@ -135,7 +135,7 @@ The Homebrew formula lives in a separate tap repository: [summon-claude/homebrew
 
 After each PyPI release, the `publish.yaml` workflow sends a `repository_dispatch` event to `homebrew-summon` with the release version:
 
-```bash notest
+```{ .bash .notest }
 gh api repos/summon-claude/homebrew-summon/dispatches \
   --method POST \
   -f event_type=pypi-release \

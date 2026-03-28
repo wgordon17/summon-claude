@@ -12,11 +12,11 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** The Claude Code CLI is not installed or not on your `PATH`.
 
     **Fix:** Install the Claude Code CLI globally:
-    ```bash notest
+    ```{ .bash .notest }
     npm install -g @anthropic-ai/claude-code
     ```
     Then verify:
-    ```bash notest
+    ```{ .bash .notest }
     claude --version
     ```
 
@@ -26,23 +26,23 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** summon-claude requires Python 3.12 or later.
 
     **Fix:** Check your Python version and upgrade if needed:
-    ```bash notest
+    ```{ .bash .notest }
     python3 --version
     ```
     Install Python 3.12+ via your package manager or from [python.org](https://python.org). If using `uv`, it manages Python versions for you:
-    ```bash notest
+    ```{ .bash .notest }
     uv python install 3.12
     ```
 
 ???+ tip "Should I use uv or pip?"
     **Use `uv`.** summon-claude is tested and distributed with `uv`. The recommended install is:
-    ```bash notest
+    ```{ .bash .notest }
     uv tool install summon-claude
     ```
     If you install with pip and encounter import or dependency issues, try switching to `uv tool install`.
 
     To upgrade:
-    ```bash notest
+    ```{ .bash .notest }
     uv tool upgrade summon-claude
     ```
 
@@ -52,7 +52,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** Optional extras were not installed.
 
     **Fix:** Install with the appropriate extra:
-    ```bash notest
+    ```{ .bash .notest }
     uv tool install "summon-claude[google]"        # Google Workspace integration
     uv tool install "summon-claude[slack-browser]" # Slack browser-based auth
     uv tool install "summon-claude[all]"           # All extras
@@ -103,7 +103,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     1. In your Slack app settings, go to **Basic Information → App-Level Tokens**.
     2. Create or select a token — it must have the `connections:write` scope.
     3. Set it in your config:
-    ```bash notest
+    ```{ .bash .notest }
     summon config set SUMMON_SLACK_APP_TOKEN xapp-...
     ```
 
@@ -161,11 +161,11 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** A stale daemon process from a previous crash. The daemon starts automatically with `summon start` and stops when all sessions end.
 
     **Fix:**
-    ```bash notest
+    ```{ .bash .notest }
     summon stop --all
     ```
     If that fails, find and kill the daemon process manually:
-    ```bash notest
+    ```{ .bash .notest }
     # Find the daemon process
     pgrep -f "summon.*start"
     ```
@@ -177,7 +177,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** Sessions from a previous daemon instance were not cleaned up when the daemon stopped or crashed.
 
     **Fix:** Run the cleanup command:
-    ```bash notest
+    ```{ .bash .notest }
     summon session cleanup
     ```
     This marks orphaned sessions (present in the database but not tracked by the current daemon) as errored.
@@ -188,12 +188,12 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** The Claude subprocess may have crashed without the daemon detecting it.
 
     **Fix:**
-    ```bash notest
+    ```{ .bash .notest }
     summon session cleanup   # Mark orphaned sessions
     summon session list      # Verify status updated
     ```
     If the session persists, stop it explicitly:
-    ```bash notest
+    ```{ .bash .notest }
     summon stop <session-name>
     ```
 
@@ -217,7 +217,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** Permission requests have a timeout. After the timeout, summon defaults to denying the request (fail-safe).
 
     **Fix:** Respond to permission requests promptly. The debounce interval can be adjusted via `SUMMON_PERMISSION_DEBOUNCE_MS` (default: 500ms):
-    ```bash notest
+    ```{ .bash .notest }
     summon config set SUMMON_PERMISSION_DEBOUNCE_MS 1000
     ```
 
@@ -251,7 +251,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Fix:**
     - Wait up to 60 seconds for the next sync cycle.
     - If it has been longer than a few minutes, check for errors in the session logs:
-      ```bash notest
+      ```{ .bash .notest }
       summon session logs <session-name>
       ```
     - After 3 consecutive sync failures, the sync interval increases to 5 minutes. Check for Slack API errors in the logs.
@@ -269,14 +269,14 @@ This page covers common problems and their solutions. Issues are grouped by cate
 
 ???+ tip "Checking daemon status and health"
     The daemon starts automatically with `summon start` and stops when all sessions end. To check if it's running:
-    ```bash notest
+    ```{ .bash .notest }
     summon session list
     ```
     This shows whether the daemon is running, its PID, uptime, and all active sessions.
 
 ???+ tip "Finding logs"
     Session logs are stored in the data directory (typically `~/.local/share/summon/logs/`). To view logs for a specific session:
-    ```bash notest
+    ```{ .bash .notest }
     summon session logs <session-name>
     ```
 
@@ -287,7 +287,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
 
 ???+ tip "Enabling verbose logging for debugging"
     Pass `-v` as a top-level flag:
-    ```bash notest
+    ```{ .bash .notest }
     summon -v start --name my-session
     ```
     Verbose logs include SDK events, Slack API calls, and permission flow details.
@@ -298,7 +298,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** Active sessions may be taking time to shut down gracefully, or the daemon is waiting for in-flight Slack API calls.
 
     **Fix:** Wait a few seconds — the daemon performs a graceful shutdown that stops all active sessions first. If it hangs for more than 30 seconds, kill the daemon process directly:
-    ```bash notest
+    ```{ .bash .notest }
     pgrep -f "summon.*start" | xargs kill
     ```
 
@@ -315,7 +315,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     1. Download `client_secret.json` from the Google Cloud Console for your OAuth app.
     2. Place it in your summon data directory (check `summon config path` for the location).
     3. Run the auth flow:
-    ```bash notest
+    ```{ .bash .notest }
     summon auth google login
     ```
     4. Complete the browser-based consent flow.
@@ -326,7 +326,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** The OAuth consent was granted with insufficient scopes, or the stored credentials don't include all required scopes.
 
     **Fix:** Re-run the auth flow — it will request all required scopes:
-    ```bash notest
+    ```{ .bash .notest }
     summon auth google login
     ```
     If scope issues persist, revoke the app's access in your Google account settings and re-authorize.
@@ -353,11 +353,11 @@ This page covers common problems and their solutions. Issues are grouped by cate
 
     **Fix:**
     1. Enable scribe in your config:
-    ```bash notest
+    ```{ .bash .notest }
     summon config set SUMMON_SCRIBE_ENABLED true
     ```
     2. Scribe auto-starts with `summon project up`. Verify it's running:
-    ```bash notest
+    ```{ .bash .notest }
     summon session list
     ```
     Look for a scribe session in the output.
@@ -369,7 +369,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
 
     **Fix:**
     1. Enable the Google collector:
-    ```bash notest
+    ```{ .bash .notest }
     summon config set SUMMON_SCRIBE_GOOGLE_ENABLED true
     ```
     2. Verify Google authentication status:
@@ -377,11 +377,11 @@ This page covers common problems and their solutions. Issues are grouped by cate
     summon auth google status
     ```
     3. If not authenticated, run the auth flow:
-    ```bash notest
+    ```{ .bash .notest }
     summon auth google login
     ```
     4. Ensure the `workspace-mcp` binary is available. If missing, install the Google extra:
-    ```bash notest
+    ```{ .bash .notest }
     uv tool install "summon-claude[google]"
     ```
 
@@ -392,7 +392,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
 
     **Fix:**
     1. Enable the Slack browser monitor:
-    ```bash notest
+    ```{ .bash .notest }
     summon config set SUMMON_SCRIBE_SLACK_ENABLED true
     ```
     2. Check Slack browser authentication status:
@@ -400,11 +400,11 @@ This page covers common problems and their solutions. Issues are grouped by cate
     summon auth slack status
     ```
     3. If not authenticated, run the interactive auth flow:
-    ```bash notest
+    ```{ .bash .notest }
     summon auth slack login WORKSPACE_NAME
     ```
     4. Ensure Playwright is installed:
-    ```bash notest
+    ```{ .bash .notest }
     uv tool install "summon-claude[slack-browser]"
     ```
     5. The browser-authenticated user must be a member of the channels you want to monitor. Invite the user to any missing channels in the external workspace.
@@ -433,7 +433,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
     **Cause:** Only sessions in `suspended` status are eligible for automatic resume. Sessions that completed normally (`completed`) or failed (`errored`) are not resumed.
 
     **Fix:** Check the status of your sessions:
-    ```bash notest
+    ```{ .bash .notest }
     summon session list --all
     ```
     Sessions must show `suspended` status to be resumed by `project up`. If sessions are `completed` or `errored`, they will not auto-resume — start new sessions instead.

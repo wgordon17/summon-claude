@@ -26,7 +26,7 @@ The PM agent has a dedicated Slack channel with a project canvas. The canvas sho
 
 PM agents are started with `project up`, which launches PMs for all registered projects:
 
-```bash notest
+```{ .bash .notest }
 summon project up
 ```
 

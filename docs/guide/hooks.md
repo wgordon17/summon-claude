@@ -23,7 +23,7 @@ Each hook is a list of shell commands. Commands run sequentially; if one fails, 
 
 ### Interactive (editor)
 
-```bash notest
+```{ .bash .notest }
 summon hooks set
 ```
 
@@ -31,19 +31,19 @@ Opens `$EDITOR` with the current hooks as JSON. Save and close to apply.
 
 ### Inline JSON
 
-```bash notest
+```{ .bash .notest }
 summon hooks set '{"worktree_create": ["uv sync", "make setup"]}'
 ```
 
 ### Per-project hooks
 
-```bash notest
+```{ .bash .notest }
 summon hooks set --project my-api '{"worktree_create": ["npm install"]}'
 ```
 
 Per-project hooks override global hooks for that project. To include the global hooks as well, use `$INCLUDE_GLOBAL`:
 
-```bash notest
+```{ .bash .notest }
 summon hooks set --project my-api '{"worktree_create": ["$INCLUDE_GLOBAL", "npm install"]}'
 ```
 
@@ -67,13 +67,13 @@ summon hooks show --project my-api
 
 ## Clearing hooks
 
-```bash notest
+```{ .bash .notest }
 summon hooks clear
 ```
 
 Removes global hooks (resets to NULL). For a specific project:
 
-```bash notest
+```{ .bash .notest }
 summon hooks clear --project my-api
 ```
 
@@ -87,7 +87,7 @@ The hook bridge connects summon's lifecycle hooks to Claude Code's hook system. 
 
 ### Install
 
-```bash notest
+```{ .bash .notest }
 summon hooks install
 ```
 
@@ -95,7 +95,7 @@ This writes shell wrappers to `~/.claude/hooks/` and registers them in `~/.claud
 
 ### Uninstall
 
-```bash notest
+```{ .bash .notest }
 summon hooks uninstall
 ```
 

@@ -4,7 +4,7 @@ All configuration options can be set with `summon config set` or as environment
 variables. Values in the config file (`~/.config/summon/config.env` by default)
 are overridden by actual environment variables.
 
-```bash notest
+```{ .bash .notest }
 # Set a value
 summon config set SUMMON_DEFAULT_MODEL claude-opus-4-6
 

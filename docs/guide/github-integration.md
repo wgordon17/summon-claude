@@ -11,7 +11,7 @@ summon-claude can connect Claude sessions to the GitHub remote MCP server, givin
 
 Authenticate with GitHub using the device flow:
 
-```bash notest
+```{ .bash .notest }
 summon auth github login
 ```
 
@@ -30,7 +30,7 @@ Once authenticated, the GitHub MCP server is wired into **all** sessions automat
 
 To remove stored credentials:
 
-```bash notest
+```{ .bash .notest }
 summon auth github logout
 ```
 

@@ -15,7 +15,7 @@
 === "uv (Recommended)"
     [uv](https://docs.astral.sh/uv/) installs summon-claude as an isolated tool with its own managed Python environment.
 
-    ```bash notest
+    ```{ .bash .notest }
     uv tool install summon-claude
     ```
 
@@ -24,14 +24,14 @@
 === "pipx"
     [pipx](https://pipx.pypa.io/) installs summon-claude in an isolated virtualenv and exposes the `summon` command globally.
 
-    ```bash notest
+    ```{ .bash .notest }
     pipx install summon-claude
     ```
 
 === "Homebrew"
     Install via the summon-claude tap:
 
-    ```bash notest
+    ```{ .bash .notest }
     brew install summon-claude/summon/summon-claude
     ```
 
@@ -51,7 +51,7 @@ Some features require additional dependencies that are not included in the base 
 | `all` | All optional extras | Both of the above |
 
 === "uv"
-    ```bash notest
+    ```{ .bash .notest }
     # Google Workspace integration (for scribe)
     uv tool install "summon-claude[google]"
 
@@ -63,7 +63,7 @@ Some features require additional dependencies that are not included in the base 
     ```
 
 === "pipx"
-    ```bash notest
+    ```{ .bash .notest }
     # Google Workspace integration (for scribe)
     pipx install "summon-claude[google]"
 
@@ -77,7 +77,7 @@ Some features require additional dependencies that are not included in the base 
 === "Homebrew"
     No extras needed — the Homebrew formula includes all dependencies.
 
-    ```bash notest
+    ```{ .bash .notest }
     brew install summon-claude/summon/summon-claude
     ```
 
@@ -114,7 +114,7 @@ summon-claude uses Click, which supports tab completion for bash, zsh, and fish.
 === "bash"
     Add to `~/.bashrc`:
 
-    ```bash notest
+    ```{ .bash .notest }
     eval "$(_SUMMON_COMPLETE=bash_source summon)"
     ```
 
@@ -150,7 +150,7 @@ See [Upgrading](upgrading.md) for details on checking versions and handling brea
 
 summon-claude checks for new versions on startup. To disable this:
 
-```bash notest
+```{ .bash .notest }
 summon config set SUMMON_NO_UPDATE_CHECK true
 ```
 
