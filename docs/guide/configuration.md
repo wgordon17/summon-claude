@@ -6,7 +6,7 @@ summon-claude is configured entirely through environment variables with the `SUM
 
 ## Config file location
 
-summon follows the [XDG Base Directory spec](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html):
+summon follows the [XDG Base Directory spec](https://specifications.freedesktop.org/basedir/basedir-spec-latest.html):
 
 | Variable | Config path |
 |----------|-------------|

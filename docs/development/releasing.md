@@ -91,7 +91,7 @@ Optional: add deployment protection rules (e.g. required reviewers) on the `pypi
 
 OIDC trusted publishers allow publishing without storing API tokens as secrets.
 
-**PyPI (production):** Go to [pypi.org/manage/account/publishing/](https://pypi.org/manage/account/publishing/)
+**PyPI (production):** Log in to [pypi.org](https://pypi.org), then navigate to Account Settings → Publishing → Add a new publisher.
 
 - Project name: `summon-claude`
 - GitHub owner: `summon-claude`
@@ -99,7 +99,7 @@ OIDC trusted publishers allow publishing without storing API tokens as secrets.
 - Workflow: `publish.yaml`
 - Environment: `pypi`
 
-**TestPyPI:** Go to [test.pypi.org/manage/account/publishing/](https://test.pypi.org/manage/account/publishing/)
+**TestPyPI:** Log in to [test.pypi.org](https://test.pypi.org), then navigate to Account Settings → Publishing → Add a new publisher.
 
 - Project name: `summon-claude`
 - GitHub owner: `summon-claude`

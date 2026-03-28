@@ -72,32 +72,36 @@ def _should_skip(url: str) -> bool:
     return parsed.hostname in SKIP_DOMAINS
 
 
-def _fetch(url: str, method: str = "HEAD") -> int:
-    """Fetch URL and return status code."""
+def _fetch(url: str, method: str = "HEAD") -> tuple[int, str]:
+    """Fetch URL and return (status, final_url)."""
     req = Request(  # noqa: S310
         url, headers={"User-Agent": "summon-claude-docs-linkcheck/1.0"}, method=method
     )
     with urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
-        return resp.status
+        return resp.status, resp.url
 
 
-def _check_url(url: str) -> tuple[bool, str]:
-    """Check if URL is reachable. Returns (ok, detail)."""
+def _check_url(url: str) -> tuple[bool, str]:  # noqa: PLR0911
+    """Check if URL is reachable and canonical (no redirects). Returns (ok, detail)."""
     try:
-        status = _fetch(url, "HEAD")
-        return status < 400, f"status={status}"
+        status, final_url = _fetch(url, "HEAD")
     except HTTPError as e:
         if e.code == 405:
             try:
-                status = _fetch(url, "GET")
-                return status < 400, f"status={status}"
+                status, final_url = _fetch(url, "GET")
             except (HTTPError, URLError) as e2:
                 return False, str(e2)
-        return False, f"HTTP {e.code}"
+        else:
+            return False, f"HTTP {e.code}"
     except URLError as e:
         return False, str(e.reason)
     except TimeoutError:
         return False, "timeout"
+    if status >= 400:
+        return False, f"status={status}"
+    if final_url != url:
+        return False, f"redirects to {final_url}"
+    return True, f"status={status}"
 
 
 _all_urls = sorted(u for u in _collect_urls() if not _should_skip(u))

@@ -18,7 +18,7 @@ brew install git-branchless && git branchless init
 
 ```{ .bash .notest }
 # Clone and install
-git clone https://github.com/summon-claude/summon-claude.git
+git clone git@github.com:summon-claude/summon-claude.git
 cd summon-claude
 uv sync
 
