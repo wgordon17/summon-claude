@@ -703,6 +703,7 @@ class SessionManager:
                 effort=resume_params.get("effort") or "high",
                 resume=claude_sid,
                 channel_id=channel_id,
+                resume_from_session_id=old_session_id,
             )
             session_id = await self.create_resumed_session(
                 options,
@@ -981,10 +982,6 @@ class SessionManager:
                     sess_name = sess.get("session_name", "")
                     is_pm = "-pm-" in sess_name
                     try:
-                        # Build resume params directly from the session dict we already
-                        # have, plus one get_channel() call for the Claude session ID.
-                        # This avoids opening a second SessionRegistry inside
-                        # _validate_resume_target (which would re-read the same session).
                         channel_id = sess.get("slack_channel_id")
                         if not channel_id:
                             raise ValueError("Session has no associated channel")
@@ -1003,6 +1000,7 @@ class SessionManager:
                             channel_id=channel_id,
                             project_id=project_id,
                             pm_profile=is_pm,
+                            resume_from_session_id=sess_id,
                         )
                         await self.create_resumed_session(
                             options,
@@ -1040,6 +1038,7 @@ class SessionManager:
         user_id: str,
         cwd: str,
         model: str | None = None,
+        resume_from_session_id: str | None = None,
     ) -> None:
         """Create and start a regular (non-PM) child session for *project*."""
         if not pathlib.Path(cwd).is_dir():
@@ -1051,6 +1050,7 @@ class SessionManager:
             name=f"{project['channel_prefix']}-{secrets.token_hex(3)}",
             model=model,
             project_id=project["project_id"],
+            resume_from_session_id=resume_from_session_id,
         )
         new_session = SummonSession(
             config=self._config,
