@@ -835,7 +835,28 @@ class SessionManager:
             async with SessionRegistry() as registry:
                 projects = await registry.list_projects()
             needing_pm = [p for p in projects if not p.get("pm_running")]
+            gpm_running = any(s.is_global_pm for s in self._sessions.values())
+            scribe_running = any(s.is_scribe for s in self._sessions.values())
+            if not needing_pm and gpm_running and scribe_running:
+                self._project_up_in_flight = False
+                return {"type": "project_up_complete"}
             if not needing_pm:
+                # All project PMs running but GPM or scribe needs starting.
+                # Grab user_id from an existing session to avoid a new auth flow.
+                user_id: str | None = None
+                for s in self._sessions.values():
+                    if s._authenticated_user_id:  # noqa: SLF001
+                        user_id = s._authenticated_user_id  # noqa: SLF001
+                        break
+                if user_id:
+                    try:
+                        await self._resume_or_start_global_pm(user_id)
+                    except Exception as e:
+                        logger.error("Global PM: failed to start: %s", e)
+                    try:
+                        await self._resume_or_start_scribe(user_id)
+                    except Exception as e:
+                        logger.error("Scribe: failed to start: %s", e)
                 self._project_up_in_flight = False
                 return {"type": "project_up_complete"}
 
@@ -920,8 +941,13 @@ class SessionManager:
                         e,
                     )
 
+            # Resume suspended Global PM or start fresh (after PMs, before scribe).
+            try:
+                await self._resume_or_start_global_pm(user_id)
+            except Exception as e:
+                logger.error("Global PM: failed to start: %s", e)
+
             # Resume suspended scribe or start fresh.
-            # Note (M4): scribe spawns only via project_up. Standalone start deferred to M5.
             await self._resume_or_start_scribe(user_id)
 
         except TimeoutError:
@@ -1261,6 +1287,131 @@ class SessionManager:
         self._tasks[new_session_id] = task
 
         logger.info("SessionManager: started scribe session %s", new_session_id)
+
+    def _resolve_gpm_cwd(self, suspended_cwd: str | None = None) -> str:
+        """Resolve Global PM working directory with mkdir."""
+        cwd = suspended_cwd or self._config.global_pm_cwd or str(get_data_dir() / "global-pm")
+        pathlib.Path(cwd).mkdir(parents=True, exist_ok=True)
+        return cwd
+
+    async def _resume_or_start_global_pm(self, user_id: str) -> None:
+        """Resume a suspended Global PM or start fresh.
+
+        Called from ``_project_up_orchestrator`` after PMs, before scribe.
+        """
+        # Check for already-running GPM
+        for sess in self._sessions.values():
+            if sess.is_global_pm:
+                logger.info("SessionManager: Global PM already running — skipping")
+                return
+
+        # Look for a suspended GPM session to resume
+        prev_channel_id: str | None = None
+        async with SessionRegistry() as registry:
+            async with registry.db.execute(
+                "SELECT * FROM sessions"
+                " WHERE status = 'suspended'"
+                "   AND session_name = 'global-pm'"
+                "   AND project_id IS NULL"
+                " ORDER BY started_at DESC LIMIT 1",
+            ) as cursor:
+                row = await cursor.fetchone()
+            suspended_gpm = dict(row) if row else None
+            if suspended_gpm is not None:
+                sess_id = suspended_gpm["session_id"]
+                channel_id = suspended_gpm.get("slack_channel_id")
+                claude_sid: str | None = None
+                if channel_id:
+                    channel = await registry.get_channel(channel_id)
+                    claude_sid = (
+                        channel["claude_session_id"]
+                        if channel and channel.get("claude_session_id")
+                        else suspended_gpm.get("claude_session_id")
+                    )
+                gpm_cwd = self._resolve_gpm_cwd(suspended_gpm.get("cwd"))
+                options = SessionOptions(
+                    cwd=gpm_cwd,
+                    name="global-pm",
+                    model=self._config.global_pm_model,
+                    pm_profile=True,
+                    global_pm_profile=True,
+                    scan_interval_s=max(60, self._config.global_pm_scan_interval_minutes * 60),
+                    resume=claude_sid,
+                    channel_id=channel_id,
+                )
+                try:
+                    if channel_id:
+                        self._check_channel_available(channel_id)
+                    await self.create_resumed_session(
+                        options,
+                        authenticated_user_id=user_id,
+                    )
+                    await registry.update_status(sess_id, "completed")
+                    logger.info("SessionManager: resumed suspended Global PM %s", sess_id[:8])
+                    return
+                except Exception as e:
+                    logger.error(
+                        "SessionManager: failed to resume Global PM %s: %s", sess_id[:8], e
+                    )
+                    with contextlib.suppress(Exception):
+                        await registry.update_status(
+                            sess_id,
+                            "errored",
+                            error_message=f"Resume failed: {e}",
+                        )
+
+            # No suspended GPM — look up previous channel to reuse (perf: skip paginated scan)
+            async with registry.db.execute(
+                "SELECT slack_channel_id FROM sessions"
+                " WHERE session_name = 'global-pm'"
+                "   AND project_id IS NULL"
+                "   AND slack_channel_id IS NOT NULL"
+                " ORDER BY started_at DESC LIMIT 1",
+            ) as cursor:
+                prev_row = await cursor.fetchone()
+            if prev_row:
+                prev_channel_id = prev_row["slack_channel_id"]
+
+        # No suspended GPM found — start fresh
+        self._start_global_pm(user_id, channel_id=prev_channel_id)
+
+    def _start_global_pm(self, user_id: str, channel_id: str | None = None) -> None:
+        """Spawn a fresh Global PM session."""
+        gpm_cwd = self._resolve_gpm_cwd()
+
+        new_session_id = str(uuid.uuid4())
+        gpm_options = SessionOptions(
+            cwd=gpm_cwd,
+            name="global-pm",
+            model=self._config.global_pm_model,
+            pm_profile=True,
+            global_pm_profile=True,
+            scan_interval_s=max(60, self._config.global_pm_scan_interval_minutes * 60),
+            channel_id=channel_id,
+        )
+        new_session = SummonSession(
+            config=self._config,
+            options=gpm_options,
+            auth=None,
+            session_id=new_session_id,
+            web_client=self._web_client,
+            dispatcher=self._dispatcher,
+            bot_user_id=self._bot_user_id,
+            ipc_spawn=self.create_session_with_spawn_token,
+            ipc_resume=self._ipc_resume,
+        )
+        new_session.authenticate(user_id)
+
+        self._cancel_grace_timer()
+        self._sessions[new_session_id] = new_session
+        task = asyncio.create_task(
+            self._supervised_session(new_session, new_session_id),
+            name=f"session-global-pm-{new_session_id}",
+        )
+        task.add_done_callback(partial(self._on_task_done, session_id=new_session_id))
+        self._tasks[new_session_id] = task
+
+        logger.info("SessionManager: started Global PM session %s", new_session_id)
 
     async def _alert_channel(self, session: SummonSession, message: str) -> None:
         """Best-effort Slack notification to a session's channel."""

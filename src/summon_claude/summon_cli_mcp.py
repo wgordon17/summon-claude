@@ -54,6 +54,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     *,
     session_name: str = "",
     is_pm: bool = False,
+    is_global_pm: bool = False,
     scheduler: SessionScheduler,
     project_id: str | None = None,
     on_task_change: Callable[[], Coroutine[Any, Any, None]] | None = None,
@@ -75,6 +76,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         cwd: Calling session's working directory, default for spawned sessions.
         session_name: Calling session's name (for sender_info attribution).
         is_pm: Whether this is a PM session (gates session_start/stop/log_status).
+        is_global_pm: Whether this is the Global PM session (excludes session_start).
         scheduler: SessionScheduler for cron/task scheduling.
         project_id: Project ID for cross-session task queries (optional).
         on_task_change: Async callback for task mutations (canvas sync).
@@ -592,7 +594,8 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 }
 
             # Parent-child scope guard: caller must be the parent
-            if target.get("parent_session_id") != session_id:
+            # Global PM is exempt — it supervises all sessions without spawning them
+            if not is_global_pm and target.get("parent_session_id") != session_id:
                 return {
                     "content": [
                         {
@@ -1134,15 +1137,16 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         task_list,
     ]
     if is_pm:
-        tools.extend(
-            [
-                session_start,
-                session_stop,
-                session_log_status,
-                session_message,
-                session_resume,
-            ]
-        )
+        pm_tools: list[SdkMcpTool] = [
+            session_stop,
+            session_log_status,
+            session_resume,
+        ]
+        # GPM: no session_start (oversight, not spawner)
+        if not is_global_pm:
+            pm_tools.insert(0, session_start)
+        pm_tools.append(session_message)
+        tools.extend(pm_tools)
         if _pm_status_tool is not None:
             tools.append(_pm_status_tool)
     return tools
@@ -1158,6 +1162,7 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
     session_name: str = "",
     web_client: Any | None = None,
     is_pm: bool = False,
+    is_global_pm: bool = False,
     scheduler: SessionScheduler,
     project_id: str | None = None,
     on_task_change: Callable[[], Coroutine[Any, Any, None]] | None = None,
@@ -1172,6 +1177,7 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
         cwd,
         session_name=session_name,
         is_pm=is_pm,
+        is_global_pm=is_global_pm,
         scheduler=scheduler,
         project_id=project_id,
         on_task_change=on_task_change,

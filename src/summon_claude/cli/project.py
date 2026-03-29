@@ -159,6 +159,7 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
 
     pm_count = 0
     scribe_suspended = False
+    gpm_suspended = False
     suspended: list[str] = []
     projects: list[dict[str, Any]] = []
     async with SessionRegistry() as registry:
@@ -199,13 +200,15 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
                 except Exception as e:
                     click.echo(f"  Failed to stop session {sid[:8]}...: {e}", err=True)
 
-        # Stop global scribe if running (no project_id, name="scribe")
+        # Stop global scribe and Global PM if running (no project_id)
         if not name:
             all_active = await registry.list_active()
             for sess in all_active:
                 sname = sess.get("session_name", "")
-                if sname == "scribe" and sess.get("project_id") is None:
-                    sid = sess["session_id"]
+                if sess.get("project_id") is not None:
+                    continue
+                sid = sess["session_id"]
+                if sname == "scribe":
                     try:
                         found = await daemon_client.stop_session(sid)
                         if found:
@@ -215,11 +218,23 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
                             click.echo(f"  Suspended scribe ({sid[:8]}...)")
                     except Exception as e:
                         click.echo(f"  Failed to stop scribe: {e}", err=True)
+                elif sname == "global-pm":
+                    try:
+                        found = await daemon_client.stop_session(sid)
+                        if found:
+                            await registry.update_status(sid, "suspended")
+                            suspended.append(sid)
+                            gpm_suspended = True
+                            click.echo(f"  Suspended Global PM ({sid[:8]}...)")
+                    except Exception as e:
+                        click.echo(f"  Failed to stop Global PM: {e}", err=True)
 
     if not suspended:
         click.echo("No active project sessions found.")
     else:
-        n_child = len(suspended) - pm_count - (1 if scribe_suspended else 0)
+        n_child = (
+            len(suspended) - pm_count - (1 if scribe_suspended else 0) - (1 if gpm_suspended else 0)
+        )
         parts: list[str] = []
         if pm_count:
             parts.append(f"{pm_count} PM{'s' if pm_count != 1 else ''}")
@@ -227,6 +242,8 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
             parts.append(f"{n_child} subsession{'s' if n_child != 1 else ''}")
         if scribe_suspended:
             parts.append("scribe")
+        if gpm_suspended:
+            parts.append("Global PM")
         click.echo(f"Suspended {', '.join(parts)}.")
 
     # Run project_down hooks for all projects in the filter (even those with no

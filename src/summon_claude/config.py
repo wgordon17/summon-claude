@@ -162,6 +162,11 @@ def get_data_dir() -> Path:
     return _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
 
 
+def get_reports_dir() -> Path:
+    """Return the directory for Global PM daily reports."""
+    return get_data_dir() / "reports"
+
+
 def get_update_check_path() -> Path:
     """Return path to the update-check cache file."""
     return get_data_dir() / "update-check.json"
@@ -452,6 +457,14 @@ class SummonConfig(BaseSettings):
     scribe_slack_browser: str = "chrome"  # "chrome", "firefox", or "webkit"
     scribe_slack_monitored_channels: str = ""  # comma-separated channel IDs (e.g. "C01ABC,C02DEF")
 
+    # ------------------------------------------------------------------
+    # Global PM settings
+    # ------------------------------------------------------------------
+
+    global_pm_scan_interval_minutes: int = 15
+    global_pm_cwd: str | None = None  # None -> get_data_dir() / "global-pm"
+    global_pm_model: str | None = None  # None -> inherit default_model
+
     @classmethod
     def for_test(cls, **overrides: object) -> SummonConfig:
         """Create a config instance isolated from env vars and .env files.
@@ -529,6 +542,22 @@ class SummonConfig(BaseSettings):
         """Scan interval must be at least 1 minute."""
         if v < 1:
             raise ValueError("SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES must be at least 1")
+        return v
+
+    @field_validator("global_pm_scan_interval_minutes")
+    @classmethod
+    def validate_global_pm_scan_interval(cls, v: int) -> int:
+        """Scan interval must be at least 1 minute."""
+        if v < 1:
+            raise ValueError("SUMMON_GLOBAL_PM_SCAN_INTERVAL_MINUTES must be at least 1")
+        return v
+
+    @field_validator("global_pm_cwd")
+    @classmethod
+    def validate_global_pm_cwd(cls, v: str | None) -> str | None:
+        """CWD must be absolute when explicitly set."""
+        if v is not None and not Path(v).is_absolute():
+            raise ValueError("SUMMON_GLOBAL_PM_CWD must be an absolute path")
         return v
 
     @field_validator("scribe_slack_browser")
@@ -721,7 +750,7 @@ def _scribe_slack_enabled(cfg: dict[str, str]) -> bool:
     )
 
 
-def _validate_scribe_scan_interval(v: str) -> str | None:
+def _validate_scan_interval_minutes(v: str) -> str | None:
     try:
         return None if int(v) >= 1 else "Must be at least 1"
     except (ValueError, TypeError):
@@ -846,7 +875,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="How often the scribe agent scans for new data",
         input_type="int",
         visible=_scribe_enabled,
-        validate_fn=_validate_scribe_scan_interval,
+        validate_fn=_validate_scan_interval_minutes,
     ),
     ConfigOption(
         field_name="scribe_cwd",
@@ -933,6 +962,38 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Comma-separated Slack channel names for the scribe collector",
         input_type="text",
         visible=_scribe_slack_enabled,
+    ),
+    # Global PM
+    ConfigOption(
+        field_name="global_pm_scan_interval_minutes",
+        env_key="SUMMON_GLOBAL_PM_SCAN_INTERVAL_MINUTES",
+        group="Global PM",
+        label="Scan Interval (minutes)",
+        help_text="How often the Global PM scans all projects",
+        input_type="int",
+        advanced=True,
+        validate_fn=_validate_scan_interval_minutes,
+    ),
+    ConfigOption(
+        field_name="global_pm_cwd",
+        env_key="SUMMON_GLOBAL_PM_CWD",
+        group="Global PM",
+        label="Global PM Working Directory",
+        help_text="Working directory for the Global PM (default: XDG data dir)",
+        input_type="text",
+        advanced=True,
+        validate_fn=lambda v: (
+            None if not v or Path(v).is_absolute() else "Must be an absolute path"
+        ),
+    ),
+    ConfigOption(
+        field_name="global_pm_model",
+        env_key="SUMMON_GLOBAL_PM_MODEL",
+        group="Global PM",
+        label="Global PM Model",
+        help_text="Claude model for the Global PM (default: inherits default_model)",
+        input_type="text",
+        advanced=True,
     ),
     # Advanced options below this point
     # Display

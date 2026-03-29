@@ -525,9 +525,9 @@ class TestValidateFunctions:
         ],
     )
     def test_validate_scribe_scan_interval(self, value, expected):
-        from summon_claude.config import _validate_scribe_scan_interval
+        from summon_claude.config import _validate_scan_interval_minutes
 
-        assert _validate_scribe_scan_interval(value) == expected
+        assert _validate_scan_interval_minutes(value) == expected
 
     @pytest.mark.parametrize(
         "value,expected_none",

@@ -109,6 +109,9 @@ FUZZY_DEFAULTS: dict[str, str | None] = {
     "SUMMON_SCRIBE_IMPORTANCE_KEYWORDS": None,
     "SUMMON_SCRIBE_QUIET_HOURS": None,
     "SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS": None,
+    # Global PM — None defaults rendered as descriptive prose
+    "SUMMON_GLOBAL_PM_CWD": None,
+    "SUMMON_GLOBAL_PM_MODEL": None,
 }
 
 # Matches a markdown table row: | cell | cell | ...

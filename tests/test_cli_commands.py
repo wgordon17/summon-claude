@@ -111,6 +111,9 @@ class TestCmdInit:
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "y",  # Configure advanced settings? (YES)
+                    "",  # global_pm_scan_interval_minutes (accept default)
+                    "",  # global_pm_cwd (accept default)
+                    "",  # global_pm_model (accept default)
                     "",  # max_inline_chars (accept default)
                     "",  # permission_debounce_ms (accept default)
                     "y",  # no_update_check (flag)

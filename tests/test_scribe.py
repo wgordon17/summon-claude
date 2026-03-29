@@ -111,7 +111,7 @@ class TestScribeSystemPromptSecurity:
 class TestScribeChannelName:
     @pytest.mark.asyncio
     async def test_scribe_channel_name(self):
-        """Scribe channel creates/joins '0-summon-scribe' (behavioral)."""
+        """Scribe channel creates/joins '0-scribe' (behavioral)."""
         config = make_config()
         opts = SessionOptions(cwd="/tmp", name="scribe", scribe_profile=True)
         sess = SummonSession(
@@ -131,10 +131,10 @@ class TestScribeChannelName:
             "response_metadata": {"next_cursor": ""},
         }
         web_client.conversations_create.return_value = {
-            "channel": {"id": "C_NEW", "name": "0-summon-scribe"}
+            "channel": {"id": "C_NEW", "name": "0-scribe"}
         }
         _, name = await sess._get_or_create_scribe_channel(web_client)
-        assert name == "0-summon-scribe"
+        assert name == "0-scribe"
 
 
 class TestScribeIsScribeProperty:
@@ -361,16 +361,14 @@ class TestGetOrCreateScribeChannel:
             "response_metadata": {"next_cursor": ""},
         }
         web_client.conversations_create.return_value = {
-            "channel": {"id": "C_NEW", "name": "0-summon-scribe"}
+            "channel": {"id": "C_NEW", "name": "0-scribe"}
         }
 
         channel_id, channel_name = await sess._get_or_create_scribe_channel(web_client)
 
-        web_client.conversations_create.assert_called_once_with(
-            name="0-summon-scribe", is_private=True
-        )
+        web_client.conversations_create.assert_called_once_with(name="0-scribe", is_private=True)
         assert channel_id == "C_NEW"
-        assert channel_name == "0-summon-scribe"
+        assert channel_name == "0-scribe"
 
     @pytest.mark.asyncio
     async def test_get_or_create_scribe_channel_reuses_existing(self):
@@ -378,7 +376,7 @@ class TestGetOrCreateScribeChannel:
         sess = self._make_session()
         web_client = AsyncMock()
         web_client.conversations_list.return_value = {
-            "channels": [{"id": "C_EXISTING", "name": "0-summon-scribe"}],
+            "channels": [{"id": "C_EXISTING", "name": "0-scribe"}],
             "response_metadata": {"next_cursor": ""},
         }
 
