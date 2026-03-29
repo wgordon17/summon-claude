@@ -23,6 +23,7 @@ _BARE_URL_RE = re.compile(r"(?<!\()(https?://[^\s)>\]]+)")
 SKIP_URLS: frozenset[str] = frozenset(
     {
         "https://api.githubcopilot.com/mcp/",  # Requires auth token
+        "https://github.com/login/device",  # Redirects to login page
     }
 )
 

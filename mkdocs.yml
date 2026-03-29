@@ -108,6 +108,7 @@ nav:
     - Upgrading: getting-started/upgrading.md
   - Guides:
     - guide/index.md
+    - Full Setup Walkthrough: guide/full-setup.md
     - Projects: guide/projects.md
     - PM Agents: guide/pm-agents.md
     - Scribe: guide/scribe.md

@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -41,12 +42,11 @@ SKIP_COMMANDS: frozenset[str] = frozenset(
         "summon auth slack login",
         "summon auth slack logout",
         "summon auth slack channels",
+        "summon auth google setup",
         "summon reset",
         "summon db purge",
         "summon db vacuum",
-        "summon config set",
         "summon config edit",
-        "summon config check",
     }
 )
 
@@ -153,36 +153,51 @@ def test_bash_commands_execute(
     content = md_file.read_text(encoding="utf-8")
     blocks = _extract_bash_blocks(content)
 
-    for block in blocks:
-        commands = _extract_summon_commands(block)
-        for cmd in commands:
-            if _should_skip(cmd):
-                continue
-            if not _is_tier1(cmd) and not env_credentials:
-                continue  # Skip credential-requiring commands when no creds
+    with tempfile.TemporaryDirectory(prefix="summon_doctest_") as tmpdir:
+        tmp = Path(tmpdir)
+        env["XDG_DATA_HOME"] = str(tmp / "data")
+        env["XDG_CONFIG_HOME"] = str(tmp / "config")
+        env["SUMMON_LOCAL"] = "0"
+        (tmp / "data").mkdir()
+        (tmp / "config").mkdir()
 
-            # Replace summon prefix with uv run summon
-            exec_cmd = cmd.replace("summon ", "uv run summon ", 1)
-
-            result = subprocess.run(  # noqa: S602
-                exec_cmd,
-                shell=True,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                stdin=subprocess.DEVNULL,
+        if env_credentials:
+            config_dir = tmp / "config" / "summon"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            (config_dir / "config.env").write_text(
+                "".join(f"{k.replace('_TEST_', '_')}={v}\n" for k, v in env_credentials.items())
             )
 
-            assert result.returncode == 0, (
-                f"Command failed: {cmd}\n"
-                f"Exit code: {result.returncode}\n"
-                f"stdout: {result.stdout[:500]}\n"
-                f"stderr: {result.stderr[:500]}"
-            )
-            assert "Traceback" not in result.stderr, (
-                f"Python traceback in: {cmd}\nstderr: {result.stderr[:500]}"
-            )
+        for block in blocks:
+            commands = _extract_summon_commands(block)
+            for cmd in commands:
+                if _should_skip(cmd):
+                    continue
+                if not _is_tier1(cmd) and not env_credentials:
+                    continue  # Skip credential-requiring commands when no creds
+
+                # Replace summon prefix with uv run summon
+                exec_cmd = cmd.replace("summon ", "uv run summon ", 1)
+
+                result = subprocess.run(  # noqa: S602
+                    exec_cmd,
+                    shell=True,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    stdin=subprocess.DEVNULL,
+                )
+
+                assert result.returncode == 0, (
+                    f"Command failed: {cmd}\n"
+                    f"Exit code: {result.returncode}\n"
+                    f"stdout: {result.stdout[:500]}\n"
+                    f"stderr: {result.stderr[:500]}"
+                )
+                assert "Traceback" not in result.stderr, (
+                    f"Python traceback in: {cmd}\nstderr: {result.stderr[:500]}"
+                )
 
 
 # ---------------------------------------------------------------------------

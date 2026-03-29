@@ -70,6 +70,10 @@ MANUAL_SCREENSHOTS = [
     {"name": "slack-setup-app-token-generate.png", "description": "Generate app-level token"},
     {"name": "slack-setup-app-token-properties.png", "description": "Generated token properties"},
     {"name": "slack-setup-socket-mode.png", "description": "Socket Mode toggle enabled"},
+    {
+        "name": "full-setup-channels.png",
+        "description": "Slack sidebar showing summon channels (PM, Scribe, Global PM)",
+    },
 ]
 
 
@@ -109,6 +113,87 @@ def _find_slack_auth_state() -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _enable_scribe(env: dict[str, str]) -> None:
+    """Enable scribe so ``project up`` starts PM + Scribe + Global PM."""
+    for key in ("SUMMON_SCRIBE_ENABLED",):
+        subprocess.run(
+            ["summon", "config", "set", key, "true"],
+            capture_output=True,
+            env=env,
+        )
+    click.echo("  Enabled scribe for multi-channel sidebar capture")
+
+
+def _find_all_session_channels() -> list[tuple[str, str]]:
+    """Return ``(slack_channel_id, session_name)`` for all active sessions."""
+    import sqlite3
+
+    try:
+        from summon_claude.config import get_data_dir
+
+        db_path = get_data_dir() / "registry.db"
+        if not db_path.exists():
+            return []
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute(
+                "SELECT slack_channel_id, session_name FROM sessions "
+                "WHERE slack_channel_id IS NOT NULL "
+                "AND status IN ('active', 'pending_auth') "
+                "ORDER BY started_at",
+            ).fetchall()
+            return [(r[0], r[1]) for r in rows if r[0]]
+        finally:
+            conn.close()
+    except Exception as exc:
+        click.echo(f"  WARNING: channel lookup failed: {exc}", err=True)
+        return []
+
+
+def _get_authenticated_user_id() -> str | None:
+    """Get the authenticated user's Slack ID from the session DB."""
+    import sqlite3
+
+    try:
+        from summon_claude.config import get_data_dir
+
+        db_path = get_data_dir() / "registry.db"
+        if not db_path.exists():
+            return None
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT authenticated_user_id FROM sessions "
+                "WHERE authenticated_user_id IS NOT NULL "
+                "ORDER BY started_at DESC LIMIT 1",
+            ).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _invite_user_to_channels(bot_token: str, user_id: str, channel_ids: list[str]) -> None:
+    """Invite *user_id* to each channel (skip if already a member)."""
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+
+    client = WebClient(token=bot_token)
+    for cid in channel_ids:
+        try:
+            client.conversations_invite(channel=cid, users=user_id)
+            click.echo(f"  Invited user to channel {cid}")
+        except SlackApiError as exc:
+            if exc.response.get("error") == "already_in_channel":
+                pass  # Expected for the PM channel
+            else:
+                click.echo(
+                    f"  WARNING: invite to {cid} failed: {exc.response.get('error')}",
+                    err=True,
+                )
+
+
 def start_project_session() -> tuple[subprocess.Popen | None, str]:
     """Register a project and run `summon project up`, extract auth code."""
     env = _make_env()
@@ -119,6 +204,8 @@ def start_project_session() -> tuple[subprocess.Popen | None, str]:
         capture_output=True,
         env=env,
     )
+
+    _enable_scribe(env)
 
     click.echo("  Starting project PM...")
     proc = subprocess.Popen(
@@ -1412,7 +1499,14 @@ def main(
                         "name": "quickstart-permission-request.png",
                         "description": "Permission buttons",
                     },
-                    {"name": "permissions-approval.png", "description": "Permission approval"},
+                    {
+                        "name": "permissions-approval.png",
+                        "description": "Permission approval",
+                    },
+                    {
+                        "name": "full-setup-channels.png",
+                        "description": "Slack sidebar with summon channels",
+                    },
                 ]
             )
             tag = "manual" if sec == "slack-setup" else "e2e (real session)"
@@ -1621,6 +1715,141 @@ def main(
                 snap("canvas-pm-active-work.png")
             except Exception as exc:
                 click.echo(f"  Canvas capture failed ({type(exc).__name__}): {exc}", err=True)
+
+            # --- Milestone 6: Sidebar screenshot (channel list)
+            #     Show only summon session channels in the sidebar by hiding
+            #     all other channel entries via DOM manipulation.
+            click.echo("  Preparing sidebar: finding all session channels...")
+            try:
+                # Find summon channel names from the DB
+                all_channels = _find_all_session_channels()
+                # Channel names used for DOM filtering below
+                click.echo(
+                    f"  Found {len(all_channels)} session channel(s): "
+                    + ", ".join(name for _, name in all_channels)
+                )
+
+                # Invite browser user to extra channels so sidebar shows them
+                user_id = _get_authenticated_user_id()
+                click.echo(f"  Authenticated user ID: {user_id or '(not found)'}")
+                if user_id and len(all_channels) > 1:
+                    extra_ids = [cid for cid, _ in all_channels if cid != channel_id]
+                    _invite_user_to_channels(bot_token, user_id, extra_ids)
+                    page.wait_for_timeout(3_000)
+
+                nav(channel_url, wait_ms=5_000)
+                _inject_screenshot_css(
+                    page,
+                    """
+                    /* Show sidebar, hide everything else */
+                    .p-view_contents--primary,
+                    .p-view_contents--secondary,
+                    .p-flexpane {
+                        display: none !important;
+                    }
+                    .p-channel_sidebar {
+                        position: fixed !important;
+                        top: 0 !important;
+                        left: 0 !important;
+                        width: 280px !important;
+                        height: 100vh !important;
+                        z-index: 99999 !important;
+                    }
+                    .p-tab_rail {
+                        display: none !important;
+                    }
+                """,
+                )
+
+                # Hide all sidebar channel items that aren't summon channels,
+                # then crop tightly to the remaining visible items.
+                bbox = page.evaluate(
+                    """(sessionName) => {
+                    // Find all sidebar channel link items
+                    const items = document.querySelectorAll(
+                        '.p-channel_sidebar__channel'
+                    );
+                    let kept = 0;
+                    let top = Infinity, bottom = 0;
+                    for (const item of items) {
+                        const text = (item.textContent || '').trim();
+                        // Skip archived channels (zzz- prefix)
+                        if (text.startsWith('zzz-')) {
+                            item.style.display = 'none';
+                            continue;
+                        }
+                        // Keep: current run's PM channel
+                        const isCurrentRun = text.includes(sessionName);
+                        // Keep: scribe and global PM (non-archived)
+                        const isScribe = text.includes('summon-scribe');
+                        const isGlobalPm = text.includes('global-pm');
+                        if (isCurrentRun || isScribe || isGlobalPm) {
+                            kept++;
+                            const r = item.getBoundingClientRect();
+                            if (r.top < top) top = r.top;
+                            if (r.bottom > bottom) bottom = r.bottom;
+                        } else {
+                            item.style.display = 'none';
+                        }
+                    }
+                    // Also hide section headers that have no visible children
+                    document.querySelectorAll(
+                        '.p-channel_sidebar__section_heading'
+                    ).forEach(h => {
+                        const section = h.closest(
+                            '.p-channel_sidebar__section'
+                        );
+                        if (!section) return;
+                        const visible = section.querySelectorAll(
+                            '.p-channel_sidebar__channel:not([style*="display: none"])'
+                        );
+                        if (visible.length === 0) {
+                            section.style.display = 'none';
+                        }
+                    });
+                    if (kept === 0) return null;
+                    return {
+                        x: 0,
+                        y: Math.max(0, top - 12),
+                        width: 280,
+                        height: bottom - top + 24,
+                        kept: kept
+                    };
+                }""",
+                    _SESSION_BASE,  # e.g. "docs-screenshots"
+                )
+
+                if bbox and bbox.get("kept", 0) > 0:
+                    click.echo(f"  Sidebar: showing {bbox['kept']} summon channel(s)")
+                    page.screenshot(
+                        path=str(output_dir / "full-setup-channels.png"),
+                        clip={
+                            "x": bbox["x"],
+                            "y": bbox["y"],
+                            "width": bbox["width"],
+                            "height": bbox["height"],
+                        },
+                    )
+                else:
+                    # Fallback: capture full sidebar without filtering
+                    click.echo(
+                        "  WARNING: no summon channels found in sidebar, capturing full sidebar",
+                        err=True,
+                    )
+                    sidebar_clip = {
+                        "x": 0,
+                        "y": TOP_NAV_HEIGHT,
+                        "width": 280,
+                        "height": VIEWPORT_HEIGHT - TOP_NAV_HEIGHT - SANDBOX_BANNER_HEIGHT,
+                    }
+                    page.screenshot(
+                        path=str(output_dir / "full-setup-channels.png"),
+                        clip=sidebar_clip,
+                    )
+                click.echo(f"  captured: {output_dir / 'full-setup-channels.png'}")
+                captured.append("full-setup-channels.png")
+            except Exception as exc:
+                click.echo(f"  Sidebar capture failed ({type(exc).__name__}): {exc}", err=True)
 
             # Clean up debug screenshots from previous runs
             for debug_file in output_dir.glob("_debug_*.png"):

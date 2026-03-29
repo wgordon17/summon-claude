@@ -4,6 +4,10 @@ Learn how to use summon-claude effectively. Most users work through **projects**
 
 <div class="grid cards" markdown>
 
+-   :material-compass: **[Full Setup Walkthrough](full-setup.md)**
+
+    End-to-end setup guide covering every feature.
+
 -   :material-folder-multiple: **[Projects](projects.md)**
 
     Multi-session project management. The primary way to organize work.
