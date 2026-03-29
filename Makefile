@@ -51,9 +51,9 @@ py-typecheck: ## Run pyright type checking
 	@echo "Running pyright..."
 	uv run pyright
 
-py-test: ## Run full Python test suite (excludes Slack integration and doc validation)
+py-test: ## Run full Python test suite (excludes Slack integration)
 	@echo "Running pytest..."
-	uv run pytest tests/ -v -m "not slack and not docs"
+	uv run pytest tests/ -v -m "not slack"
 
 py-test-slack: ## Run Slack integration tests (requires credentials)
 	@echo "Running Slack integration tests..."
@@ -90,8 +90,11 @@ docs-screenshots: ## Generate documentation screenshots (all sections)
 docs-terminal: ## Capture terminal output and inject into docs
 	uv run python scripts/docs-screenshots.py --section terminal
 
-docs-test: ## Run doc validation tests (guard tests, no credentials)
-	uv run pytest tests/docs/ -v -m docs -n0
+docs-test: ## Run doc validation tests (guard tests + Python blocks, no credentials)
+	uv run pytest --markdown-docs docs/ tests/docs/ -v -m "docs and not slow" -n0
+
+docs-test-full: ## Run all doc tests including link validation (slower, needs network)
+	uv run pytest --markdown-docs docs/ tests/docs/ -v -m docs -n0
 
 # ============================================================================
 # REPO HOOKS

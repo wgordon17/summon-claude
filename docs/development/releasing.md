@@ -15,7 +15,7 @@ The `local_scheme = "no-local-version"` setting in `pyproject.toml` strips the l
 
 The `make release` target handles the full flow interactively:
 
-```bash
+```{ .bash .notest }
 make release
 ```
 
@@ -28,7 +28,7 @@ This script:
 6. Creates a GitHub Release with auto-generated notes
 
 Alternatively, use the GitHub CLI directly:
-```bash
+```{ .bash .notest }
 gh release create v0.2.0 --generate-notes
 ```
 
@@ -91,7 +91,7 @@ Optional: add deployment protection rules (e.g. required reviewers) on the `pypi
 
 OIDC trusted publishers allow publishing without storing API tokens as secrets.
 
-**PyPI (production):** Go to [pypi.org/manage/account/publishing/](https://pypi.org/manage/account/publishing/)
+**PyPI (production):** Log in to [pypi.org](https://pypi.org), then navigate to Account Settings → Publishing → Add a new publisher.
 
 - Project name: `summon-claude`
 - GitHub owner: `summon-claude`
@@ -99,7 +99,7 @@ OIDC trusted publishers allow publishing without storing API tokens as secrets.
 - Workflow: `publish.yaml`
 - Environment: `pypi`
 
-**TestPyPI:** Go to [test.pypi.org/manage/account/publishing/](https://test.pypi.org/manage/account/publishing/)
+**TestPyPI:** Log in to [test.pypi.org](https://test.pypi.org), then navigate to Account Settings → Publishing → Add a new publisher.
 
 - Project name: `summon-claude`
 - GitHub owner: `summon-claude`
@@ -135,7 +135,7 @@ The Homebrew formula lives in a separate tap repository: [summon-claude/homebrew
 
 After each PyPI release, the `publish.yaml` workflow sends a `repository_dispatch` event to `homebrew-summon` with the release version:
 
-```bash
+```{ .bash .notest }
 gh api repos/summon-claude/homebrew-summon/dispatches \
   --method POST \
   -f event_type=pypi-release \

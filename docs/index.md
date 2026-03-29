@@ -52,7 +52,7 @@ Run long-running AI agents in the background. Interact, review permissions, and 
 
 **1. Register a project**
 
-```bash
+```{ .bash .notest }
 summon project add my-api ~/code/my-api
 ```
 
@@ -60,7 +60,7 @@ Link a name, working directory, and Slack channel prefix to a project.
 
 **2. Set workflow instructions**
 
-```bash
+```{ .bash .notest }
 summon project workflow set my-api
 ```
 
@@ -68,7 +68,7 @@ Encode team conventions, coding standards, or project context into every session
 
 **3. Start your PM agents**
 
-```bash
+```{ .bash .notest }
 summon project up
 ```
 
@@ -86,23 +86,23 @@ Send messages, review tool permissions with buttons, and receive streaming respo
 ## Quick install
 
 === "uv (Recommended)"
-    ```bash
+    ```{ .bash .notest }
     uv tool install summon-claude
     ```
 
 === "pipx"
-    ```bash
+    ```{ .bash .notest }
     pipx install summon-claude
     ```
 
 === "Homebrew"
-    ```bash
+    ```{ .bash .notest }
     brew install summon-claude/summon/summon-claude
     ```
 
 Then run the interactive setup wizard:
 
-```bash
+```{ .bash .notest }
 summon init
 ```
 

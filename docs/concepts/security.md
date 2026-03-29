@@ -49,7 +49,7 @@ If the Claude SDK provides a `deny` suggestion for a tool, it is denied immediat
 
 The following tools are auto-approved without any Slack prompt:
 
-```python
+```{ .python .notest }
 _AUTO_APPROVE_TOOLS = frozenset([
     "Read", "Cat", "Grep", "Glob", "WebSearch", "WebFetch",
     "LSP", "ListFiles", "GetSymbolsOverview", "FindSymbol",
@@ -59,7 +59,7 @@ _AUTO_APPROVE_TOOLS = frozenset([
 
 GitHub MCP read operations are also auto-approved by exact name or prefix:
 
-```python
+```{ .python .notest }
 _GITHUB_MCP_AUTO_APPROVE_PREFIXES = (
     "mcp__github__get_",
     "mcp__github__list_",
@@ -71,7 +71,7 @@ _GITHUB_MCP_AUTO_APPROVE_PREFIXES = (
 
 Destructive and externally-visible GitHub operations **always** require Slack approval, even if the SDK suggests allow or they match a read prefix:
 
-```python
+```{ .python .notest }
 _GITHUB_MCP_REQUIRE_APPROVAL = frozenset([
     "mcp__github__merge_pull_request",
     "mcp__github__delete_branch",
@@ -184,7 +184,7 @@ The daemon socket is restricted to mode `0600` (owner-only) so other OS users on
 
 When a session spawns a child via the MCP `session_start` tool, the child's `cwd` must be at or beneath the parent's `cwd`:
 
-```python
+```{ .python .notest }
 resolved_parent = Path(parent_cwd).resolve()
 resolved_child = Path(cwd).resolve()
 if not resolved_child.is_relative_to(resolved_parent):
@@ -199,7 +199,7 @@ The `MAX_SPAWN_DEPTH = 2` constant caps session nesting at three levels deep (ro
 
 All sessions pass a `disallowed_tools` list to the Claude SDK subprocess that blocks raw git worktree commands:
 
-```python
+```{ .python .notest }
 _WORKTREE_DISALLOWED_TOOLS = frozenset({
     "Bash(git worktree add*)",
     "Bash(git worktree move*)",

@@ -11,7 +11,7 @@ Run: uv tool upgrade summon-claude
 
 The check is non-blocking and does not delay session startup. To disable it permanently:
 
-```bash
+```{ .bash .notest }
 summon config set SUMMON_NO_UPDATE_CHECK true
 ```
 
@@ -61,7 +61,7 @@ Upgrading summon-claude while sessions are running is safe — existing sessions
 
 To apply an upgrade to all sessions:
 
-```bash
+```{ .bash .notest }
 summon stop --all
 uv tool upgrade summon-claude
 summon start

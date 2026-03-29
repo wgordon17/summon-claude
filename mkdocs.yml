@@ -3,6 +3,14 @@ site_url: https://summon-claude.github.io/summon-claude/
 repo_url: https://github.com/summon-claude/summon-claude
 repo_name: summon-claude/summon-claude
 
+validation:
+  links:
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+  nav:
+    omitted_files: warn
+
 theme:
   name: material
   features:

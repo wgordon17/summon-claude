@@ -6,7 +6,7 @@ A summon session is a Claude Code process connected to a Slack channel. Each ses
 
 ## Starting a session
 
-```bash
+```{ .bash .notest }
 summon start
 ```
 
@@ -34,7 +34,7 @@ Open Slack and type `/summon abc123` in any channel to claim the session. Once c
 | `--effort LEVEL` | Effort level: `low`, `medium`, `high`, `max` (default: `high`) |
 | `--resume SESSION_ID` | Resume an existing Claude Code session by ID |
 
-```bash
+```{ .bash .notest }
 # Start in a specific directory with a memorable name
 summon start --cwd ~/projects/myapp --name myapp
 
@@ -78,7 +78,7 @@ If the daemon is not running, `summon start` will start it. If the daemon is alr
 
 ## Listing sessions
 
-```bash
+```{ .bash .notest }
 summon session list
 ```
 
@@ -92,7 +92,7 @@ By default, only active sessions are shown. Options:
 | `--name NAME` | Filter by session name (substring match) |
 | `-o json\|table` | Output format (default: `table`) |
 
-```bash
+```{ .bash .notest }
 # Show all sessions
 summon session list --all
 
@@ -107,7 +107,7 @@ summon session list -o json
 
 ## Inspecting a session
 
-```bash
+```{ .bash .notest }
 summon session info SESSION
 ```
 
@@ -121,14 +121,14 @@ summon session info SESSION
 - Start time and uptime
 - Cost and turn count
 
-```bash
+```{ .bash .notest }
 summon session info myapp-a3f9c1
 summon session info a3f9c1     # ID prefix also works
 ```
 
 Use `-o json` for structured output:
 
-```bash
+```{ .bash .notest }
 summon session info myapp-a3f9c1 -o json
 ```
 
@@ -142,7 +142,7 @@ summon stop SESSION
 
 Sends a shutdown signal to the session via the daemon. Claude completes its current turn before stopping.
 
-```bash
+```{ .bash .notest }
 # Stop a specific session
 summon stop myapp-a3f9c1
 
@@ -159,7 +159,7 @@ summon stop --all
 
 Claude Code maintains conversation history across sessions using session IDs. To pick up where you left off:
 
-```bash
+```{ .bash .notest }
 summon start --resume SESSION_ID
 ```
 
@@ -171,7 +171,7 @@ Resuming connects to the existing Claude Code conversation transcript — contex
 
 ## Session logs
 
-```bash
+```{ .bash .notest }
 summon session logs SESSION
 ```
 
@@ -181,7 +181,7 @@ Shows the last 50 log lines for a session. If `SESSION` is omitted, lists availa
 |------|-------------|
 | `--tail N` / `-n N` | Number of lines to show (default: 50) |
 
-```bash
+```{ .bash .notest }
 # Show last 100 lines
 summon session logs myapp-a3f9c1 --tail 100
 
@@ -206,13 +206,13 @@ DB path:     ~/.local/share/summon/registry.db
 
 ## Cleaning up stale sessions
 
-```bash
+```{ .bash .notest }
 summon session cleanup
 ```
 
 Scans active sessions and marks any with dead processes as `errored`. This handles cases where a session crashed without updating its status.
 
-```bash
+```{ .bash .notest }
 # Clean up stale sessions, archive their Slack channels
 summon session cleanup --archive
 ```
@@ -230,7 +230,7 @@ Most listing and info commands support `--output` / `-o`:
 | `table` | Human-readable table (default) |
 | `json` | Machine-readable JSON (suitable for `jq`) |
 
-```bash
+```{ .bash .notest }
 # Get session list as JSON
 summon session list -o json | jq '.[].name'
 

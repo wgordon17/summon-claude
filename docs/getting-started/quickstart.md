@@ -14,13 +14,13 @@ This walkthrough sets up your first project with a PM agent. The PM spawns, dire
 
 Navigate to your project directory and register it:
 
-```bash
+```{ .bash .notest }
 summon project add my-api ~/code/my-api
 ```
 
 This creates a named project that summon-claude tracks. You can optionally set [workflow instructions](../guide/projects.md#managing-workflow-instructions) that guide every session:
 
-```bash
+```{ .bash .notest }
 summon project workflow set my-api
 ```
 
@@ -28,7 +28,7 @@ summon project workflow set my-api
 
 ## Step 2: Start your Project Manager agent
 
-```bash
+```{ .bash .notest }
 summon project up
 ```
 
@@ -124,7 +124,7 @@ Common commands:
 
 When you're done, stop all project sessions:
 
-```bash
+```{ .bash .notest }
 summon project down
 ```
 
@@ -141,7 +141,7 @@ Either method terminates the Claude session and posts a summary in the channel.
 ??? tip "Quick ad-hoc sessions (no project setup)"
     For one-off tasks that don't need a PM, use `summon start` directly:
 
-    ```bash
+    ```{ .bash .notest }
     summon start
     ```
 

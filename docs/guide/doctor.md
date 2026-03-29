@@ -124,7 +124,7 @@ Verbose mode shows:
 
 Export the full diagnostic report as a JSON file:
 
-```bash
+```{ .bash .notest }
 summon doctor --export report.json
 ```
 
@@ -156,7 +156,7 @@ The JSON structure:
 
 Submit a redacted diagnostic report directly as a GitHub issue:
 
-```bash
+```{ .bash .notest }
 summon doctor --submit
 ```
 

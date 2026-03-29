@@ -6,7 +6,7 @@ summon-claude is configured entirely through environment variables with the `SUM
 
 ## Config file location
 
-summon follows the [XDG Base Directory spec](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html):
+summon follows the [XDG Base Directory spec](https://specifications.freedesktop.org/basedir/basedir-spec-latest.html):
 
 | Variable | Config path |
 |----------|-------------|
@@ -36,7 +36,7 @@ The `--config PATH` flag on the `summon` command overrides the config file path.
 
 Use the interactive setup wizard to create your configuration:
 
-```bash
+```{ .bash .notest }
 summon init
 ```
 
@@ -99,7 +99,7 @@ Prints the absolute path to the config file in use.
 
 ### summon config set
 
-```bash
+```{ .bash .notest }
 summon config set SUMMON_DEFAULT_MODEL claude-opus-4-6
 summon config set SUMMON_CHANNEL_PREFIX my-team
 summon config set SUMMON_SCRIBE_ENABLED true
@@ -111,7 +111,7 @@ Boolean values are normalized: `true`, `false`, `yes`, `no`, `on`, `off`, `1`, a
 
 ### summon config edit
 
-```bash
+```{ .bash .notest }
 summon config edit
 ```
 
@@ -133,7 +133,7 @@ For external Slack workspace commands (browser-based monitoring), see [Scribe](s
 
 ## Example config file
 
-```bash
+```{ .bash .notest }
 # ~/.config/summon/config.env
 
 # Required: Slack credentials

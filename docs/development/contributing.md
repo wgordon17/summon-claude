@@ -8,7 +8,7 @@
 - **[git-branchless](https://github.com/arxanas/git-branchless)** (optional) — commit history cleanup tools (`git sl`, `git reword`, `git branchless move`)
 
 Install git-branchless:
-```bash
+```{ .bash .notest }
 brew install git-branchless && git branchless init
 ```
 
@@ -16,9 +16,9 @@ brew install git-branchless && git branchless init
 
 ## Getting Started
 
-```bash
+```{ .bash .notest }
 # Clone and install
-git clone https://github.com/summon-claude/summon-claude.git
+git clone git@github.com:summon-claude/summon-claude.git
 cd summon-claude
 uv sync
 
@@ -30,7 +30,7 @@ make all  # install → lint → test
 
 ## Common Commands
 
-```bash
+```{ .bash .notest }
 make install         # Install all dependencies (uv sync + git hooks)
 make lint            # Run ruff check + format (auto-fix, fails if files changed)
 make test            # Run full pytest suite
@@ -48,7 +48,7 @@ make docs-build      # Build docs in strict mode
 ```
 
 Full reference:
-```bash
+```{ .bash .notest }
 make help  # Lists all targets with descriptions
 ```
 
@@ -201,12 +201,12 @@ BREAKING CHANGE: create_session now requires EventDispatcher reference.
 Use feature branches for all work. Don't commit directly to main.
 
 **One-time setup:**
-```bash
+```{ .bash .notest }
 git config --global push.autoSetupRemote true
 ```
 
 **Feature workflow:**
-```bash
+```{ .bash .notest }
 # Create feature branch from latest upstream
 git fetch upstream
 git switch -c feature/your-feature upstream/main
@@ -248,7 +248,7 @@ If commits are just iterations toward a solution, squash them. If commits repres
 
 ### Commit cleanup with git-branchless
 
-```bash
+```{ .bash .notest }
 # Review your commits
 git log --oneline -10
 git sl  # Visual commit graph
@@ -311,14 +311,14 @@ Migrated CLI framework
 
 ### Linting and formatting
 
-```bash
+```{ .bash .notest }
 uv run ruff check . --fix     # Auto-fix lint issues
 uv run ruff format .          # Auto-format
 uv run pyright                # Type checking
 ```
 
 Or via make:
-```bash
+```{ .bash .notest }
 make lint       # ruff check + format
 make py-typecheck  # pyright only
 ```
@@ -351,7 +351,7 @@ Schema migrations run automatically when `SessionRegistry` connects — users ne
 2. Write an async migration function that takes `db: aiosqlite.Connection`
 3. Add it to `_MIGRATIONS` keyed by the version it migrates *from*
 
-```python
+```{ .python .notest }
 CURRENT_SCHEMA_VERSION = 15  # was 14
 
 async def _migrate_14_to_15(db: aiosqlite.Connection) -> None:
@@ -388,7 +388,7 @@ The `summon doctor` command uses a registry pattern in `diagnostics.py`. Each ch
 
 1. Create a class implementing `DiagnosticCheck` in `diagnostics.py`:
 
-    ```python
+    ```{ .python .notest }
     class MySubsystemCheck:
         name = "my_subsystem"
         description = "Checks something important"
@@ -415,7 +415,7 @@ The `summon doctor` command uses a registry pattern in `diagnostics.py`. Each ch
 
 2. Register it and add the subsystem name:
 
-    ```python
+    ```{ .python .notest }
     DIAGNOSTIC_REGISTRY["my_subsystem"] = MySubsystemCheck()
     ```
 
@@ -423,7 +423,7 @@ The `summon doctor` command uses a registry pattern in `diagnostics.py`. Each ch
 
 3. Add guard test mappings in `tests/test_diagnostics_guard.py`:
 
-    ```bash
+    ```{ .bash .notest }
     uv run pytest tests/test_diagnostics_guard.py -v
     ```
 

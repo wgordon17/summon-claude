@@ -21,18 +21,18 @@ The Scribe can monitor Gmail, Google Calendar, and Google Drive for important up
 Install the Google extra if you haven't already:
 
 === "uv"
-    ```bash
+    ```{ .bash .notest }
     uv pip install 'summon-claude[google]'
     ```
 
 === "pipx"
-    ```bash
+    ```{ .bash .notest }
     pipx inject summon-claude workspace-mcp
     ```
 
 Then authenticate with Google:
 
-```bash
+```{ .bash .notest }
 summon auth google login
 ```
 
@@ -50,13 +50,13 @@ This shows whether credentials exist, which scopes are granted, and whether the 
 
 Once authenticated, enable the Google data collector in the scribe:
 
-```bash
+```{ .bash .notest }
 summon config set SUMMON_SCRIBE_GOOGLE_ENABLED true
 ```
 
 By default the scribe monitors `gmail`, `calendar`, and `drive`. To customize:
 
-```bash
+```{ .bash .notest }
 # Monitor only Gmail and Calendar, not Drive
 summon config set SUMMON_SCRIBE_GOOGLE_SERVICES gmail,calendar
 ```
@@ -77,18 +77,18 @@ The Scribe can monitor an external Slack workspace using browser-based WebSocket
 Install the Slack browser extra if you haven't already:
 
 === "uv"
-    ```bash
+    ```{ .bash .notest }
     uv pip install 'summon-claude[slack-browser]'
     ```
 
 === "pipx"
-    ```bash
+    ```{ .bash .notest }
     pipx inject summon-claude playwright
     ```
 
 ### Authenticate with a Slack workspace
 
-```bash
+```{ .bash .notest }
 summon auth slack login myteam
 ```
 
@@ -109,13 +109,13 @@ After login, the command prompts you to select which channels to monitor using a
 
 To change which channels are monitored without re-authenticating:
 
-```bash
+```{ .bash .notest }
 summon auth slack channels
 ```
 
 This uses the cached channel list from the last authentication. To refresh the channel list from Slack:
 
-```bash
+```{ .bash .notest }
 summon auth slack channels --refresh
 ```
 
@@ -129,7 +129,7 @@ Shows the configured workspace URL, user ID, auth state age, and monitored chann
 
 ### Remove auth state
 
-```bash
+```{ .bash .notest }
 summon auth slack logout
 ```
 
@@ -139,13 +139,13 @@ Removes saved browser auth state and workspace config. This cannot be undone.
 
 Once authenticated, enable the Slack data collector in the scribe:
 
-```bash
+```{ .bash .notest }
 summon config set SUMMON_SCRIBE_SLACK_ENABLED true
 ```
 
 Optionally configure monitored channels and browser:
 
-```bash
+```{ .bash .notest }
 summon config set SUMMON_SCRIBE_SLACK_BROWSER chrome
 summon config set SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS C01ABC123,C02DEF456
 ```

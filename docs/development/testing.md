@@ -16,7 +16,7 @@ Key patterns:
 
 ### Full suite
 
-```bash
+```{ .bash .notest }
 make test
 # or
 uv run pytest tests/ -v
@@ -24,7 +24,7 @@ uv run pytest tests/ -v
 
 ### Quick (skip slow + slack, fail-fast)
 
-```bash
+```{ .bash .notest }
 make py-test-quick
 # or
 uv run pytest --maxfail=1 -q -m "not slow and not slack"
@@ -32,19 +32,19 @@ uv run pytest --maxfail=1 -q -m "not slow and not slack"
 
 ### Single module
 
-```bash
+```{ .bash .notest }
 uv run pytest tests/test_auth.py -v
 ```
 
 ### By name pattern
 
-```bash
+```{ .bash .notest }
 uv run pytest -k "test_session_cleanup" -v
 ```
 
 ### Serial mode (disable parallel)
 
-```bash
+```{ .bash .notest }
 uv run pytest -n0
 ```
 Useful when debugging — parallel workers can obscure output and interleave logs.
@@ -55,14 +55,14 @@ Useful when debugging — parallel workers can obscure output and interleave log
 
 Slack integration tests hit the real Slack API. They require live workspace credentials set as environment variables:
 
-```bash
+```{ .bash .notest }
 export SUMMON_TEST_SLACK_BOT_TOKEN=xoxb-...
 export SUMMON_TEST_SLACK_APP_TOKEN=xapp-...
 export SUMMON_TEST_SLACK_CHANNEL_ID=C...
 ```
 
 Run with:
-```bash
+```{ .bash .notest }
 make py-test-slack
 # or
 uv run pytest tests/integration/ -v -m slack -n0
@@ -123,7 +123,7 @@ Key settings:
 
 ### Async test pattern
 
-```python
+```{ .python .notest }
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -139,7 +139,7 @@ No `@pytest.mark.asyncio` decorator needed — `asyncio_mode = "auto"` handles i
 
 ### Fixture patterns
 
-```python
+```{ .python .notest }
 import pytest
 
 @pytest.fixture
@@ -165,7 +165,7 @@ Shared fixtures live in `tests/conftest.py`. The `pythonpath = ["tests"]` settin
 
 Migration tests use a real SQLite database (not in-memory) to test the migration path:
 
-```python
+```{ .python .notest }
 async def test_migration_adds_column(tmp_path):
     db_path = str(tmp_path / "test.db")
     registry = SessionRegistry(db_path)
@@ -179,7 +179,7 @@ async def test_migration_adds_column(tmp_path):
 
 If multiple tests share a resource (e.g., a named socket), group them so they run serially on the same worker:
 
-```python
+```{ .python .notest }
 @pytest.mark.xdist_group("daemon_socket")
 async def test_daemon_connects(): ...
 
@@ -189,7 +189,7 @@ async def test_daemon_disconnects(): ...
 
 ### Marking slow tests
 
-```python
+```{ .python .notest }
 @pytest.mark.slow
 async def test_full_session_lifecycle():
     # takes several seconds
@@ -197,6 +197,56 @@ async def test_full_session_lifecycle():
 ```
 
 Excluded from quick runs: `make py-test-quick` passes `-m "not slow and not slack"`.
+
+---
+
+## Documentation Validation Tests
+
+Documentation tests (`pytest.mark.docs`) verify that docs stay in sync with the codebase and that code examples are valid.
+
+### Running doc tests
+
+```{ .bash .notest }
+make docs-test       # Guard tests + Python blocks (fast, no credentials)
+make docs-test-full  # All doc tests including link validation (slower)
+```
+
+### Test categories
+
+| Test file | What it checks |
+|-----------|---------------|
+| `test_cli_commands.py` | CLI commands in docs match Click definitions |
+| `test_env_vars.py` | `SUMMON_*` env vars in docs match `SummonConfig` fields |
+| `test_mcp_tools.py` | MCP tool docs match source tool schemas and counts |
+| `test_bash_codeblocks.py` | `summon` commands in bash blocks execute successfully |
+| `test_links.py` | External URLs in docs return 2xx/3xx (rejects redirects) |
+
+### `notest` markers
+
+Non-executable code blocks are marked with `notest` after the language identifier:
+
+````markdown
+```{ .bash .notest }
+# This block is skipped by the test executor
+summon start --model opus
+```
+````
+
+Add `notest` to blocks that:
+
+- Show command **output** (not commands to run)
+- Show file contents, config examples, or environment variables
+- Contain interactive or daemon-dependent commands (`summon start`, `summon init`, etc.)
+- Contain only non-`summon` commands (git, brew, make, npm) — these are already ignored by the executor but `notest` makes intent explicit
+
+The `notest` attribute is invisible to documentation readers — markdown renderers ignore unknown attributes after the language identifier.
+
+### CI integration
+
+- **`checks` job (PRs):** Runs `make docs-test` — guard tests and Tier 1 bash commands (`summon --version`, `summon --help`)
+- **`slack-integration` job:** Runs bash CLI tests with real credentials (Tier 2 commands like `summon config show`)
+- **`make py-test`:** Includes doc guard tests (excludes `slow` link tests)
+- **`make py-test-quick`:** Excludes all doc tests for speed
 
 ---
 
