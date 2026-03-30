@@ -35,17 +35,28 @@ When a spawn token is consumed, the daemon logs a `spawn_token_consumed` audit e
 
 ## Permission Handling
 
-Every tool call from Claude goes through `PermissionHandler.handle()` before execution. The decision logic has six layers, evaluated in order:
+Every tool call from Claude goes through `PermissionHandler.handle()` before execution. The decision logic has seven layers, evaluated in order:
 
-### 1. AskUserQuestion (intercept first)
+### 0. AskUserQuestion (intercept first)
 
 `AskUserQuestion` is intercepted before any other logic and routed to Slack interactive buttons for user input. This is not a permission check — it is a structured Q&A mechanism.
 
-### 2. SDK Deny Suggestions (always honored)
+### 0b. Write Gate (read-only default)
+
+Write-capable tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Bash`) are **denied by default** until containment is active (worktree or CWD). This prevents accidental writes to the main working directory.
+
+- **Git repositories:** the agent enters a worktree via `EnterWorktree`; the containment root is the worktree directory.
+- **Non-git directories:** containment is activated automatically at session start using the session CWD as the containment root.
+
+Before the first write-gated tool is approved, if the session is not in a git repository, a warning is shown that changes cannot be automatically rolled back.
+
+Safe-dir exceptions (`SUMMON_SAFE_WRITE_DIRS`) allow configured directories to bypass the containment requirement. Path validation uses `Path.resolve()` on both sides to prevent symlink escapes.
+
+### 1. SDK Deny Suggestions (always honored)
 
 If the Claude SDK provides a `deny` suggestion for a tool, it is denied immediately and unconditionally. SDK deny suggestions represent the user's own `settings.json` rules and are always respected.
 
-### 3. Static Auto-Approve List
+### 2. Static Auto-Approve List
 
 The following tools are auto-approved without any Slack prompt:
 
@@ -67,7 +78,7 @@ _GITHUB_MCP_AUTO_APPROVE_PREFIXES = (
 )
 ```
 
-### 4. GitHub MCP Require-Approval List (checked before prefix auto-approve)
+### 2b. GitHub MCP Require-Approval List (checked before prefix auto-approve)
 
 Destructive and externally-visible GitHub operations **always** require Slack approval, even if the SDK suggests allow or they match a read prefix:
 
@@ -89,7 +100,7 @@ _GITHUB_MCP_REQUIRE_APPROVAL = frozenset([
 
 This is defense-in-depth — deny-list precedence over prefix matching prevents a broadly-scoped `allowedTools` pattern in `settings.json` from silently bypassing human-in-the-loop review for externally-visible actions.
 
-### 5. Auto-mode Classifier (post-worktree only)
+### 2g. Auto-mode Classifier (post-worktree only)
 
 After the agent enters a worktree, a secondary Sonnet classifier can automatically approve or block tool calls based on configurable prose rules. This sits between the session caches and SDK allow suggestions — it only evaluates tools that weren't already handled by static lists or caches.
 
@@ -102,22 +113,13 @@ Security mitigations:
 - **Fallback threshold**: After 3 consecutive blocks or 20 total blocks, the classifier automatically pauses and all decisions revert to manual Slack approval. This prevents a misconfigured classifier from permanently blocking the agent.
 - **Tool-use denied in classifier**: The classifier subprocess is configured with `can_use_tool` that denies all tool calls, preventing the classifier itself from taking actions.
 
-The intended security layering is: **read-only** (pre-worktree) → **write gate** (worktree entry + one-time approval) → **auto-classifier** (post-worktree, configurable rules) → **Slack HITL** (fallback).
+The intended security layering is: **read-only** (pre-containment) → **write gate** (containment entry + one-time approval) → **auto-classifier** (post-worktree, configurable rules) → **Slack HITL** (fallback).
 
-### 6. SDK Allow Suggestions
+### 3. SDK Allow Suggestions
 
-If the SDK provides an `allow` suggestion (from `settings.json` `allowedTools`), the tool is approved.
+If the SDK provides an `allow` suggestion (from `settings.json` `allowedTools`), the tool is approved. Write-gated tools that fell through CWD containment checks (paths outside the containment root, or `Bash`) are excluded — `allowedTools` cannot override CWD containment.
 
-### 7. Write Gate (read-only default)
-
-Write-capable tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Bash`) are **denied by default** until containment is active (worktree or CWD). This prevents accidental writes to the main working directory.
-
-- **Git repositories:** the agent enters a worktree via `EnterWorktree`; the containment root is the worktree directory.
-- **Non-git directories:** containment is activated automatically at session start using the session CWD as the containment root.
-
-Safe-dir exceptions (`SUMMON_SAFE_WRITE_DIRS`) allow configured directories to bypass the containment requirement. Path validation uses `Path.resolve()` on both sides to prevent symlink escapes.
-
-### 8. Slack Approval Buttons (fallback)
+### 4. Slack Approval Buttons (fallback)
 
 All other tools — and write-gated tools after containment entry — go through the Slack approval flow:
 
@@ -126,7 +128,7 @@ All other tools — and write-gated tools after containment entry — go through
 3. After the user clicks, the interactive message is deleted and a persistent confirmation is posted in the turn thread.
 4. If no response arrives within 10 minutes (`_PERMISSION_TIMEOUT_S = 600`), the request is automatically denied and the message is deleted.
 
-"Approve for session" caches the tool name for the session lifetime — subsequent uses of the same tool are auto-approved. `Bash` and GitHub require-approval tools are never session-cached (defense-in-depth).
+"Approve for session" caches the approval for the session lifetime. Two tiers apply: write-gated tools (Edit, Write, Bash, etc.) cache the specific argument — the file path for file tools, or the exact command string for Bash — so blanket approval is not possible. All other tools cache the tool name, auto-approving all subsequent uses. GitHub require-approval tools are never session-cached regardless of tier (defense-in-depth).
 
 Only the authenticated session owner (`authenticated_user_id`) can approve or deny — clicks from other users are logged and ignored.
 
