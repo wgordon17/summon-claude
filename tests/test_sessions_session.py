@@ -1632,7 +1632,6 @@ class TestHeadlessBoilerplate:
         result = build_scribe_system_prompt(
             scan_interval=15,
             user_mention="<@U123>",
-            importance_keywords="urgent",
             google_enabled=True,
             slack_enabled=False,
         )
@@ -1696,6 +1695,169 @@ class TestGPMPrompt:
 
         result = build_global_pm_scan_prompt()
         assert "errored for" in result
+
+
+class TestPmScanPrompt:
+    """Guard tests for the PM periodic scan prompt builder."""
+
+    def test_pm_scan_prompt_prefix(self):
+        from summon_claude.sessions.session import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt()
+        assert result.startswith("[SCAN TRIGGER]")
+
+    def test_pm_scan_prompt_health_check(self):
+        from summon_claude.sessions.session import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt()
+        assert "session_list" in result
+
+    def test_pm_scan_prompt_delegation(self):
+        from summon_claude.sessions.session import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt()
+        assert "delegator" in result
+
+    def test_pm_scan_prompt_worktree(self):
+        from summon_claude.sessions.session import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt()
+        assert "EnterWorktree" in result
+
+    def test_pm_scan_prompt_pr_review_with_github(self):
+        from summon_claude.sessions.session import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt(github_enabled=True)
+        assert "REVIEW TEMPLATE" in result
+        assert "review-pr" in result
+
+    def test_pm_scan_prompt_no_pr_without_github(self):
+        from summon_claude.sessions.session import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt(github_enabled=False)
+        assert "reviewer" not in result.lower()
+        assert "PR #" not in result
+
+
+class TestScribeScanPrompt:
+    """Guard tests for the Scribe periodic scan prompt builder."""
+
+    def test_scribe_scan_prompt_nonce_prefix(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="test123",
+            google_enabled=True,
+            slack_enabled=False,
+            user_mention="<@U123>",
+            importance_keywords="urgent, deadline",
+            quiet_hours=None,
+        )
+        assert result.startswith("[SUMMON-INTERNAL-test123]")
+
+    def test_scribe_scan_prompt_importance_scale(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=True,
+            slack_enabled=False,
+            user_mention="<@U>",
+            importance_keywords="",
+            quiet_hours=None,
+        )
+        assert "Urgent action required" in result
+
+    def test_scribe_scan_prompt_google_enabled(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=True,
+            slack_enabled=False,
+            user_mention="<@U>",
+            importance_keywords="",
+            quiet_hours=None,
+        )
+        assert "Gmail" in result
+
+    def test_scribe_scan_prompt_google_disabled(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=False,
+            slack_enabled=False,
+            user_mention="<@U>",
+            importance_keywords="",
+            quiet_hours=None,
+        )
+        assert "Gmail" not in result
+
+    def test_scribe_scan_prompt_slack_enabled(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=False,
+            slack_enabled=True,
+            user_mention="<@U>",
+            importance_keywords="",
+            quiet_hours=None,
+        )
+        assert "external_slack_check" in result
+
+    def test_scribe_scan_prompt_slack_disabled(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=False,
+            slack_enabled=False,
+            user_mention="<@U>",
+            importance_keywords="",
+            quiet_hours=None,
+        )
+        assert "external_slack_check" not in result
+
+    def test_scribe_scan_prompt_quiet_hours(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=True,
+            slack_enabled=False,
+            user_mention="<@U>",
+            importance_keywords="",
+            quiet_hours="22:00-08:00",
+        )
+        assert "22:00-08:00" in result
+
+    def test_scribe_scan_prompt_no_quiet_hours(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=True,
+            slack_enabled=False,
+            user_mention="<@U>",
+            importance_keywords="",
+            quiet_hours=None,
+        )
+        assert "Quiet hours" not in result
+
+    def test_scribe_scan_prompt_importance_keywords(self):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        result = build_scribe_scan_prompt(
+            nonce="x",
+            google_enabled=True,
+            slack_enabled=False,
+            user_mention="<@U>",
+            importance_keywords="urgent, deadline",
+            quiet_hours=None,
+        )
+        assert "urgent, deadline" in result
 
 
 class TestSystemPromptAppendRestart:

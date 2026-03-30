@@ -36,8 +36,9 @@ def make_scribe_prompt(**overrides: Any) -> dict:
     defaults: dict[str, Any] = dict(
         scan_interval=5,
         user_mention="<@U12345>",
-        importance_keywords="",
     )
+    # importance_keywords no longer accepted by build_scribe_system_prompt
+    overrides.pop("importance_keywords", None)
     defaults.update(overrides)
     return build_scribe_system_prompt(**defaults)
 
@@ -97,15 +98,15 @@ class TestScribeSystemPromptSecurity:
         assert "UNTRUSTED_EXTERNAL_DATA" in text
 
     def test_scribe_system_prompt_delivery_format(self):
-        """Alert formatting contains rotating_light and Level 5 markers."""
+        """Alert formatting templates moved to scan prompt — not in system prompt."""
         prompt = make_scribe_prompt()
         text = prompt["append"]
-        assert ":rotating_light:" in text
-        assert "Level 5" in text or "5 (urgent)" in text
+        assert ":rotating_light:" not in text
 
     def test_scribe_system_prompt_daily_summary_format(self):
+        """Daily Recap template moved to scan prompt — not in system prompt."""
         prompt = make_scribe_prompt()
-        assert "Daily Recap" in prompt["append"]
+        assert "Daily Recap" not in prompt["append"]
 
 
 class TestScribeChannelName:
@@ -172,29 +173,31 @@ class TestScribeIsScribeProperty:
 
 
 class TestScribeScanTimerNonce:
-    """Structural guards — nonce wiring is deep inside _run_session_tasks
-    and cannot be tested behaviorally without full SDK/Slack integration.
-    Source inspection verifies the security constant is present.
-    """
+    """Behavioral guards — nonce wiring in build_scribe_scan_prompt."""
 
     def test_scribe_scan_timer_uses_nonce(self):
-        """SUMMON-INTERNAL- prefix is used in scribe scan prompt."""
-        import inspect
+        """SUMMON-INTERNAL- prefix appears in build_scribe_scan_prompt output."""
+        from summon_claude.sessions.session import build_scribe_scan_prompt
 
-        from summon_claude.sessions import session as session_mod
-
-        source = inspect.getsource(session_mod.SummonSession._run_session_tasks)
-        assert "SUMMON-INTERNAL-" in source
-        assert "_scribe_scan_nonce" in source
+        result = build_scribe_scan_prompt(
+            nonce="abc123",
+            google_enabled=False,
+            slack_enabled=False,
+            user_mention="<@U123>",
+            importance_keywords="",
+            quiet_hours=None,
+        )
+        assert "SUMMON-INTERNAL-abc123" in result
 
     def test_scribe_scan_nonce_uses_secrets(self):
-        """secrets.token_hex is called to generate the nonce."""
+        """secrets.token_hex is called in _run_session_tasks to generate the nonce."""
         import inspect
 
         from summon_claude.sessions import session as session_mod
 
         source = inspect.getsource(session_mod.SummonSession._run_session_tasks)
         assert "secrets.token_hex" in source
+        assert "_scribe_scan_nonce" in source
 
 
 class TestScribeNoGitHubMCP:
@@ -265,31 +268,34 @@ class TestStartScribeIfEnabled:
 
 class TestScribeImportanceKeywordsInPrompt:
     def test_scribe_importance_keywords_in_prompt(self):
-        """Custom keywords appear verbatim in the rendered prompt."""
+        """Keywords moved to scan prompt — not in system prompt."""
         keywords = "deadline,escalation,on-call"
         prompt = make_scribe_prompt(importance_keywords=keywords)
-        assert keywords in prompt["append"]
+        assert keywords not in prompt["append"]
 
     def test_scribe_importance_keywords_default_when_empty(self):
-        """Empty keywords → default text in prompt."""
+        """Default keywords moved to scan prompt — not in system prompt."""
         prompt = make_scribe_prompt(importance_keywords="")
-        assert "urgent, action required, deadline" in prompt["append"]
+        assert "urgent, action required, deadline" not in prompt["append"]
 
 
 class TestScribePromptQuietHoursContext:
-    """Structural guard — quiet hours config is embedded in the scan prompt
-    inside _run_session_tasks. Behavioral testing requires full SDK lifecycle.
-    """
+    """Behavioral guard — quiet hours wired into build_scribe_scan_prompt."""
 
     def test_scribe_scan_includes_quiet_hours_config(self):
-        """Quiet hours config is included in scan prompt for dynamic evaluation."""
-        import inspect
+        """Quiet hours config appears in scan prompt output."""
+        from summon_claude.sessions.session import build_scribe_scan_prompt
 
-        from summon_claude.sessions import session as session_mod
-
-        source = inspect.getsource(session_mod.SummonSession._run_session_tasks)
-        assert "quiet_hours" in source.lower()
-        assert "only report level 5" in source.lower() or "quiet hours" in source.lower()
+        result = build_scribe_scan_prompt(
+            nonce="test",
+            google_enabled=False,
+            slack_enabled=False,
+            user_mention="<@U123>",
+            importance_keywords="",
+            quiet_hours="22:00-08:00",
+        )
+        assert "quiet" in result.lower()
+        assert "only report level 5" in result.lower() or "quiet hours" in result.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1225,3 +1231,77 @@ class TestResumeOrStartScribe:
         )
         # Fell through to fresh start
         mock_cls.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Scribe system prompt character voice guard tests
+# ---------------------------------------------------------------------------
+
+
+class TestScribePromptCharacterVoice:
+    def test_scribe_prompt_character_voice(self):
+        """Scribe system prompt contains vigilant sentinel character voice."""
+        prompt = make_scribe_prompt()
+        assert "sentinel" in prompt["append"]
+
+    def test_scribe_prompt_no_formatting_templates(self):
+        """Daily Recap template moved to scan prompt — not in system prompt."""
+        prompt = make_scribe_prompt()
+        assert "Daily Recap" not in prompt["append"]
+
+
+# ---------------------------------------------------------------------------
+# Task 6: build_scribe_scan_prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestScribeScanPromptBuilder:
+    def _make_scan_prompt(self, **overrides):
+        from summon_claude.sessions.session import build_scribe_scan_prompt
+
+        defaults = dict(
+            nonce="test123",
+            google_enabled=True,
+            slack_enabled=False,
+            user_mention="<@U123>",
+            importance_keywords="urgent, deadline",
+            quiet_hours=None,
+        )
+        defaults.update(overrides)
+        return build_scribe_scan_prompt(**defaults)
+
+    def test_scribe_scan_prompt_nonce_prefix(self):
+        result = self._make_scan_prompt()
+        assert result.startswith("[SUMMON-INTERNAL-test123]")
+
+    def test_scribe_scan_prompt_importance_scale(self):
+        result = self._make_scan_prompt()
+        assert "Urgent action required" in result
+
+    def test_scribe_scan_prompt_google_enabled(self):
+        result = self._make_scan_prompt(google_enabled=True)
+        assert "Gmail" in result
+
+    def test_scribe_scan_prompt_google_disabled(self):
+        result = self._make_scan_prompt(google_enabled=False)
+        assert "Gmail" not in result
+
+    def test_scribe_scan_prompt_slack_enabled(self):
+        result = self._make_scan_prompt(slack_enabled=True)
+        assert "external_slack_check" in result
+
+    def test_scribe_scan_prompt_slack_disabled(self):
+        result = self._make_scan_prompt(slack_enabled=False)
+        assert "external_slack_check" not in result
+
+    def test_scribe_scan_prompt_quiet_hours(self):
+        result = self._make_scan_prompt(quiet_hours="22:00-08:00")
+        assert "22:00-08:00" in result
+
+    def test_scribe_scan_prompt_no_quiet_hours(self):
+        result = self._make_scan_prompt(quiet_hours=None)
+        assert "Quiet hours" not in result
+
+    def test_scribe_scan_prompt_importance_keywords(self):
+        result = self._make_scan_prompt(importance_keywords="urgent, deadline")
+        assert "urgent, deadline" in result

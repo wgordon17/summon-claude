@@ -212,7 +212,6 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="urgent",
         )
         assert prompt["type"] == "preset"
         assert prompt["preset"] == "claude_code"
@@ -223,39 +222,39 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=10,
             user_mention="<@U12345>",
-            importance_keywords="",
         )
         assert "every 10 minutes" in prompt["append"]
 
     def test_prompt_interpolates_user_mention(self):
+        """user_mention moved to scan prompt — not directly in system prompt."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@UABC123>",
-            importance_keywords="",
         )
-        assert "<@UABC123>" in prompt["append"]
+        # user_mention used in scan prompts; system prompt focuses on identity
+        assert "append" in prompt
 
     def test_prompt_interpolates_importance_keywords(self):
+        """Keywords moved to scan prompt — not interpolated into system prompt."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="urgent,deadline,asap",
         )
-        assert "urgent,deadline,asap" in prompt["append"]
+        assert "urgent,deadline,asap" not in prompt["append"]
 
     def test_prompt_default_importance_keywords_when_empty(self):
+        """Default keywords moved to scan prompt — not in system prompt."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
         )
-        assert "urgent, action required, deadline" in prompt["append"]
+        assert "urgent, action required, deadline" not in prompt["append"]
 
     def test_prompt_includes_prompt_injection_defense(self):
         from summon_claude.sessions.session import build_scribe_system_prompt
@@ -263,7 +262,6 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
         )
         assert "Prompt injection defense" in prompt["append"]
         assert "Principal hierarchy" in prompt["append"]
@@ -271,25 +269,25 @@ class TestScribeSystemPrompt:
         assert "ONLY permitted actions" in prompt["append"]
 
     def test_prompt_includes_scan_protocol(self):
+        """Scan protocol details moved to scan prompt — system prompt has timer awareness."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
         )
-        assert "scan protocol" in prompt["append"].lower()
-        assert "Batch-triage" in prompt["append"]
+        assert "scan" in prompt["append"].lower()
+        assert "Batch-triage" not in prompt["append"]
 
     def test_prompt_includes_daily_summary(self):
+        """Daily summary template moved to scan prompt — system prompt has no template."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
         )
-        assert "Daily summaries" in prompt["append"]
+        assert "Daily summaries" not in prompt["append"]
 
     def test_prompt_includes_note_taking(self):
         from summon_claude.sessions.session import build_scribe_system_prompt
@@ -297,7 +295,6 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
         )
         assert "Note-taking" in prompt["append"]
 
@@ -308,7 +305,6 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
             google_enabled=False,
             slack_enabled=False,
         )
@@ -320,7 +316,6 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
             google_enabled=False,
             slack_enabled=True,  # need at least one data source
         )
@@ -333,7 +328,6 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
             google_enabled=True,
         )
         assert "Gmail" in prompt["append"]
@@ -346,7 +340,6 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
             slack_enabled=False,
         )
         assert "external_slack_check" not in prompt["append"]
@@ -357,46 +350,43 @@ class TestScribeSystemPrompt:
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
             slack_enabled=True,
         )
         assert "External Slack" in prompt["append"]
 
     def test_prompt_includes_state_tracking(self):
+        """State tracking moved to scan prompt — not in system prompt."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="",
         )
-        assert "CHECKPOINT" in prompt["append"]
-        assert "State tracking" in prompt["append"]
+        assert "CHECKPOINT" not in prompt["append"]
+        assert "State tracking" not in prompt["append"]
 
     def test_prompt_preserves_checkpoint_braces(self):
-        """Double-braced {{ts}}/{{summary}} in template become {ts}/{summary}."""
+        """State tracking moved to scan prompt — no checkpoint braces in system prompt."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="urgent",
         )
-        assert "{ts}" in prompt["append"]
-        assert "{summary}" in prompt["append"]
+        assert "{ts}" not in prompt["append"]
         # No raw double-braces should remain
         assert "{{" not in prompt["append"]
 
     def test_prompt_handles_curly_braces_in_keywords(self):
-        """Importance keywords with curly braces don't crash."""
+        """Keywords removed from system prompt signature — no crash test."""
         from summon_claude.sessions.session import build_scribe_system_prompt
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
             user_mention="<@U12345>",
-            importance_keywords="urgent, {action required}, deadline",
         )
-        assert "{action required}" in prompt["append"]
+        # Keywords no longer part of system prompt — just verify no crash
+        assert "append" in prompt
 
 
 class TestGoogleIntegration:
