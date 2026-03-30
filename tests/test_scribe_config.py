@@ -211,7 +211,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert prompt["type"] == "preset"
         assert prompt["preset"] == "claude_code"
@@ -221,7 +220,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=10,
-            user_mention="<@U12345>",
         )
         assert "every 10 minutes" in prompt["append"]
 
@@ -231,7 +229,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@UABC123>",
         )
         # user_mention used in scan prompts; system prompt focuses on identity
         assert "append" in prompt
@@ -242,7 +239,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "urgent,deadline,asap" not in prompt["append"]
 
@@ -252,7 +248,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "urgent, action required, deadline" not in prompt["append"]
 
@@ -261,7 +256,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "Prompt injection defense" in prompt["append"]
         assert "Principal hierarchy" in prompt["append"]
@@ -274,7 +268,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "scan" in prompt["append"].lower()
         assert "Batch-triage" not in prompt["append"]
@@ -285,7 +278,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "Daily summaries" not in prompt["append"]
 
@@ -294,7 +286,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "Note-taking" in prompt["append"]
 
@@ -304,7 +295,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
             google_enabled=False,
             slack_enabled=False,
         )
@@ -315,7 +305,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
             google_enabled=False,
             slack_enabled=True,  # need at least one data source
         )
@@ -327,7 +316,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
             google_enabled=True,
         )
         assert "Gmail" in prompt["append"]
@@ -339,7 +327,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
             slack_enabled=False,
         )
         assert "external_slack_check" not in prompt["append"]
@@ -349,7 +336,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
             slack_enabled=True,
         )
         assert "External Slack" in prompt["append"]
@@ -360,7 +346,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "CHECKPOINT" not in prompt["append"]
         assert "State tracking" not in prompt["append"]
@@ -371,7 +356,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         assert "{ts}" not in prompt["append"]
         # No raw double-braces should remain
@@ -383,7 +367,6 @@ class TestScribeSystemPrompt:
 
         prompt = build_scribe_system_prompt(
             scan_interval=5,
-            user_mention="<@U12345>",
         )
         # Keywords no longer part of system prompt — just verify no crash
         assert "append" in prompt

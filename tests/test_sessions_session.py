@@ -1631,7 +1631,6 @@ class TestHeadlessBoilerplate:
 
         result = build_scribe_system_prompt(
             scan_interval=15,
-            user_mention="<@U123>",
             google_enabled=True,
             slack_enabled=False,
         )
@@ -1709,7 +1708,6 @@ class TestPromptPresetGuard:
                 "build_scribe_system_prompt",
                 {
                     "scan_interval": 15,
-                    "user_mention": "<@U123>",
                     "google_enabled": True,
                     "slack_enabled": False,
                 },

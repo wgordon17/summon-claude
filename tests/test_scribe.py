@@ -35,10 +35,10 @@ def make_config(**overrides) -> SummonConfig:
 def make_scribe_prompt(**overrides: Any) -> dict:
     defaults: dict[str, Any] = dict(
         scan_interval=5,
-        user_mention="<@U12345>",
     )
-    # importance_keywords no longer accepted by build_scribe_system_prompt
+    # user_mention and importance_keywords moved to scan prompt builder
     overrides.pop("importance_keywords", None)
+    overrides.pop("user_mention", None)
     defaults.update(overrides)
     return build_scribe_system_prompt(**defaults)
 
