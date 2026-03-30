@@ -260,15 +260,16 @@ def test_all_registry_entries_implement_protocol() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_db_tables_matches_schema() -> None:
-    """_DB_TABLES must include all tables in the live schema."""
+def test_db_tables_matches_schema(tmp_path) -> None:
+    """_DB_TABLES must include all tables in the live schema (bidirectional)."""
     import asyncio
 
     from summon_claude.diagnostics import _DB_TABLES
     from summon_claude.sessions.registry import SessionRegistry
 
     async def _get_tables() -> set[str]:
-        async with SessionRegistry() as reg:
+        # Pristine DB — no cross-test contamination from session-scoped fixture
+        async with SessionRegistry(db_path=tmp_path / "schema_check.db") as reg:
             rows = await reg.db.execute_fetchall(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
@@ -279,3 +280,6 @@ def test_db_tables_matches_schema() -> None:
 
     missing = schema_tables - db_tables_set
     assert not missing, f"Tables in schema but missing from _DB_TABLES: {sorted(missing)}"
+
+    extra = db_tables_set - schema_tables
+    assert not extra, f"Tables in _DB_TABLES but missing from schema: {sorted(extra)}"
