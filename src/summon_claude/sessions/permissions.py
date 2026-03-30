@@ -3,7 +3,7 @@
 Permission check flow (handle() steps):
   0.  AskUserQuestion  → intercepted, rendered as Slack interactive UI
   0b. Write gate       → enforces read-only default; SDK deny,
-                         safe-dir bypass, worktree check, CWD containment
+                         safe-dir bypass, containment check, CWD containment
   1.  SDK deny         → always honored unconditionally
   2.  Static allowlist → _AUTO_APPROVE_TOOLS (Read, Grep, Glob, …)
   2b. GitHub deny-list → _GITHUB_MCP_REQUIRE_APPROVAL always sent to Slack
@@ -224,8 +224,8 @@ class PermissionHandler:
     """Handles tool permission requests with debounced Slack interactive messages.
 
     Read-only by default: write-gated tools (Write, Edit, Bash, etc.) are
-    denied until the agent enters a worktree. Safe-dir exceptions allow
-    configured directories to bypass the worktree requirement.
+    denied until containment is active (worktree entry or CWD containment).
+    Safe-dir exceptions allow configured directories to bypass the requirement.
 
     Safe tools (Read, Grep, Glob, WebSearch, WebFetch) are auto-approved.
     Permission messages are posted as normal messages and deleted after
@@ -251,12 +251,14 @@ class PermissionHandler:
         self._safe_dirs: list[str] = [
             d.strip() for d in config.safe_write_dirs.split(",") if d.strip()
         ]
-        self._in_worktree = False
-        self._worktree_root: Path | None = None
+        self._in_containment = False
+        self._containment_root: Path | None = None
+        self._is_git_repo: bool = True
         self._write_access_granted = False
 
         # Pending requests waiting for batched approval
         self._pending: dict[str, PendingRequest] = {}
+        self._pending_preamble: str = ""
         self._batch_task: asyncio.Task | None = None
         self._batch_lock = asyncio.Lock()
 
@@ -428,7 +430,7 @@ class PermissionHandler:
 
         # 3. Check SDK suggestions for allow — secondary, after static allowlist.
         # Defense-in-depth: write-gated tools that fell through CWD containment
-        # (outside worktree or Bash) must go to HITL, not SDK allow.  This
+        # (outside containment root or Bash) must go to HITL, not SDK allow.  This
         # prevents allowedTools config from bypassing CWD containment — same
         # principle as the GitHub deny-list overriding SDK suggestions.
         _write_gated_fallthrough = tool_name in _WRITE_GATED_TOOLS and self._write_access_granted
@@ -439,6 +441,35 @@ class PermissionHandler:
         logger.info("Permission required for tool: %s", tool_name)
         return await self._request_approval(tool_name, input_data, context)
 
+    @property
+    def in_containment(self) -> bool:
+        """Return True if directory containment is currently active."""
+        return self._in_containment
+
+    def notify_containment_active(
+        self, containment_root: Path, *, is_git_repo: bool = True
+    ) -> None:
+        """Activate CWD-based containment for non-git or bare-directory sessions.
+
+        SC-04: No-op if containment is already active (anti-widening guard).
+        SC-01: containment_root is resolved eagerly at call time.
+
+        Args:
+            containment_root: The directory to use as containment root.
+            is_git_repo: False for non-git directories; affects denial messages.
+        """
+        if self._in_containment:
+            logger.warning(
+                "notify_containment_active called but containment already active (root=%s) — "
+                "ignoring to prevent widening",
+                self._containment_root,
+            )
+            return
+        self._in_containment = True
+        self._is_git_repo = is_git_repo
+        self._containment_root = containment_root.resolve()
+        logger.info("Directory containment active (non-git) — root=%s", self._containment_root)
+
     def notify_entered_worktree(self, worktree_name: str = "") -> None:
         """Called by response consumer when EnterWorktree tool use is detected.
 
@@ -446,7 +477,7 @@ class PermissionHandler:
             worktree_name: Name from the EnterWorktree input (e.g. "feature-x").
                 Used to compute the worktree root for CWD containment checks.
         """
-        self._in_worktree = True
+        self._in_containment = True
         if worktree_name and self._project_root:
             # Reject names with path separators or traversal components
             if "/" in worktree_name or "\\" in worktree_name or ".." in worktree_name:
@@ -460,7 +491,7 @@ class PermissionHandler:
                 candidate = (self._project_root / ".claude" / "worktrees" / worktree_name).resolve()
                 expected_parent = (self._project_root / ".claude" / "worktrees").resolve()
                 if candidate.is_relative_to(expected_parent):
-                    self._worktree_root = candidate
+                    self._containment_root = candidate
                 else:
                     logger.warning(
                         "Worktree path escaped expected parent: %s — CWD containment disabled",
@@ -474,27 +505,27 @@ class PermissionHandler:
 
         logger.info(
             "Worktree entry detected — write gate can be unlocked (root=%s)",
-            self._worktree_root,
+            self._containment_root,
         )
 
-    def _is_within_worktree(self, file_path: str) -> bool:
-        """Return True if *file_path* resolves to within the worktree root.
+    def _is_within_containment(self, file_path: str) -> bool:
+        """Return True if *file_path* resolves to within the containment root.
 
         Symlinks in existing path components are resolved to prevent escapes.
         Non-existent components are resolved lexically (``os.path.abspath``
         semantics) — best-effort guard, not a kernel guarantee.
-        Returns False (fail-closed) when the worktree root is unknown.
+        Returns False (fail-closed) when the containment root is unknown.
         """
-        if not self._worktree_root:
+        if not self._containment_root:
             return False
         if not file_path or not file_path.strip():
             return False  # reject empty/whitespace-only paths
         try:
             fp = Path(file_path)
             resolved = (
-                (self._worktree_root / fp).resolve() if not fp.is_absolute() else fp.resolve()
+                (self._containment_root / fp).resolve() if not fp.is_absolute() else fp.resolve()
             )
-            return resolved.is_relative_to(self._worktree_root)
+            return resolved.is_relative_to(self._containment_root)
         except (ValueError, OSError):
             return False
 
@@ -512,10 +543,10 @@ class PermissionHandler:
         Decision tree:
         1. SDK deny → always honored unconditionally
         2. Safe-dir match → Allow immediately (user configured these dirs)
-        3. Not in worktree → Deny with guidance
-        4. First write in worktree → one-time gate approval (sets _write_access_granted)
-        5. Gate approved, file within worktree → Allow (CWD containment)
-        6. Gate approved, file outside worktree or Bash → fall through to arg cache / HITL
+        3. No containment active → Deny with guidance
+        4. First write in containment → one-time gate approval (sets _write_access_granted)
+        5. Gate approved, file within containment root → Allow (CWD containment)
+        6. Gate approved, file outside containment or Bash → fall through to arg cache / HITL
         """
         # 1. SDK deny — always honored unconditionally (before any allow path)
         if _sdk_suggests_deny(context, tool_name):
@@ -527,25 +558,39 @@ class PermissionHandler:
             logger.debug("Safe-dir write allowed: %s → %s", tool_name, file_path)
             return PermissionResultAllow()
 
-        # 3. No worktree: hard deny
-        if not self._in_worktree:
-            logger.info("Write gate: denying %s (no active worktree)", tool_name)
-            return PermissionResultDeny(
-                message="Write access requires a worktree. "
-                "Use EnterWorktree to create an isolated copy first."
-            )
+        # 3. No containment active: hard deny
+        if not self._in_containment:
+            logger.info("Write gate: denying %s (no active containment)", tool_name)
+            if self._is_git_repo:
+                return PermissionResultDeny(
+                    message="Write access requires a worktree. "
+                    "Use EnterWorktree to create an isolated copy first."
+                )
+            return PermissionResultDeny(message="Write access is not available in this context.")
 
-        # 4. First write in worktree → one-time gate approval
+        # 4. First write in containment → one-time gate approval
         if not self._write_access_granted:
-            logger.info("Write gate: requiring approval for %s (in worktree)", tool_name)
-            result = await self._request_approval(tool_name, input_data, context)
+            logger.info("Write gate: requiring approval for %s (in containment)", tool_name)
+            if not self._is_git_repo:
+                # SC-02: non-git warning inline in gate approval message text
+                non_git_warning = (
+                    f":warning: *No version control detected.* "
+                    f"Edits cannot be automatically rolled back. "
+                    f"Containment root: `{self._containment_root}`. "
+                    f"Consider `git init` or backups."
+                )
+                result = await self._request_approval(
+                    tool_name, input_data, context, preamble=non_git_warning
+                )
+            else:
+                result = await self._request_approval(tool_name, input_data, context)
             if isinstance(result, PermissionResultAllow):
                 self._write_access_granted = True
             return result
 
         # 5. Gate approved — CWD containment for file-targeting tools
-        if file_path and self._is_within_worktree(file_path):
-            logger.debug("Write within worktree: %s → %s", tool_name, file_path)
+        if file_path and self._is_within_containment(file_path):
+            logger.debug("Write within containment: %s → %s", tool_name, file_path)
             return PermissionResultAllow()
 
         # 6. Outside CWD or Bash → fall through to arg cache (step 2f) or HITL (step 4)
@@ -556,6 +601,8 @@ class PermissionHandler:
         tool_name: str,
         input_data: dict[str, Any],
         context: ToolPermissionContext | None,
+        *,
+        preamble: str = "",
     ) -> PermissionResultAllow | PermissionResultDeny:
         """Queue a permission request and wait for user approval."""
         request_id = str(uuid.uuid4())
@@ -567,6 +614,8 @@ class PermissionHandler:
 
         async with self._batch_lock:
             self._pending[request_id] = req
+            if preamble:
+                self._pending_preamble = preamble
 
             # Start or reset the debounce timer
             if self._batch_task and not self._batch_task.done():
@@ -597,7 +646,9 @@ class PermissionHandler:
             if not self._pending:
                 return
             batch = dict(self._pending)
+            preamble = self._pending_preamble
             self._pending.clear()
+            self._pending_preamble = ""
 
         batch_id = str(uuid.uuid4())
         batch_event = asyncio.Event()
@@ -605,7 +656,7 @@ class PermissionHandler:
         self._batch.tool_names[batch_id] = [req.tool_name for req in batch.values()]
         self._batch.tool_inputs[batch_id] = [req.input_data for req in batch.values()]
 
-        await self._post_approval_message(batch_id, batch)
+        await self._post_approval_message(batch_id, batch, preamble=preamble)
 
         # Wait for user response
         try:
@@ -631,7 +682,9 @@ class PermissionHandler:
         self._batch.tool_names.pop(batch_id, None)
         self._batch.tool_inputs.pop(batch_id, None)
 
-    async def _post_approval_message(self, batch_id: str, batch: dict[str, PendingRequest]) -> None:
+    async def _post_approval_message(
+        self, batch_id: str, batch: dict[str, PendingRequest], *, preamble: str = ""
+    ) -> None:
         """Post the Slack interactive approval message for a batch of requests."""
         requests = list(batch.values())
 
@@ -644,6 +697,9 @@ class PermissionHandler:
                 f"{i + 1}. {_format_request_summary(r)}" for i, r in enumerate(requests)
             )
             header_text = f"Claude wants to perform {len(requests)} actions:\n{summaries}"
+
+        if preamble:
+            header_text = f"{preamble}\n\n{header_text}"
 
         approve_value = f"approve:{batch_id}"
         approve_session_value = f"approve_session:{batch_id}"

@@ -183,35 +183,35 @@ class TestWriteGateBehavior:
 
     async def test_notify_worktree_sets_flag(self):
         handler, _ = _make_handler()
-        assert not handler._in_worktree
+        assert not handler._in_containment
         handler.notify_entered_worktree("test-wt")
-        assert handler._in_worktree
+        assert handler._in_containment
 
     async def test_notify_worktree_computes_root(self):
         handler, _ = _make_handler(project_root="/project")
         handler.notify_entered_worktree("feature-x")
-        assert handler._worktree_root is not None
-        assert str(handler._worktree_root).endswith(".claude/worktrees/feature-x")
+        assert handler._containment_root is not None
+        assert str(handler._containment_root).endswith(".claude/worktrees/feature-x")
 
     async def test_notify_worktree_rejects_path_traversal(self):
         """Worktree name with ../ should fail-closed (no CWD auto-approve)."""
         handler, _ = _make_handler(project_root="/project")
         handler.notify_entered_worktree("../../")
-        # Fail-closed: _worktree_root stays None, all writes require HITL
-        assert handler._worktree_root is None
-        assert handler._in_worktree is True  # gate can still be unlocked
+        # Fail-closed: _containment_root stays None, all writes require HITL
+        assert handler._containment_root is None
+        assert handler._in_containment is True  # gate can still be unlocked
 
     async def test_notify_worktree_rejects_slash_in_name(self):
         """Worktree name with / should fail-closed."""
         handler, _ = _make_handler(project_root="/project")
         handler.notify_entered_worktree("foo/bar")
-        assert handler._worktree_root is None
+        assert handler._containment_root is None
 
     async def test_notify_worktree_no_name_stays_none(self):
-        """Empty worktree name should leave _worktree_root None (fail-closed)."""
+        """Empty worktree name should leave _containment_root None (fail-closed)."""
         handler, _ = _make_handler(project_root="/project")
         handler.notify_entered_worktree("")
-        assert handler._worktree_root is None
+        assert handler._containment_root is None
 
     async def test_write_after_worktree_prompts_once(self):
         handler, client = _make_handler()
@@ -277,7 +277,7 @@ class TestWriteGateFullFlow:
 
         # 2. EnterWorktree detected
         handler.notify_entered_worktree("test-wt")
-        assert handler._in_worktree
+        assert handler._in_containment
 
         # 3. First write after worktree → one-time gate approval
         client.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))
@@ -409,9 +409,9 @@ class TestCWDContainment:
         client.post_interactive.assert_not_called()
 
     async def test_no_worktree_root_falls_through(self):
-        """If worktree root is unknown, CWD check should fail-closed."""
+        """If containment root is unknown, CWD check should fail-closed."""
         handler, client = _make_handler(project_root="")
-        handler._in_worktree = True
+        handler._in_containment = True
         handler._write_access_granted = True
         # No worktree root → can't determine containment → falls through
         client.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))

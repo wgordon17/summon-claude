@@ -38,7 +38,7 @@ def make_config(debounce_ms=10):
 def make_handler(debounce_ms=10, authenticated_user_id="U_TEST"):
     """Create a PermissionHandler with a mocked ThreadRouter.
 
-    Sets _in_worktree=True so tests exercise the Slack approval flow for
+    Sets _in_containment=True so tests exercise the Slack approval flow for
     write tools without hitting the write gate. Write gate behavior is
     tested in test_permissions_write_gate.py.
     """
