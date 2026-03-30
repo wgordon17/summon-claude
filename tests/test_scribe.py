@@ -177,7 +177,7 @@ class TestScribeScanTimerNonce:
 
     def test_scribe_scan_timer_uses_nonce(self):
         """SUMMON-INTERNAL- prefix appears in build_scribe_scan_prompt output."""
-        from summon_claude.sessions.session import build_scribe_scan_prompt
+        from summon_claude.sessions.prompts import build_scribe_scan_prompt
 
         result = build_scribe_scan_prompt(
             nonce="abc123",
@@ -283,7 +283,7 @@ class TestScribePromptQuietHoursContext:
 
     def test_scribe_scan_includes_quiet_hours_config(self):
         """Quiet hours config appears in scan prompt output."""
-        from summon_claude.sessions.session import build_scribe_scan_prompt
+        from summon_claude.sessions.prompts import build_scribe_scan_prompt
 
         result = build_scribe_scan_prompt(
             nonce="test",
@@ -1256,7 +1256,7 @@ class TestScribePromptCharacterVoice:
 
 class TestScribeScanPromptBuilder:
     def _make_scan_prompt(self, **overrides):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
+        from summon_claude.sessions.prompts import build_scribe_scan_prompt
 
         defaults = dict(
             nonce="test123",

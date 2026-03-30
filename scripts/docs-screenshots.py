@@ -1093,94 +1093,35 @@ def run_schema_section(dry_run: bool = False) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Prompt extraction — imports prompt constants from source and injects into docs
+# Prompt extraction — delegates to scripts/generate_prompt_docs.py
 # ---------------------------------------------------------------------------
-
-_PROMPTS_MD = "docs/reference/prompts.md"
-
-
-def _import_prompt(attr_name: str) -> str:
-    """Import a prompt constant from summon_claude.sessions.session."""
-    from summon_claude.sessions.session import (
-        _CANVAS_PROMPT_SECTION,
-        _COMPACT_PROMPT,
-        _OVERFLOW_RECOVERY_PROMPT,
-        _PM_SYSTEM_PROMPT_APPEND,
-        _REVIEWER_SYSTEM_PROMPT_TEMPLATE,
-        _SCHEDULING_PROMPT_SECTION,
-        _SCRIBE_SYSTEM_PROMPT_APPEND,
-    )
-
-    prompts = {
-        "pm-system": _PM_SYSTEM_PROMPT_APPEND,
-        "scribe-system": _SCRIBE_SYSTEM_PROMPT_APPEND,
-        "reviewer-system": _REVIEWER_SYSTEM_PROMPT_TEMPLATE,
-        "compact": _COMPACT_PROMPT,
-        "overflow-recovery": _OVERFLOW_RECOVERY_PROMPT,
-        "canvas": _CANVAS_PROMPT_SECTION,
-        "scheduling": _SCHEDULING_PROMPT_SECTION,
-    }
-    return prompts[attr_name]
-
-
-PROMPT_MARKERS = [
-    "pm-system",
-    "scribe-system",
-    "reviewer-system",
-    "compact",
-    "overflow-recovery",
-    "canvas",
-    "scheduling",
-]
 
 
 def run_prompts_section(dry_run: bool = False) -> bool:
-    """Extract prompts from source code and inject into docs.
+    """Regenerate prompts in docs via the dedicated generation script.
 
-    Returns True if at least one prompt was injected, False if all failed.
+    Delegates to ``scripts/generate_prompt_docs.py`` which is the single
+    source of truth for prompt extraction and marker injection.
+
+    Returns True on success, False on failure.
     """
-    click.echo("\n[prompts] Extracting prompts from source code...")
+    from generate_prompt_docs import generate, get_source_prompts
+
+    prompts = get_source_prompts()
+    doc_path = Path("docs/reference/prompts.md")
+
+    click.echo(f"\n[prompts] Regenerating {doc_path} ({len(prompts)} prompts)...")
 
     if dry_run:
-        for marker in PROMPT_MARKERS:
-            click.echo(f"  (prompt) {marker} → {_PROMPTS_MD}")
+        for marker in sorted(prompts):
+            click.echo(f"  (prompt) {marker} → {doc_path}")
         return True
 
-    succeeded = 0
-    failed = 0
-    md_path = Path(_PROMPTS_MD)
-
-    for marker in PROMPT_MARKERS:
-        click.echo(f"  Extracting: {marker}...")
-        try:
-            content = _import_prompt(marker)
-        except Exception as exc:
-            click.echo(f"    WARNING: failed to import {marker}: {exc}", err=True)
-            failed += 1
-            continue
-
-        # Strip leading/trailing whitespace for clean display
-        content = content.strip()
-
-        # Validate content won't corrupt markdown
-        error = _validate_content(content, marker, prefix="prompt")
-        if error:
-            click.echo(f"    WARNING: skipping {marker}: {error}", err=True)
-            failed += 1
-            continue
-
-        if _inject_terminal_block(md_path, marker, content, prefix="prompt"):
-            click.echo(f"    → injected into {_PROMPTS_MD}")
-            succeeded += 1
-        else:
-            click.echo(
-                f"    WARNING: no <!-- prompt:{marker} --> marker in {_PROMPTS_MD}",
-                err=True,
-            )
-            failed += 1
-
-    click.echo(f"\n  Done: {succeeded} prompts extracted, {failed} skipped/failed.")
-    return succeeded > 0
+    content = doc_path.read_text(encoding="utf-8")
+    updated = generate(content, prompts)
+    doc_path.write_text(updated, encoding="utf-8")
+    click.echo(f"  → {len(prompts)} prompts injected into {doc_path}")
+    return True
 
 
 # -- Runner -----------------------------------------------------------------

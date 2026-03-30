@@ -38,8 +38,9 @@ from summon_claude.sessions.auth import (
     verify_short_code,
     verify_spawn_token,
 )
+from summon_claude.sessions.prompts import format_pm_topic
 from summon_claude.sessions.registry import SessionRegistry
-from summon_claude.sessions.session import SessionOptions, SummonSession, format_pm_topic
+from summon_claude.sessions.session import SessionOptions, SummonSession
 from summon_claude.slack.client import redact_secrets
 from summon_claude.summon_cli_mcp import MAX_SYSTEM_PROMPT_CHARS
 

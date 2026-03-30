@@ -11,8 +11,8 @@ from click.testing import CliRunner
 from conftest import make_scheduler
 
 from summon_claude.cli import cli
+from summon_claude.sessions.prompts import build_pm_system_prompt
 from summon_claude.sessions.registry import SessionRegistry
-from summon_claude.sessions.session import build_pm_system_prompt
 
 # ---------------------------------------------------------------------------
 # Registry: project CRUD
@@ -600,7 +600,7 @@ class TestFormatPmTopic:
         ],
     )
     def test_format(self, count, expected):
-        from summon_claude.sessions.session import format_pm_topic
+        from summon_claude.sessions.prompts import format_pm_topic
 
         assert format_pm_topic(count) == expected
 
