@@ -267,7 +267,12 @@ _HEADLESS_BOILERPLATE = (
     "(e.g. **bold**, *italic*, [text](url), ```code```). "
     "Your output will be automatically converted for Slack display. "
     "The user can use !commands (e.g. !help, !status, !stop, !end) "
-    "for session control."
+    "for session control.\n\n"
+    "Permission requests: some tool calls require user approval via Slack. "
+    "If the user does not respond within 10 minutes, the request times out "
+    "and appears as a denial. A denial does not mean the action is forbidden — "
+    "it may simply mean the user was away. Consider retrying or trying an "
+    "alternative approach."
 )
 
 _BASE_SYSTEM_APPEND = _HEADLESS_BOILERPLATE
