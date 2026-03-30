@@ -62,7 +62,7 @@ Update canvas with current task status.
 Check for completed sessions with PRs. Spawn reviewer sessions.
 Includes full review template and on-demand review flow.
 
-## Worktree Cleanup
+## Worktree Cleanup (only when GitHub configured)
 Remove worktrees for merged/closed PRs.
 ```
 <!-- /prompt:pm-scan -->

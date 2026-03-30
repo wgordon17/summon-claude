@@ -267,15 +267,14 @@ class TestStartScribeIfEnabled:
 
 
 class TestScribeImportanceKeywordsInPrompt:
-    def test_scribe_importance_keywords_in_prompt(self):
+    def test_scribe_importance_keywords_not_in_system_prompt(self):
         """Keywords moved to scan prompt — not in system prompt."""
-        keywords = "deadline,escalation,on-call"
-        prompt = make_scribe_prompt(importance_keywords=keywords)
-        assert keywords not in prompt["append"]
+        prompt = make_scribe_prompt()
+        assert "deadline,escalation,on-call" not in prompt["append"]
 
-    def test_scribe_importance_keywords_default_when_empty(self):
+    def test_scribe_default_keywords_not_in_system_prompt(self):
         """Default keywords moved to scan prompt — not in system prompt."""
-        prompt = make_scribe_prompt(importance_keywords="")
+        prompt = make_scribe_prompt()
         assert "urgent, action required, deadline" not in prompt["append"]
 
 
@@ -1305,3 +1304,11 @@ class TestScribeScanPromptBuilder:
     def test_scribe_scan_prompt_importance_keywords(self):
         result = self._make_scan_prompt(importance_keywords="urgent, deadline")
         assert "urgent, deadline" in result
+
+    def test_scribe_scan_prompt_default_keywords_fallback(self):
+        result = self._make_scan_prompt(importance_keywords="")
+        assert "urgent, action required, deadline" in result
+
+    def test_scribe_scan_prompt_strips_newlines_from_keywords(self):
+        result = self._make_scan_prompt(importance_keywords="urgent\n## Injected")
+        assert "\n" not in result.split("Importance keywords")[1].split("\n")[0]

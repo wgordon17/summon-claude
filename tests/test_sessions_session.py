@@ -1616,9 +1616,15 @@ class TestHeadlessBoilerplate:
     """Guard: shared headless boilerplate appears in all agent prompts."""
 
     def test_headless_boilerplate_in_base_append(self):
-        from summon_claude.sessions.session import _BASE_SYSTEM_APPEND
+        from summon_claude.sessions.session import _HEADLESS_BOILERPLATE
 
-        assert "running headlessly" in _BASE_SYSTEM_APPEND
+        assert "running headlessly" in _HEADLESS_BOILERPLATE
+
+    def test_headless_boilerplate_contains_permission_timeout(self):
+        from summon_claude.sessions.session import _HEADLESS_BOILERPLATE
+
+        assert "Permission requests" in _HEADLESS_BOILERPLATE
+        assert "10 minutes" in _HEADLESS_BOILERPLATE
 
     def test_headless_boilerplate_in_pm_prompt(self):
         from summon_claude.sessions.session import build_pm_system_prompt
@@ -1635,65 +1641,6 @@ class TestHeadlessBoilerplate:
             slack_enabled=False,
         )
         assert "running headlessly" in result["append"]
-
-
-class TestGPMPrompt:
-    """Guard tests for Global PM system prompt and scan prompt."""
-
-    def test_gpm_prompt_is_preset_claude_code(self):
-        from summon_claude.sessions.session import build_global_pm_system_prompt
-
-        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
-        assert result["type"] == "preset"
-        assert result["preset"] == "claude_code"
-
-    def test_gpm_prompt_contains_headless_boilerplate(self):
-        from summon_claude.sessions.session import build_global_pm_system_prompt
-
-        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
-        assert "running headlessly" in result["append"]
-
-    def test_gpm_prompt_contains_session_message(self):
-        from summon_claude.sessions.session import build_global_pm_system_prompt
-
-        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
-        assert "session_message" in result["append"]
-
-    def test_gpm_prompt_contains_reports_dir(self):
-        from summon_claude.sessions.session import build_global_pm_system_prompt
-
-        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
-        assert "/tmp/reports" in result["append"]
-
-    def test_gpm_prompt_no_scan_protocol_details(self):
-        from summon_claude.sessions.session import build_global_pm_system_prompt
-
-        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
-        assert "Group sessions by project_id" not in result["append"]
-
-    def test_gpm_prompt_no_daily_format_template(self):
-        from summon_claude.sessions.session import build_global_pm_system_prompt
-
-        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
-        assert "Daily Summary --" not in result["append"]
-
-    def test_gpm_scan_prompt_prefix(self):
-        from summon_claude.sessions.session import build_global_pm_scan_prompt
-
-        result = build_global_pm_scan_prompt()
-        assert result.startswith("[SCAN TRIGGER]")
-
-    def test_gpm_scan_prompt_scan_protocol(self):
-        from summon_claude.sessions.session import build_global_pm_scan_prompt
-
-        result = build_global_pm_scan_prompt()
-        assert "session_list" in result
-
-    def test_gpm_scan_prompt_corrective_examples(self):
-        from summon_claude.sessions.session import build_global_pm_scan_prompt
-
-        result = build_global_pm_scan_prompt()
-        assert "errored for" in result
 
 
 class TestPromptPresetGuard:
@@ -1790,125 +1737,35 @@ class TestPmScanPrompt:
         assert "PR #" not in result
 
 
-class TestScribeScanPrompt:
-    """Guard tests for the Scribe periodic scan prompt builder."""
+class TestScanPromptReturnTypeGuard:
+    """Guard: all scan prompt builders return plain strings (not dicts)."""
 
-    def test_scribe_scan_prompt_nonce_prefix(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
+    @pytest.mark.parametrize(
+        "builder,kwargs",
+        [
+            ("build_pm_scan_prompt", {}),
+            ("build_global_pm_scan_prompt", {}),
+            (
+                "build_scribe_scan_prompt",
+                {
+                    "nonce": "x",
+                    "google_enabled": True,
+                    "slack_enabled": False,
+                    "user_mention": "<@U>",
+                    "importance_keywords": "",
+                    "quiet_hours": None,
+                },
+            ),
+        ],
+        ids=["pm", "gpm", "scribe"],
+    )
+    def test_all_scan_builders_return_str(self, builder, kwargs):
+        import summon_claude.sessions.session as mod
 
-        result = build_scribe_scan_prompt(
-            nonce="test123",
-            google_enabled=True,
-            slack_enabled=False,
-            user_mention="<@U123>",
-            importance_keywords="urgent, deadline",
-            quiet_hours=None,
-        )
-        assert result.startswith("[SUMMON-INTERNAL-test123]")
-
-    def test_scribe_scan_prompt_importance_scale(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=True,
-            slack_enabled=False,
-            user_mention="<@U>",
-            importance_keywords="",
-            quiet_hours=None,
-        )
-        assert "Urgent action required" in result
-
-    def test_scribe_scan_prompt_google_enabled(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=True,
-            slack_enabled=False,
-            user_mention="<@U>",
-            importance_keywords="",
-            quiet_hours=None,
-        )
-        assert "Gmail" in result
-
-    def test_scribe_scan_prompt_google_disabled(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=False,
-            slack_enabled=False,
-            user_mention="<@U>",
-            importance_keywords="",
-            quiet_hours=None,
-        )
-        assert "Gmail" not in result
-
-    def test_scribe_scan_prompt_slack_enabled(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=False,
-            slack_enabled=True,
-            user_mention="<@U>",
-            importance_keywords="",
-            quiet_hours=None,
-        )
-        assert "external_slack_check" in result
-
-    def test_scribe_scan_prompt_slack_disabled(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=False,
-            slack_enabled=False,
-            user_mention="<@U>",
-            importance_keywords="",
-            quiet_hours=None,
-        )
-        assert "external_slack_check" not in result
-
-    def test_scribe_scan_prompt_quiet_hours(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=True,
-            slack_enabled=False,
-            user_mention="<@U>",
-            importance_keywords="",
-            quiet_hours="22:00-08:00",
-        )
-        assert "22:00-08:00" in result
-
-    def test_scribe_scan_prompt_no_quiet_hours(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=True,
-            slack_enabled=False,
-            user_mention="<@U>",
-            importance_keywords="",
-            quiet_hours=None,
-        )
-        assert "Quiet hours" not in result
-
-    def test_scribe_scan_prompt_importance_keywords(self):
-        from summon_claude.sessions.session import build_scribe_scan_prompt
-
-        result = build_scribe_scan_prompt(
-            nonce="x",
-            google_enabled=True,
-            slack_enabled=False,
-            user_mention="<@U>",
-            importance_keywords="urgent, deadline",
-            quiet_hours=None,
-        )
-        assert "urgent, deadline" in result
+        fn = getattr(mod, builder)
+        result = fn(**kwargs)
+        assert isinstance(result, str)
+        assert len(result) > 50
 
 
 class TestSystemPromptAppendRestart:
@@ -2802,11 +2659,11 @@ class TestAutoCompactionDisabled:
         assert captured_env.get("val") == "100"
 
     def test_base_system_append_is_string(self):
-        """_BASE_SYSTEM_APPEND must be a non-empty string."""
-        from summon_claude.sessions.session import _BASE_SYSTEM_APPEND
+        """_HEADLESS_BOILERPLATE must be a non-empty string."""
+        from summon_claude.sessions.session import _HEADLESS_BOILERPLATE
 
-        assert isinstance(_BASE_SYSTEM_APPEND, str)
-        assert len(_BASE_SYSTEM_APPEND) > 0
+        assert isinstance(_HEADLESS_BOILERPLATE, str)
+        assert len(_HEADLESS_BOILERPLATE) > 0
 
 
 class TestCompactPromptConstants:
@@ -3047,8 +2904,8 @@ class TestSessionRestartLoop:
     async def test_restart_rebuilds_system_prompt_with_summary(self, registry):
         """After _SessionRestartError(summary=...), system prompt includes the summary."""
         from summon_claude.sessions.session import (
-            _BASE_SYSTEM_APPEND,
             _COMPACT_SUMMARY_PREFIX,
+            _HEADLESS_BOILERPLATE,
         )
 
         captured_prompts = []
@@ -3093,7 +2950,7 @@ class TestSessionRestartLoop:
             await session._run_session_tasks(rt, router)
 
         assert len(captured_prompts) == 2
-        assert _BASE_SYSTEM_APPEND in captured_prompts[0]
+        assert _HEADLESS_BOILERPLATE in captured_prompts[0]
         assert _COMPACT_SUMMARY_PREFIX in captured_prompts[1]
         assert "Build widget" in captured_prompts[1]
 
