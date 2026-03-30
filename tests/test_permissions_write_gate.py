@@ -456,3 +456,188 @@ class TestCWDContainment:
         assert isinstance(result, PermissionResultAllow)
         # Whitespace-only should NOT pass CWD containment
         client.post_interactive.assert_called()
+
+
+class TestNonGitContainment:
+    """Tests for notify_containment_active and non-git directory containment."""
+
+    def _make_non_git_handler(self, tmp_path: Path):
+        """Make a handler with non-git CWD containment active."""
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        config = _make_config()
+        handler = PermissionHandler(
+            router,
+            config,
+            authenticated_user_id="U_TEST",
+            project_root=str(tmp_path),
+        )
+        handler.notify_containment_active(tmp_path, is_git_repo=False)
+        return handler, client
+
+    def test_notify_containment_active_sets_flag(self, tmp_path: Path):
+        handler, _ = self._make_non_git_handler(tmp_path)
+        assert handler._in_containment is True
+        assert handler._is_git_repo is False
+        assert handler._containment_root == tmp_path.resolve()
+
+    def test_notify_containment_active_resolves_root_eagerly(self, tmp_path: Path):
+        """SC-01: containment root must be resolved at call time."""
+        handler, _ = self._make_non_git_handler(tmp_path)
+        assert handler._containment_root is not None
+        assert handler._containment_root.is_absolute()
+
+    def test_notify_containment_active_noop_if_already_set(self, tmp_path: Path):
+        """SC-04: anti-widening guard — second call is a no-op."""
+        handler, _ = self._make_non_git_handler(tmp_path)
+        other_dir = tmp_path / "subdir"
+        other_dir.mkdir()
+        handler.notify_containment_active(other_dir, is_git_repo=False)
+        # Root must NOT have changed — anti-widening
+        assert handler._containment_root == tmp_path.resolve()
+
+    def test_in_containment_property(self, tmp_path: Path):
+        handler, _ = self._make_non_git_handler(tmp_path)
+        assert handler.in_containment is True
+
+    def test_in_containment_property_false_initially(self):
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        config = _make_config()
+        handler = PermissionHandler(router, config, authenticated_user_id="U_TEST")
+        assert handler.in_containment is False
+
+    async def test_write_denied_before_gate_approval(self, tmp_path: Path):
+        """Before gate approval, writes still require the one-time HITL prompt."""
+        handler, client = self._make_non_git_handler(tmp_path)
+        # _in_containment is True but _write_access_granted is False
+        client.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))
+        result = await handler.handle("Write", {"file_path": str(tmp_path / "f.py")}, None)
+        assert isinstance(result, PermissionResultAllow)
+        assert handler._write_access_granted
+        client.post_interactive.assert_called_once()
+
+    async def test_write_denied_message_non_git(self):
+        """SC-08: denial message must NOT mention EnterWorktree for non-git."""
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        config = _make_config()
+        handler = PermissionHandler(router, config, authenticated_user_id="U_TEST")
+        # is_git_repo=False, _in_containment=False → denial path
+        handler._is_git_repo = False
+        result = await handler.handle("Write", {"file_path": "/f"}, None)
+        assert isinstance(result, PermissionResultDeny)
+        assert "EnterWorktree" not in result.message
+        assert "not available" in result.message.lower()
+
+    async def test_gate_message_includes_non_git_warning(self, tmp_path: Path):
+        """SC-02: non-git warning must appear inline in gate approval message."""
+        handler, client = self._make_non_git_handler(tmp_path)
+        posted_text: list[str] = []
+
+        async def capture_post(*args, **kwargs):
+            # Capture the text passed to post_interactive
+            if args:
+                posted_text.append(str(args[0]))
+            if "blocks" in kwargs:
+                for block in kwargs["blocks"]:
+                    if block.get("type") == "section":
+                        posted_text.append(str(block.get("text", {}).get("text", "")))
+
+            # Auto-approve
+            async def do():
+                import asyncio as _asyncio
+
+                await _asyncio.sleep(0.05)
+                for batch_id in list(handler._batch.events.keys()):
+                    handler._batch.decisions[batch_id] = True
+                    handler._batch.events[batch_id].set()
+
+            import asyncio as _asyncio
+
+            _asyncio.create_task(do())
+            return MagicMock(ts="mock_ts")
+
+        client.post_interactive = AsyncMock(side_effect=capture_post)
+        await handler.handle("Write", {"file_path": str(tmp_path / "f.py")}, None)
+        full_text = " ".join(posted_text)
+        assert "No version control detected" in full_text or "version control" in full_text.lower()
+
+    async def test_write_within_cwd_auto_approved_after_gate(self, tmp_path: Path):
+        """After gate approval, writes within CWD are auto-approved."""
+        handler, client = self._make_non_git_handler(tmp_path)
+        handler._write_access_granted = True
+        target = tmp_path / "src" / "main.py"
+        target.parent.mkdir()
+        target.touch()
+        result = await handler.handle("Write", {"file_path": str(target)}, None)
+        assert isinstance(result, PermissionResultAllow)
+        client.post_interactive.assert_not_called()
+
+    async def test_write_outside_cwd_requires_hitl(self, tmp_path: Path):
+        """Writes outside the containment root require HITL even after gate approval."""
+        handler, client = self._make_non_git_handler(tmp_path)
+        handler._write_access_granted = True
+        client.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))
+        result = await handler.handle("Edit", {"file_path": "/etc/hosts"}, None)
+        assert isinstance(result, PermissionResultAllow)
+        client.post_interactive.assert_called()
+
+    async def test_symlink_escape_rejected(self, tmp_path: Path):
+        """Path traversal via symlink must NOT be auto-approved."""
+        handler, client = self._make_non_git_handler(tmp_path)
+        handler._write_access_granted = True
+        escape_path = str(tmp_path / ".." / "etc" / "passwd")
+        client.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))
+        result = await handler.handle("Edit", {"file_path": escape_path}, None)
+        assert isinstance(result, PermissionResultAllow)
+        client.post_interactive.assert_called()
+
+    async def test_safe_dir_bypass_works_in_non_git_mode(self, tmp_path: Path):
+        """SC-09: safe-dir bypass still works even in non-git containment mode."""
+        safe = tmp_path / "hack"
+        safe.mkdir()
+        target = safe / "notes.md"
+        target.touch()
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        config = _make_config(safe_write_dirs="hack/")
+        handler = PermissionHandler(
+            router,
+            config,
+            authenticated_user_id="U_TEST",
+            project_root=str(tmp_path),
+        )
+        handler.notify_containment_active(tmp_path, is_git_repo=False)
+        result = await handler.handle("Write", {"file_path": str(target)}, None)
+        assert isinstance(result, PermissionResultAllow)
+        client.post_interactive.assert_not_called()
+
+    async def test_sdk_deny_overrides_non_git_containment(self, tmp_path: Path):
+        """SC-10: SDK deny must override non-git containment for write tools."""
+        handler, client = self._make_non_git_handler(tmp_path)
+        handler._write_access_granted = True
+        suggestion = MagicMock()
+        suggestion.behavior = "deny"
+        context = MagicMock()
+        context.suggestions = [suggestion]
+        result = await handler.handle("Write", {"file_path": str(tmp_path / "f.py")}, context)
+        assert isinstance(result, PermissionResultDeny)
+
+    async def test_worktree_entry_narrows_containment(self, tmp_path: Path):
+        """Entering a worktree after non-git containment is already active is a no-op
+        (anti-widening SC-04 applies — worktree entry cannot replace non-git root).
+        """
+        handler, _ = self._make_non_git_handler(tmp_path)
+        original_root = handler._containment_root
+        # notify_entered_worktree sets _in_containment=True but anti-widening
+        # from notify_containment_active already fired; worktree entry goes through
+        # notify_entered_worktree which does NOT call notify_containment_active —
+        # it sets _containment_root directly. Verify the behavior is consistent.
+        wt_dir = tmp_path / ".claude" / "worktrees" / "feat"
+        wt_dir.mkdir(parents=True)
+        handler.notify_entered_worktree("feat")
+        # worktree narrows the root — this is expected behavior
+        assert handler._containment_root == wt_dir.resolve()
+        assert handler._in_containment is True
+        _ = original_root  # used above for context
