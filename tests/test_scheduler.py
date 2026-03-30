@@ -304,6 +304,7 @@ class TestGuardTests:
             "task",
             "created_at",
             "max_lifetime_s",
+            "db_session_id",
         }
 
     def test_scheduler_constants(self) -> None:
@@ -612,6 +613,64 @@ class TestSchedulerPersistence:
             assert len(jobs) == 1
             assert jobs[0].id == "mf-job-001"
             assert jobs[0].prompt == "survive migration failure"
+            sched.cancel_all()
+
+    async def test_run_job_deletes_from_correct_session_after_fallback(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """After migration-failure restore, _run_job deletes DB rows using the old session_id."""
+        db_path = tmp_path / "run_job_fallback_test.db"
+        session_a = "runjob-fb-a-001"
+        session_b = "runjob-fb-b-001"
+
+        async with SessionRegistry(db_path=db_path) as reg:
+            await reg.register(session_a, 1111, "/tmp")
+            await reg.save_scheduled_job(
+                session_id=session_a,
+                job_id="fb-fire-job",
+                cron_expr="*/5 * * * *",
+                prompt="fire after fallback",
+                recurring=False,
+                max_lifetime_s=86400,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            await reg.register(session_b, 2222, "/tmp")
+
+            sched = SessionScheduler(
+                asyncio.Queue(maxsize=100),
+                asyncio.Event(),
+                registry=reg,
+                session_id=session_b,
+                resume_from_session_id=session_a,
+            )
+
+            # Force migration failure — rows stay under session A
+            with patch.object(reg, "migrate_scheduled_jobs", side_effect=RuntimeError("boom")):
+                await sched.restore_from_db()
+
+            assert len(sched.list_jobs()) == 1
+            job = sched.list_jobs()[0]
+
+            # Cancel the original task and fire with patched CronSim
+            if job.task:
+                job.task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await job.task
+
+            now = datetime.now().astimezone()
+            immediate = now + timedelta(milliseconds=10)
+
+            with patch("summon_claude.sessions.scheduler.CronSim") as mock_cronsim:
+                mock_cronsim.return_value = iter([immediate])
+                job.task = asyncio.create_task(sched._run_job(job))
+                await asyncio.wait_for(sched._event_queue.get(), timeout=2.0)
+                await asyncio.sleep(0.1)
+
+            # Job removed from memory
+            assert "fb-fire-job" not in {j.id for j in sched.list_jobs()}
+            # DB row deleted from session A (the owning session), not session B
+            assert await reg.list_scheduled_jobs(session_a) == []
             sched.cancel_all()
 
     async def test_restore_fallback_corrupt_row_uses_old_session_id(

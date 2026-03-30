@@ -31,6 +31,7 @@ class ScheduledJob:
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     max_lifetime_s: int = 86400  # 24h default, 0 = no limit for internal
+    db_session_id: str | None = field(default=None, repr=False)  # owning session for DB ops
 
 
 def explain_cron(cron_expr: str) -> tuple[str, str]:
@@ -265,7 +266,11 @@ class SessionScheduler:
                     if elapsed >= job.max_lifetime_s:
                         logger.info("Job %s expired after %ds", job.id, job.max_lifetime_s)
                         if self._should_persist(job):
-                            await self._delete_job_from_db(job.id, "expired")
+                            await self._delete_job_from_db(
+                                job.id,
+                                "expired",
+                                session_id=job.db_session_id,
+                            )
                         self._jobs.pop(job.id, None)
                         if self.on_change:
                             await self.on_change()
@@ -278,7 +283,11 @@ class SessionScheduler:
                 except StopIteration:
                     logger.info("Job %s has no future fire times", job.id)
                     if self._should_persist(job):
-                        await self._delete_job_from_db(job.id, "exhausted")
+                        await self._delete_job_from_db(
+                            job.id,
+                            "exhausted",
+                            session_id=job.db_session_id,
+                        )
                     self._jobs.pop(job.id, None)
                     if self.on_change:
                         await self.on_change()
@@ -315,7 +324,11 @@ class SessionScheduler:
 
                 if not job.recurring:
                     if self._should_persist(job):
-                        await self._delete_job_from_db(job.id, "one-shot")
+                        await self._delete_job_from_db(
+                            job.id,
+                            "one-shot",
+                            session_id=job.db_session_id,
+                        )
                     self._jobs.pop(job.id, None)
                     if self.on_change:
                         await self.on_change()
@@ -448,6 +461,7 @@ class SessionScheduler:
                     internal=False,
                     max_lifetime_s=row["max_lifetime_s"],
                     created_at=created_at,
+                    db_session_id=rows_session_id,
                 )
                 job.task = asyncio.create_task(self._run_job(job))
                 self._jobs[job_id] = job
