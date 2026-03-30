@@ -2377,6 +2377,7 @@ class SummonSession:
         # first tool use, not at startup. If the remote server is unreachable,
         # individual tool calls return errors and Claude adapts. If the SDK
         # subprocess itself fails to start, the session error handler catches it.
+        gh_mcp: dict | None = None
         if not is_scribe:
             gh_mcp = self._config.github_mcp_config()
             if gh_mcp:
