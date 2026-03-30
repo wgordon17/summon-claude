@@ -51,7 +51,7 @@ Scheduled jobs and tasks auto-sync to the channel canvas. \
 System jobs (scan timers) are visible but cannot be deleted. \
 Mark tasks as 'completed' via TaskUpdate when done — completed tasks \
 stay visible (strikethrough) but keep the list manageable. \
-If context compaction occurs, you will be prompted to re-create any lost scheduled jobs."""
+Scheduled jobs automatically persist across context compaction and session resumes."""
 
 # Maximum characters for a compaction summary injected into the system prompt.
 _MAX_COMPACT_SUMMARY_CHARS = 50_000

@@ -653,6 +653,21 @@ class TestScheduledJobs:
                 created_at="2026-01-01T10:00:00",
             )
 
+    async def test_save_accepts_negative_utc_offset(self, registry):
+        """Negative UTC offsets like -05:00 are valid timezone-aware ISO 8601."""
+        await registry.register("sess-sj-neg", 111, "/tmp")
+        await registry.save_scheduled_job(
+            session_id="sess-sj-neg",
+            job_id="job-neg-tz",
+            cron_expr="*/5 * * * *",
+            prompt="test",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at="2026-01-01T10:00:00-05:00",
+        )
+        jobs = await registry.list_scheduled_jobs("sess-sj-neg")
+        assert len(jobs) == 1
+
     async def test_scheduled_jobs_schema_columns(self, registry):
         """Pin the column set of scheduled_jobs via PRAGMA table_info."""
         db = registry._check_connected()

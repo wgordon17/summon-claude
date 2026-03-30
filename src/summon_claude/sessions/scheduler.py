@@ -375,6 +375,12 @@ class SessionScheduler:
             if job_id in self._jobs:
                 continue  # idempotency guard
 
+            # Enforce agent job cap even on restore
+            agent_count = sum(1 for j in self._jobs.values() if not j.internal)
+            if agent_count >= self._MAX_AGENT_JOBS:
+                logger.warning("Cap reached during restore, skipping job %s", job_id)
+                break
+
             try:
                 # Validate cron expression
                 CronSim(row["cron_expr"], datetime.now().astimezone())

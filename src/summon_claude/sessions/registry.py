@@ -705,7 +705,11 @@ class SessionRegistry:
             raise ValueError("job_id must not be empty")
         if not session_id:
             raise ValueError("session_id must not be empty")
-        if "+" not in created_at and not created_at.endswith("Z"):
+        try:
+            dt = datetime.fromisoformat(created_at)
+        except ValueError as e:
+            raise ValueError(f"created_at must be valid ISO 8601: {e}") from e
+        if dt.tzinfo is None:
             raise ValueError("created_at must be timezone-aware ISO 8601")
         db = self._check_connected()
         async with self._lock:
