@@ -1639,6 +1639,65 @@ class TestHeadlessBoilerplate:
         assert "running headlessly" in result["append"]
 
 
+class TestGPMPrompt:
+    """Guard tests for Global PM system prompt and scan prompt."""
+
+    def test_gpm_prompt_is_preset_claude_code(self):
+        from summon_claude.sessions.session import build_global_pm_system_prompt
+
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert result["type"] == "preset"
+        assert result["preset"] == "claude_code"
+
+    def test_gpm_prompt_contains_headless_boilerplate(self):
+        from summon_claude.sessions.session import build_global_pm_system_prompt
+
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "running headlessly" in result["append"]
+
+    def test_gpm_prompt_contains_session_message(self):
+        from summon_claude.sessions.session import build_global_pm_system_prompt
+
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "session_message" in result["append"]
+
+    def test_gpm_prompt_contains_reports_dir(self):
+        from summon_claude.sessions.session import build_global_pm_system_prompt
+
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "/tmp/reports" in result["append"]
+
+    def test_gpm_prompt_no_scan_protocol_details(self):
+        from summon_claude.sessions.session import build_global_pm_system_prompt
+
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "Group sessions by project_id" not in result["append"]
+
+    def test_gpm_prompt_no_daily_format_template(self):
+        from summon_claude.sessions.session import build_global_pm_system_prompt
+
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "Daily Summary --" not in result["append"]
+
+    def test_gpm_scan_prompt_prefix(self):
+        from summon_claude.sessions.session import build_global_pm_scan_prompt
+
+        result = build_global_pm_scan_prompt()
+        assert result.startswith("[SCAN TRIGGER]")
+
+    def test_gpm_scan_prompt_scan_protocol(self):
+        from summon_claude.sessions.session import build_global_pm_scan_prompt
+
+        result = build_global_pm_scan_prompt()
+        assert "session_list" in result
+
+    def test_gpm_scan_prompt_corrective_examples(self):
+        from summon_claude.sessions.session import build_global_pm_scan_prompt
+
+        result = build_global_pm_scan_prompt()
+        assert "errored for" in result
+
+
 class TestSystemPromptAppendRestart:
     """Verify system_prompt_append survives compaction restarts."""
 
