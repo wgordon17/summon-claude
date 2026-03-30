@@ -229,7 +229,12 @@ class SessionScheduler:
         *,
         session_id: str | None = None,
     ) -> None:
-        """Best-effort delete of a scheduled job from DB."""
+        """Best-effort delete of a scheduled job from DB.
+
+        Pass *session_id* to override ``self._session_id`` — used in
+        ``restore_from_db`` when rows are still owned by the old session
+        after a failed FK migration.
+        """
         sid = session_id or self._session_id
         if self._registry is None or sid is None:
             return

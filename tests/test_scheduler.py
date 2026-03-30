@@ -531,6 +531,9 @@ class TestSchedulerPersistence:
 
         await sched.restore_from_db()
         assert len(sched.list_jobs()) == SessionScheduler._MAX_AGENT_JOBS  # 10
+        # Overflow rows remain in DB (not deleted by cap enforcement)
+        db_jobs = await reg.list_scheduled_jobs(session_id)
+        assert len(db_jobs) == 12
         sched.cancel_all()
 
     async def test_restore_skips_and_deletes_corrupt_rows(
@@ -572,6 +575,98 @@ class TestSchedulerPersistence:
         assert len(db_jobs) == 1
         assert db_jobs[0]["id"] == "valid-job-001"
         sched.cancel_all()
+
+    async def test_restore_fallback_migration_failure(self, tmp_path: Path) -> None:
+        """When FK migration fails, jobs are still restored from old session data."""
+        db_path = tmp_path / "migrate_fail_test.db"
+        session_a = "migrate-fail-a-001"
+        session_b = "migrate-fail-b-001"
+
+        async with SessionRegistry(db_path=db_path) as reg:
+            await reg.register(session_a, 1111, "/tmp")
+            await reg.save_scheduled_job(
+                session_id=session_a,
+                job_id="mf-job-001",
+                cron_expr="*/5 * * * *",
+                prompt="survive migration failure",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            await reg.register(session_b, 2222, "/tmp")
+
+            sched = SessionScheduler(
+                asyncio.Queue(maxsize=100),
+                asyncio.Event(),
+                registry=reg,
+                session_id=session_b,
+                resume_from_session_id=session_a,
+            )
+
+            # Patch migrate to raise, forcing the fallback path
+            with patch.object(reg, "migrate_scheduled_jobs", side_effect=RuntimeError("boom")):
+                await sched.restore_from_db()
+
+            # Jobs still restored from old session data
+            jobs = sched.list_jobs()
+            assert len(jobs) == 1
+            assert jobs[0].id == "mf-job-001"
+            assert jobs[0].prompt == "survive migration failure"
+            sched.cancel_all()
+
+    async def test_restore_fallback_corrupt_row_uses_old_session_id(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Corrupt-row cleanup after migration failure deletes from the OLD session."""
+        db_path = tmp_path / "corrupt_fallback_test.db"
+        session_a = "corrupt-fb-a-001"
+        session_b = "corrupt-fb-b-001"
+
+        async with SessionRegistry(db_path=db_path) as reg:
+            await reg.register(session_a, 1111, "/tmp")
+            # One valid row + one corrupt row under session A
+            await reg.save_scheduled_job(
+                session_id=session_a,
+                job_id="good-job",
+                cron_expr="*/5 * * * *",
+                prompt="valid",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            await reg.save_scheduled_job(
+                session_id=session_a,
+                job_id="bad-job",
+                cron_expr="99 99 99 99 99",
+                prompt="corrupt",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            await reg.register(session_b, 2222, "/tmp")
+
+            sched = SessionScheduler(
+                asyncio.Queue(maxsize=100),
+                asyncio.Event(),
+                registry=reg,
+                session_id=session_b,
+                resume_from_session_id=session_a,
+            )
+
+            # Patch migrate to raise, forcing fallback (rows stay under session A)
+            with patch.object(reg, "migrate_scheduled_jobs", side_effect=RuntimeError("boom")):
+                await sched.restore_from_db()
+
+            # Valid job restored, corrupt job skipped
+            assert len(sched.list_jobs()) == 1
+            assert sched.list_jobs()[0].id == "good-job"
+
+            # Corrupt row deleted from session A (not session B)
+            a_jobs = await reg.list_scheduled_jobs(session_a)
+            assert len(a_jobs) == 1
+            assert a_jobs[0]["id"] == "good-job"
+            sched.cancel_all()
 
 
 class TestCronPersistenceIntegration:
