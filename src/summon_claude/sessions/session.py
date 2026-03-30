@@ -610,7 +610,6 @@ def build_scribe_system_prompt(
         _SCRIBE_SYSTEM_PROMPT_APPEND.replace("{scan_interval}", str(scan_interval))
         .replace("{google_section}", google_section)
         .replace("{external_slack_section}", external_slack_section)
-        .replace("{summary}", "{summary}")  # literal — keep as-is in note-taking section
     )
     return {
         "type": "preset",

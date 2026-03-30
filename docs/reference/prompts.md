@@ -1,6 +1,6 @@
 # Prompts
 
-These are the actual system prompts summon-claude uses for each agent type. They are extracted directly from the source code — what you see here is exactly what Claude receives.
+Reference documentation for summon-claude agent prompts. System prompts and scan timer prompts are summarized below — see the source constants in `src/summon_claude/sessions/session.py` for the full verbatim text.
 
 After the prompt audit (2026-03-29), system prompts contain only **identity + capabilities + constraints + security**. Procedural content (scan protocols, formatting templates, checklists) moved to **timer prompts** that fire with each scan cycle.
 

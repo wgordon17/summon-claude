@@ -1779,6 +1779,8 @@ class TestPmScanPrompt:
         result = build_pm_scan_prompt(github_enabled=True)
         assert "REVIEW TEMPLATE" in result
         assert "review-pr" in result
+        assert "NEVER force-push" in result
+        assert "NEVER push to main" in result
 
     def test_pm_scan_prompt_no_pr_without_github(self):
         from summon_claude.sessions.session import build_pm_scan_prompt
