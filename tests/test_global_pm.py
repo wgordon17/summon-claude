@@ -13,6 +13,7 @@ from summon_claude.config import SummonConfig, get_reports_dir
 from summon_claude.sessions.session import (
     SessionOptions,
     SummonSession,
+    build_global_pm_scan_prompt,
     build_global_pm_system_prompt,
 )
 
@@ -130,10 +131,37 @@ class TestGlobalPMSystemPrompt:
         assert prompt["type"] == "preset"
         assert prompt["preset"] == "claude_code"
         assert "Global Project Manager" in prompt["append"]
-        assert "Periodic scanning" in prompt["append"]
-        assert "Misbehavior detection" in prompt["append"]
-        assert "Corrective messaging" in prompt["append"]
+        # Numbered responsibilities moved to timer prompt — verify absent from system prompt
+        assert "Periodic scanning" not in prompt["append"]
+        assert "Misbehavior detection" not in prompt["append"]
+        assert "Corrective messaging" not in prompt["append"]
+        # Timer awareness text stays
         assert "Daily summaries" in prompt["append"]
+
+    def test_gpm_prompt_is_preset_claude_code(self):
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert result["type"] == "preset"
+        assert result["preset"] == "claude_code"
+
+    def test_gpm_prompt_contains_headless_boilerplate(self):
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "running headlessly" in result["append"]
+
+    def test_gpm_prompt_contains_session_message(self):
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "session_message" in result["append"]
+
+    def test_gpm_prompt_contains_reports_dir(self):
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "/tmp/reports" in result["append"]
+
+    def test_gpm_prompt_no_scan_protocol_details(self):
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "Group sessions by project_id" not in result["append"]
+
+    def test_gpm_prompt_no_daily_format_template(self):
+        result = build_global_pm_system_prompt(reports_dir="/tmp/reports")
+        assert "Daily Summary --" not in result["append"]
 
     def test_prompt_interpolates_reports_dir(self):
         prompt = build_global_pm_system_prompt(reports_dir="/custom/reports")
@@ -506,5 +534,25 @@ class TestDailySummary:
     def test_prompt_includes_summary_guidance(self):
         prompt = build_global_pm_system_prompt(reports_dir="/tmp/reports")
         text = prompt["append"]
-        assert "Daily summary" in text or "daily summary" in text
+        # Format template moved to timer prompt; timer awareness wording stays
+        assert "Daily summaries" in text
         assert "Reports directory" in text
+
+
+# ---------------------------------------------------------------------------
+# GPM scan prompt tests
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalPMScanPrompt:
+    def test_gpm_scan_prompt_prefix(self):
+        result = build_global_pm_scan_prompt()
+        assert result.startswith("[SCAN TRIGGER]")
+
+    def test_gpm_scan_prompt_scan_protocol(self):
+        result = build_global_pm_scan_prompt()
+        assert "session_list" in result
+
+    def test_gpm_scan_prompt_corrective_examples(self):
+        result = build_global_pm_scan_prompt()
+        assert "errored for" in result
