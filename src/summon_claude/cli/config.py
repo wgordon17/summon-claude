@@ -19,6 +19,7 @@ from summon_claude.config import (
     _BOOL_FALSE,
     _BOOL_TRUE,
     CONFIG_OPTIONS,
+    _not_explicitly_disabled,
     find_workspace_mcp_bin,
     get_config_file,
     get_data_dir,
@@ -871,7 +872,7 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
         logging.getLogger(__name__).debug("Hook bridge check error", exc_info=True)
 
     # Scribe → Google auth nudge
-    scribe_on = config_values.get("SUMMON_SCRIBE_ENABLED", "").lower() in _BOOL_TRUE
+    scribe_on = _not_explicitly_disabled(config_values.get("SUMMON_SCRIBE_ENABLED", ""))
     if scribe_on:
         try:
             google_dir = get_google_credentials_dir()

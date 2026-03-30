@@ -17,9 +17,9 @@ def _make_config(**overrides) -> SummonConfig:
 
 
 class TestScribeConfigDefaults:
-    def test_scribe_disabled_by_default(self):
+    def test_scribe_enabled_by_default(self):
         cfg = _make_config()
-        assert cfg.scribe_enabled is False
+        assert cfg.scribe_enabled is True
 
     def test_scan_interval_default(self):
         cfg = _make_config()
@@ -41,17 +41,17 @@ class TestScribeConfigDefaults:
         cfg = _make_config()
         assert cfg.scribe_quiet_hours == ""
 
-    def test_google_enabled_default_false(self):
+    def test_google_enabled_by_default(self):
         cfg = _make_config()
-        assert cfg.scribe_google_enabled is False
+        assert cfg.scribe_google_enabled is True
 
     def test_google_services_default(self):
         cfg = _make_config()
         assert cfg.scribe_google_services == "gmail,calendar,drive"
 
-    def test_slack_disabled_by_default(self):
+    def test_slack_enabled_by_default(self):
         cfg = _make_config()
-        assert cfg.scribe_slack_enabled is False
+        assert cfg.scribe_slack_enabled is True
 
     def test_slack_browser_default(self):
         cfg = _make_config()

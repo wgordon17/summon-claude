@@ -441,7 +441,7 @@ class SummonConfig(BaseSettings):
     # ------------------------------------------------------------------
 
     # Core scribe settings
-    scribe_enabled: bool = False
+    scribe_enabled: bool = True
     scribe_scan_interval_minutes: int = 5
     scribe_cwd: str | None = None  # None -> get_data_dir() / "scribe"
     scribe_model: str | None = None  # None -> inherit default_model
@@ -449,11 +449,11 @@ class SummonConfig(BaseSettings):
     scribe_quiet_hours: str = ""  # "22:00-07:00" — only level-5 alerts during this window
 
     # Google Workspace data collector (requires workspace-mcp optional dep)
-    scribe_google_enabled: bool = False
+    scribe_google_enabled: bool = True
     scribe_google_services: str = "gmail,calendar,drive"  # comma-separated service list
 
     # External Slack data collector
-    scribe_slack_enabled: bool = False
+    scribe_slack_enabled: bool = True
     scribe_slack_browser: str = "chrome"  # "chrome", "firefox", or "webkit"
     scribe_slack_monitored_channels: str = ""  # comma-separated channel IDs (e.g. "C01ABC,C02DEF")
 
@@ -725,19 +725,24 @@ def _is_truthy(value: str) -> bool:
     return value.lower() in _BOOL_TRUE
 
 
+def _not_explicitly_disabled(value: str) -> bool:
+    """True unless explicitly set to a falsy value (false/0/no/off)."""
+    return value.lower() not in _BOOL_FALSE if value else True
+
+
 def _workspace_mcp_installed() -> bool:
     """Check if workspace-mcp binary is available (not importable as a Python package)."""
     return find_workspace_mcp_bin().exists()
 
 
 def _scribe_enabled(cfg: dict[str, str]) -> bool:
-    return _is_truthy(cfg.get("SUMMON_SCRIBE_ENABLED", ""))
+    return _not_explicitly_disabled(cfg.get("SUMMON_SCRIBE_ENABLED", ""))
 
 
 def _scribe_google_enabled(cfg: dict[str, str]) -> bool:
     return (
         _scribe_enabled(cfg)
-        and _is_truthy(cfg.get("SUMMON_SCRIBE_GOOGLE_ENABLED", ""))
+        and _not_explicitly_disabled(cfg.get("SUMMON_SCRIBE_GOOGLE_ENABLED", ""))
         and _workspace_mcp_installed()
     )
 
@@ -745,7 +750,7 @@ def _scribe_google_enabled(cfg: dict[str, str]) -> bool:
 def _scribe_slack_enabled(cfg: dict[str, str]) -> bool:
     return (
         _scribe_enabled(cfg)
-        and _is_truthy(cfg.get("SUMMON_SCRIBE_SLACK_ENABLED", ""))
+        and _not_explicitly_disabled(cfg.get("SUMMON_SCRIBE_SLACK_ENABLED", ""))
         and is_extra_installed("playwright")
     )
 

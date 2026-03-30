@@ -122,8 +122,8 @@ class TestConfigOptionVisibility:
     """Test visibility predicates for conditional options."""
 
     def test_scribe_options_hidden_when_disabled(self):
-        """Scribe sub-options should not be visible when scribe_enabled is false."""
-        cfg: dict[str, str] = {}
+        """Scribe sub-options should not be visible when scribe_enabled is explicitly false."""
+        cfg = {"SUMMON_SCRIBE_ENABLED": "false"}
         for opt in CONFIG_OPTIONS:
             if (
                 opt.group.startswith("Scribe")
@@ -147,20 +147,22 @@ class TestConfigOptionVisibility:
                 f"ConfigOption {opt.env_key!r} should be visible when scribe is enabled"
             )
 
-    def test_scribe_slack_options_need_both_flags_and_playwright(self):
-        """Scribe Slack browser/channels need both flags plus playwright installed."""
-        cfg_scribe_only = {"SUMMON_SCRIBE_ENABLED": "true"}
-        cfg_both = {"SUMMON_SCRIBE_ENABLED": "true", "SUMMON_SCRIBE_SLACK_ENABLED": "true"}
+    def test_scribe_slack_options_need_playwright(self):
+        """Scribe Slack browser/channels need playwright installed (auto-enabled by default)."""
+        cfg = {"SUMMON_SCRIBE_ENABLED": "true"}
+        cfg_slack_off = {"SUMMON_SCRIBE_ENABLED": "true", "SUMMON_SCRIBE_SLACK_ENABLED": "false"}
 
         browser_opt = next(o for o in CONFIG_OPTIONS if o.field_name == "scribe_slack_browser")
         assert browser_opt.visible is not None
-        assert not browser_opt.visible(cfg_scribe_only)
-        # With playwright importable, both flags should make it visible
+        # Auto-enabled: visible when playwright is installed
         with patch("summon_claude.config.is_extra_installed", return_value=True):
-            assert browser_opt.visible(cfg_both)
-        # Without playwright, still hidden even with both flags
+            assert browser_opt.visible(cfg)
+        # Hidden when playwright is missing
         with patch("summon_claude.config.is_extra_installed", return_value=False):
-            assert not browser_opt.visible(cfg_both)
+            assert not browser_opt.visible(cfg)
+        # Hidden when explicitly disabled, even with playwright
+        with patch("summon_claude.config.is_extra_installed", return_value=True):
+            assert not browser_opt.visible(cfg_slack_off)
 
     @pytest.mark.parametrize("bool_value", ["true", "1", "yes", "on", "True", "YES", "ON"])
     def test_scribe_enabled_accepts_truthy_values(self, bool_value: str):
@@ -182,9 +184,9 @@ class TestVisibilityGracefulDegradation:
         with patch("summon_claude.config._workspace_mcp_installed", return_value=False):
             assert not google_opt.visible(cfg)
 
-    def test_scribe_google_services_hidden_without_google_enabled(self):
-        """scribe_google_services hidden when SCRIBE_GOOGLE_ENABLED is false."""
-        cfg = {"SUMMON_SCRIBE_ENABLED": "true"}  # GOOGLE_ENABLED not set
+    def test_scribe_google_services_hidden_when_explicitly_disabled(self):
+        """scribe_google_services hidden when SCRIBE_GOOGLE_ENABLED is explicitly false."""
+        cfg = {"SUMMON_SCRIBE_ENABLED": "true", "SUMMON_SCRIBE_GOOGLE_ENABLED": "false"}
         google_opt = next(o for o in CONFIG_OPTIONS if o.field_name == "scribe_google_services")
         with patch("summon_claude.config._workspace_mcp_installed", return_value=True):
             assert not google_opt.visible(cfg)
@@ -224,11 +226,11 @@ class TestConfigShowIntegration:
             assert opt.env_key in out, f"{opt.env_key} missing from config show output"
 
     def test_config_show_hides_scribe_shows_hint(self, tmp_path, capsys):
-        """config show hides scribe sub-options and shows disabled hint."""
+        """config show hides scribe sub-options when explicitly disabled."""
         from summon_claude.cli.config import config_show
 
         config_file = tmp_path / "config.env"
-        config_file.write_text("")
+        config_file.write_text("SUMMON_SCRIBE_ENABLED=false\n")
 
         with patch("summon_claude.cli.config.get_config_file", return_value=config_file):
             config_show(color=False)

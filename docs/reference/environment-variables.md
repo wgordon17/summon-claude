@@ -47,7 +47,7 @@ Core settings for the background scribe agent. See [Scribe](../guide/scribe.md) 
 
 | Config Key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `SUMMON_SCRIBE_ENABLED` | boolean | `false` | Enable the background scribe agent. |
+| `SUMMON_SCRIBE_ENABLED` | boolean | `true` | Enable the background scribe agent. |
 | `SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES` | integer | `5` | How often the scribe scans for new information. Minimum 1. |
 | `SUMMON_SCRIBE_CWD` | text | _(data dir)/scribe_ | Working directory for the scribe session. |
 | `SUMMON_SCRIBE_MODEL` | text | _(inherits default model)_ | Model override for the scribe session. |
@@ -60,7 +60,7 @@ Google Workspace data collector settings. Requires the `google` optional extra (
 
 | Config Key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `SUMMON_SCRIBE_GOOGLE_ENABLED` | boolean | `false` | Enable the Google Workspace data collector for scribe. |
+| `SUMMON_SCRIBE_GOOGLE_ENABLED` | boolean | `true` | Enable the Google Workspace data collector for scribe. |
 | `SUMMON_SCRIBE_GOOGLE_SERVICES` | text | `gmail,calendar,drive` | Comma-separated list of Google services to monitor. Valid values: `gmail`, `drive`, `calendar`, `docs`, `sheets`, `chat`, `forms`, `slides`, `tasks`, `contacts`, `search`, `appscript`. |
 
 ### Scribe Slack
@@ -69,7 +69,7 @@ Slack monitoring via browser automation. Requires the `slack-browser` optional e
 
 | Config Key | Type | Default | Description |
 |------------|------|---------|-------------|
-| `SUMMON_SCRIBE_SLACK_ENABLED` | boolean | `false` | Enable the Slack data collector (uses Playwright browser automation). |
+| `SUMMON_SCRIBE_SLACK_ENABLED` | boolean | `true` | Enable the Slack data collector (uses Playwright browser automation). |
 | `SUMMON_SCRIBE_SLACK_BROWSER` | choice: `chrome`, `firefox`, `webkit` | `chrome` | Browser for Slack monitoring. |
 | `SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS` | text | _(empty)_ | Comma-separated Slack channel names to monitor. |
 

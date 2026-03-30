@@ -1208,6 +1208,40 @@ class SessionManager:
         # No suspended scribe found — start fresh
         self._start_scribe_if_enabled(user_id)
 
+    def _resolve_scribe_config(self) -> SummonConfig:
+        """Return a config with collectors disabled when their deps/creds are missing."""
+        overrides: dict[str, object] = {}
+
+        if self._config.scribe_google_enabled and self._config.scribe_google_services:
+            from summon_claude.config import find_workspace_mcp_bin  # noqa: PLC0415
+
+            if not find_workspace_mcp_bin().exists():
+                logger.info("Scribe Google collector disabled: install summon-claude[google]")
+                overrides["scribe_google_enabled"] = False
+            else:
+                from summon_claude.config import get_google_credentials_dir  # noqa: PLC0415
+
+                creds_dir = get_google_credentials_dir()
+                if not creds_dir.is_dir() or not any(creds_dir.glob("*.json")):
+                    logger.info("Scribe Google collector disabled: run 'summon auth google login'")
+                    overrides["scribe_google_enabled"] = False
+
+        if self._config.scribe_slack_enabled:
+            import importlib.util  # noqa: PLC0415
+
+            if importlib.util.find_spec("playwright") is None:
+                logger.info("Scribe Slack collector disabled: install summon-claude[slack-browser]")
+                overrides["scribe_slack_enabled"] = False
+            else:
+                from summon_claude.config import get_workspace_config_path  # noqa: PLC0415
+
+                ws_config = get_workspace_config_path()
+                if not ws_config.is_file():
+                    logger.info("Scribe Slack collector disabled: run 'summon auth slack login'")
+                    overrides["scribe_slack_enabled"] = False
+
+        return self._config.model_copy(update=overrides) if overrides else self._config
+
     def _start_scribe_if_enabled(self, user_id: str) -> None:
         """Spawn the global Scribe session if configured and not already running."""
         if not self._config.scribe_enabled:
@@ -1219,38 +1253,7 @@ class SessionManager:
                 logger.info("SessionManager: scribe already running — skipping")
                 return
 
-        # Pre-flight: validate dependencies before spawning.
-        # workspace-mcp uses bare top-level modules (not a 'workspace_mcp' package),
-        # so find_spec('workspace_mcp') always returns None. Use the binary check.
-        if self._config.scribe_google_enabled and self._config.scribe_google_services:
-            from summon_claude.config import find_workspace_mcp_bin  # noqa: PLC0415
-
-            if not find_workspace_mcp_bin().exists():
-                logger.error("Scribe requires Google support: pip install summon-claude[google]")
-                return
-            # Check for OAuth credentials
-            from summon_claude.config import get_google_credentials_dir  # noqa: PLC0415
-
-            creds_dir = get_google_credentials_dir()
-            if not creds_dir.is_dir() or not any(creds_dir.glob("*.json")):
-                logger.error("Run 'summon auth google login' before starting scribe")
-                return
-
-        if self._config.scribe_slack_enabled:
-            import importlib.util  # noqa: PLC0415
-
-            if importlib.util.find_spec("playwright") is None:
-                logger.error(
-                    "Scribe Slack support requires: pip install summon-claude[slack-browser]"
-                )
-                return
-            # Check for Slack auth state
-            from summon_claude.config import get_workspace_config_path  # noqa: PLC0415
-
-            ws_config = get_workspace_config_path()
-            if not ws_config.is_file():
-                logger.error("Run 'summon auth slack login' before enabling scribe Slack")
-                return
+        effective_config = self._resolve_scribe_config()
 
         # Resolve CWD
         scribe_cwd = self._config.scribe_cwd or str(get_data_dir() / "scribe")
@@ -1265,7 +1268,7 @@ class SessionManager:
             scan_interval_s=max(60, self._config.scribe_scan_interval_minutes * 60),
         )
         new_session = SummonSession(
-            config=self._config,
+            config=effective_config,
             options=scribe_options,
             auth=None,
             session_id=new_session_id,

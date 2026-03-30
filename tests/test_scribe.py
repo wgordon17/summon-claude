@@ -5,6 +5,7 @@ Covers C12 (Phase 1) and C13 (Phase 2) test requirements.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -980,7 +981,7 @@ class TestProjectDownStopsScribe:
 
 class TestScribePreflight:
     def test_scribe_preflight_missing_google(self):
-        """_start_scribe_if_enabled returns early when workspace-mcp binary missing."""
+        """Scribe still starts but disables Google collector when workspace-mcp missing."""
         manager = make_manager(
             scribe_enabled=True, scribe_google_enabled=True, scribe_google_services="gmail"
         )
@@ -990,14 +991,19 @@ class TestScribePreflight:
 
         with (
             patch("summon_claude.sessions.manager.SummonSession") as mock_cls,
+            patch("summon_claude.sessions.manager.asyncio.create_task"),
             patch("summon_claude.config.find_workspace_mcp_bin", return_value=missing_bin),
+            patch("summon_claude.config.get_workspace_config_path", return_value=Path("/missing")),
+            patch("importlib.util.find_spec", return_value=None),
         ):
             manager._start_scribe_if_enabled("U123")
 
-        mock_cls.assert_not_called()
+        mock_cls.assert_called_once()
+        effective_config = mock_cls.call_args.kwargs["config"]
+        assert effective_config.scribe_google_enabled is False
 
     def test_scribe_preflight_missing_google_creds(self, tmp_path):
-        """_start_scribe_if_enabled returns early when Google creds directory has no .json files."""
+        """Scribe still starts but disables Google collector when creds missing."""
         manager = make_manager(
             scribe_enabled=True, scribe_google_enabled=True, scribe_google_services="gmail"
         )
@@ -1011,18 +1017,20 @@ class TestScribePreflight:
 
         with (
             patch("summon_claude.sessions.manager.SummonSession") as mock_cls,
+            patch("summon_claude.sessions.manager.asyncio.create_task"),
             patch("summon_claude.config.find_workspace_mcp_bin", return_value=present_bin),
             patch("summon_claude.config.get_google_credentials_dir", return_value=creds_dir),
+            patch("summon_claude.config.get_workspace_config_path", return_value=Path("/missing")),
+            patch("importlib.util.find_spec", return_value=None),
         ):
             manager._start_scribe_if_enabled("U123")
 
-        mock_cls.assert_not_called()
+        mock_cls.assert_called_once()
+        effective_config = mock_cls.call_args.kwargs["config"]
+        assert effective_config.scribe_google_enabled is False
 
     def test_scribe_preflight_missing_playwright(self, tmp_path):
-        """_start_scribe_if_enabled returns early when playwright not installed.
-
-        Bypass the Google preflight by disabling Google, isolating the Playwright check.
-        """
+        """Scribe still starts but disables Slack collector when playwright not installed."""
         manager = make_manager(
             scribe_enabled=True,
             scribe_google_enabled=False,
@@ -1031,6 +1039,7 @@ class TestScribePreflight:
 
         with (
             patch("summon_claude.sessions.manager.SummonSession") as mock_cls,
+            patch("summon_claude.sessions.manager.asyncio.create_task"),
             patch(
                 "summon_claude.config.get_workspace_config_path",
                 return_value=tmp_path / "ws.json",
@@ -1039,7 +1048,9 @@ class TestScribePreflight:
         ):
             manager._start_scribe_if_enabled("U123")
 
-        mock_cls.assert_not_called()
+        mock_cls.assert_called_once()
+        effective_config = mock_cls.call_args.kwargs["config"]
+        assert effective_config.scribe_slack_enabled is False
 
 
 # ---------------------------------------------------------------------------

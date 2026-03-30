@@ -322,6 +322,7 @@ _DB_TABLES = [
     "channels",
     "projects",
     "session_tasks",
+    "scheduled_jobs",
     "workflow_defaults",
     "pending_auth_tokens",
     "schema_version",

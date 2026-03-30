@@ -16,19 +16,7 @@ Run the interactive setup wizard to create your initial configuration:
 summon init
 ```
 
-This walks you through setting your Slack bot token, signing secret, and workspace channel. After completing it, verify your configuration was saved:
-
-```bash
-summon config show
-```
-
-Then confirm connectivity — this checks Slack API access and validates your credentials:
-
-```bash
-summon config check
-```
-
-A passing `summon config check` means summon-claude can reach Slack and is ready to run sessions.
+This walks you through setting your Slack bot token, signing secret, and workspace channel. The wizard validates Slack connectivity before saving, so a successful run means summon-claude is ready to go.
 
 !!! tip "Re-run at any time"
     You can run `summon init` again to update any configuration value, or use `summon config set KEY VALUE` to change individual settings.
@@ -52,12 +40,6 @@ Visit: https://github.com/login/device
 Enter code: ABCD-1234
 Waiting for authorization...
 Authenticated as: yourname
-```
-
-Verify the token is stored and valid:
-
-```bash
-summon auth status
 ```
 
 !!! note "No Copilot subscription required"
@@ -87,12 +69,6 @@ summon auth google login
 
 A browser window opens for Google consent. Grant access to the Google services you want the scribe to monitor. Credentials are stored in summon's config directory.
 
-Verify authentication status:
-
-```bash
-summon auth google status
-```
-
 !!! note "Scope tiers"
     Google authentication uses standard OAuth scopes. The scribe requests only the scopes needed for the data sources you enable. See [Scribe Integrations](scribe-integrations.md) for the exact scopes used by each collector.
 
@@ -108,49 +84,40 @@ The scribe can monitor a Slack workspace *other than* the one summon uses for se
 Authenticate with an external Slack workspace using a profile name:
 
 ```bash
-summon auth slack login myteam
+summon auth slack login acme.enterprise
 ```
 
-This opens a browser for Slack OAuth consent on the external workspace. After authorizing, list the channels the authenticated user can see:
+The argument is the workspace name, enterprise domain, or full URL (e.g. `myteam`, `acme.enterprise`, or `https://myteam.slack.com`). This opens a browser for Slack OAuth consent on the external workspace. After authorizing, list the channels the authenticated user can see:
 
 ```bash
 summon auth slack channels
 ```
 
-Verify authentication status across all configured Slack profiles:
+For full browser monitoring setup instructions, including how to capture a persistent browser session, see [Scribe Integrations — Slack Browser Monitoring](scribe-integrations.md#slack-browser-monitoring).
+
+After completing whichever auth providers you need, verify everything in one shot:
 
 ```bash
-summon auth slack status
+summon auth status
 ```
 
-For full browser monitoring setup instructions, including how to capture a persistent browser session, see [Scribe Integrations — Slack Browser Monitoring](scribe-integrations.md#slack-browser-monitoring).
+This shows the status of all configured providers — GitHub, Google, and external Slack.
 
 ---
 
-## Enable the Scribe
+## Scribe
 
-With authentication complete, enable the scribe and its data collectors:
+The scribe is enabled by default. It auto-detects available collectors based on your authentication:
 
-```bash
-summon config set SUMMON_SCRIBE_ENABLED true
-```
+- **Google Workspace** — active when Google auth is configured (see above) and `workspace-mcp` is installed
+- **External Slack** — active when Slack browser auth is configured (see above) and `playwright` is installed
 
-Enable the Google Workspace collector (requires Google auth above):
+No manual `config set` is needed. The scribe starts automatically with `summon project up` and posts to a dedicated `#0-summon-scribe` channel. Collectors whose dependencies or credentials are missing are silently skipped.
 
-```bash
-summon config set SUMMON_SCRIBE_GOOGLE_ENABLED true
-```
+!!! tip "Disabling collectors"
+    To explicitly disable a collector: `summon config set SUMMON_SCRIBE_GOOGLE_ENABLED false` or `summon config set SUMMON_SCRIBE_SLACK_ENABLED false`. To disable the scribe entirely: `summon config set SUMMON_SCRIBE_ENABLED false`.
 
-Enable the external Slack monitor (requires Slack auth above):
-
-```bash
-summon config set SUMMON_SCRIBE_SLACK_ENABLED true
-```
-
-!!! tip "Enable only what you need"
-    You can enable the scribe with just one collector, or both. Each flag is independent. The scribe starts as long as `SUMMON_SCRIBE_ENABLED=true` and at least one data source is reachable.
-
-The scribe starts automatically the next time you run `summon project up`. It posts to a dedicated `#0-summon-scribe` channel in your workspace. For a full description of scribe behaviors, alert triage, quiet hours, and daily summaries, see the [Scribe Agent guide](scribe.md).
+For a full description of scribe behaviors, alert triage, quiet hours, and daily summaries, see the [Scribe Agent guide](scribe.md).
 
 ---
 
