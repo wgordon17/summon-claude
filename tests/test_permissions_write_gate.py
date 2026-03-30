@@ -659,6 +659,19 @@ class TestNonGitContainment:
         # Root must NOT have changed — sibling is not relative to narrow_dir
         assert handler._containment_root == narrow_dir.resolve()
 
+    async def test_notify_entered_worktree_does_not_widen_parent_child(self, tmp_path: Path):
+        """Anti-widening: worktree that is a parent of current root must not widen."""
+        # Start with a narrow worktree root
+        deep_dir = tmp_path / ".claude" / "worktrees" / "feat" / "sub"
+        deep_dir.mkdir(parents=True)
+        handler, _ = self._make_non_git_handler(tmp_path)
+        handler._containment_root = deep_dir.resolve()
+
+        # Enter a worktree whose root is a parent of the current root
+        handler.notify_entered_worktree("feat")
+        # Root must stay at the narrower deep_dir
+        assert handler._containment_root == deep_dir.resolve()
+
     def test_notify_containment_active_resolves_symlink_root(self, tmp_path: Path):
         """notify_containment_active must store the resolved real path, not the symlink."""
         real_dir = tmp_path / "real"

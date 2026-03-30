@@ -502,18 +502,16 @@ class PermissionHandler:
                     # the current root. Widening would expand the write-allowed surface.
                     if self._containment_root is not None:
                         current = self._containment_root
-                        narrows = candidate.is_relative_to(current)
-                        current_narrows_candidate = current.is_relative_to(candidate)
-                        if not narrows and not current_narrows_candidate:
+                        if candidate.is_relative_to(current) or candidate == current:
+                            # Narrowing or same: safe to update
+                            self._containment_root = candidate
+                        else:
                             logger.warning(
-                                "notify_entered_worktree: candidate %s is not relative to "
-                                "current containment root %s — keeping current root",
+                                "notify_entered_worktree: candidate %s would widen "
+                                "containment root %s — keeping current root",
                                 candidate,
                                 current,
                             )
-                            # Keep existing root; do not widen
-                        else:
-                            self._containment_root = candidate
                     else:
                         self._containment_root = candidate
                 else:
