@@ -8,7 +8,7 @@ This guide walks through configuring every feature of summon-claude end-to-end: 
 
 ---
 
-## Section 1: Initial Configuration
+## Initial Configuration
 
 Run the interactive setup wizard to create your initial configuration:
 
@@ -35,7 +35,7 @@ A passing `summon config check` means summon-claude can reach Slack and is ready
 
 ---
 
-## Section 2: GitHub Authentication
+## GitHub Authentication
 
 Authenticate with GitHub to give Claude access to GitHub tools in every session:
 
@@ -67,7 +67,7 @@ Once authenticated, GitHub tools are wired into **all** sessions automatically â
 
 ---
 
-## Section 3: Google Workspace Authentication
+## Google Workspace Authentication
 
 Google authentication is optional and only needed if you plan to use the scribe's Google collector (Gmail, Calendar, Drive monitoring).
 
@@ -98,7 +98,7 @@ summon auth google status
 
 ---
 
-## Section 4: External Slack Authentication (Scribe)
+## External Slack Authentication (Scribe)
 
 The scribe can monitor a Slack workspace *other than* the one summon uses for sessions. This is useful if your team communicates on a separate workspace and you want the scribe to surface important messages.
 
@@ -127,7 +127,7 @@ For full browser monitoring setup instructions, including how to capture a persi
 
 ---
 
-## Section 5: Enable the Scribe
+## Enable the Scribe
 
 With authentication complete, enable the scribe and its data collectors:
 
@@ -135,13 +135,13 @@ With authentication complete, enable the scribe and its data collectors:
 summon config set SUMMON_SCRIBE_ENABLED true
 ```
 
-Enable the Google Workspace collector (requires Google auth from Section 3):
+Enable the Google Workspace collector (requires Google auth above):
 
 ```bash
 summon config set SUMMON_SCRIBE_GOOGLE_ENABLED true
 ```
 
-Enable the external Slack monitor (requires Slack auth from Section 4):
+Enable the external Slack monitor (requires Slack auth above):
 
 ```bash
 summon config set SUMMON_SCRIBE_SLACK_ENABLED true
@@ -154,7 +154,7 @@ The scribe starts automatically the next time you run `summon project up`. It po
 
 ---
 
-## Section 6: Register Projects
+## Register Projects
 
 Create demo project directories:
 
@@ -191,7 +191,7 @@ The table shows each project's name, directory, PM status, and channel prefix. F
 
 ---
 
-## Section 7: Start Projects
+## Start Projects
 
 Start PM agents for all registered projects:
 
@@ -218,7 +218,7 @@ For step-by-step screenshots of the authentication flow, see [Quick Start â€” St
 
 ---
 
-## Section 8: View Running Sessions
+## View Running Sessions
 
 List all active sessions:
 
@@ -242,7 +242,7 @@ summon db status
 
 ---
 
-## Section 9: Slack Channels View
+## Slack Channels View
 
 After authenticating one or more projects, summon-claude creates dedicated Slack channels for each session:
 
@@ -252,7 +252,7 @@ Each PM session gets a channel named after the project (e.g. `#demo-api-pm`). Ch
 
 ---
 
-## Section 10: Stop Projects
+## Stop Projects
 
 Stop all running project sessions:
 

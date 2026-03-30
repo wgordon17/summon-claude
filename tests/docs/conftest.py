@@ -78,10 +78,19 @@ def all_md_files(docs_dir: Path) -> list[Path]:
 
 @pytest.fixture(scope="session")
 def env_credentials() -> dict[str, str]:
-    """Load SUMMON_* credentials from sibling repo .env or environment."""
+    """Load SUMMON_* credentials from sibling repo .env or environment.
+
+    Checks two sources (first match wins per key):
+    1. Sibling repo ``../summon-claude/.env`` (local dev)
+    2. ``os.environ`` (CI injects secrets directly as env vars)
+    """
     env_file = _REPO_ROOT.parent / "summon-claude" / ".env"
     raw = dotenv_values(str(env_file)) if env_file.exists() else {}
-    return {k: v for k, v in raw.items() if k.startswith("SUMMON_") and v is not None}
+    creds = {k: v for k, v in raw.items() if k.startswith("SUMMON_") and v is not None}
+    # Fall back to env vars so CI-injected secrets are picked up
+    if not creds:
+        creds = {k: v for k, v in os.environ.items() if k.startswith("SUMMON_") and v}
+    return creds
 
 
 # ---------------------------------------------------------------------------

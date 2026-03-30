@@ -28,14 +28,16 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -115,27 +117,33 @@ def _find_slack_auth_state() -> str | None:
 
 def _enable_scribe(env: dict[str, str]) -> None:
     """Enable scribe so ``project up`` starts PM + Scribe + Global PM."""
-    for key in ("SUMMON_SCRIBE_ENABLED",):
-        subprocess.run(
-            ["summon", "config", "set", key, "true"],
-            capture_output=True,
-            env=env,
-        )
+    subprocess.run(
+        ["summon", "config", "set", "SUMMON_SCRIBE_ENABLED", "true"],
+        capture_output=True,
+        env=env,
+    )
     click.echo("  Enabled scribe for multi-channel sidebar capture")
+
+
+@contextlib.contextmanager
+def _registry_db() -> Generator[sqlite3.Connection, None, None]:
+    """Open the summon session registry database, closing on exit."""
+    from summon_claude.config import get_data_dir
+
+    db_path = get_data_dir() / "registry.db"
+    if not db_path.exists():
+        raise FileNotFoundError(db_path)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _find_all_session_channels() -> list[tuple[str, str]]:
     """Return ``(slack_channel_id, session_name)`` for all active sessions."""
-    import sqlite3
-
     try:
-        from summon_claude.config import get_data_dir
-
-        db_path = get_data_dir() / "registry.db"
-        if not db_path.exists():
-            return []
-        conn = sqlite3.connect(str(db_path))
-        try:
+        with _registry_db() as conn:
             rows = conn.execute(
                 "SELECT slack_channel_id, session_name FROM sessions "
                 "WHERE slack_channel_id IS NOT NULL "
@@ -143,8 +151,6 @@ def _find_all_session_channels() -> list[tuple[str, str]]:
                 "ORDER BY started_at",
             ).fetchall()
             return [(r[0], r[1]) for r in rows if r[0]]
-        finally:
-            conn.close()
     except Exception as exc:
         click.echo(f"  WARNING: channel lookup failed: {exc}", err=True)
         return []
@@ -152,24 +158,14 @@ def _find_all_session_channels() -> list[tuple[str, str]]:
 
 def _get_authenticated_user_id() -> str | None:
     """Get the authenticated user's Slack ID from the session DB."""
-    import sqlite3
-
     try:
-        from summon_claude.config import get_data_dir
-
-        db_path = get_data_dir() / "registry.db"
-        if not db_path.exists():
-            return None
-        conn = sqlite3.connect(str(db_path))
-        try:
+        with _registry_db() as conn:
             row = conn.execute(
                 "SELECT authenticated_user_id FROM sessions "
                 "WHERE authenticated_user_id IS NOT NULL "
                 "ORDER BY started_at DESC LIMIT 1",
             ).fetchone()
             return row[0] if row else None
-        finally:
-            conn.close()
     except Exception:
         return None
 
@@ -310,30 +306,21 @@ def find_session_channel(bot_token: str) -> str | None:
     registry database rather than paginating ``conversations.list``.
     Falls back to Slack API only if DB lookup fails.
     """
-    import sqlite3
-
     try:
-        from summon_claude.config import get_data_dir
-
-        db_path = get_data_dir() / "registry.db"
-        if db_path.exists():
-            conn = sqlite3.connect(str(db_path))
-            try:
-                # Join sessions with projects to find the PM session for our project.
-                # PROJECT_NAME may be truncated in channel_prefix/session_name, so
-                # match by project name directly.
-                rows = conn.execute(
-                    "SELECT s.slack_channel_id FROM sessions s "
-                    "JOIN projects p ON s.project_id = p.project_id "
-                    "WHERE p.name = ? AND s.slack_channel_id IS NOT NULL "
-                    "AND s.status IN ('active', 'pending_auth') "
-                    "ORDER BY s.started_at DESC LIMIT 1",
-                    (PROJECT_NAME,),
-                ).fetchall()
-                if rows and rows[0][0]:
-                    return rows[0][0]
-            finally:
-                conn.close()
+        with _registry_db() as conn:
+            # Join sessions with projects to find the PM session for our project.
+            # PROJECT_NAME may be truncated in channel_prefix/session_name, so
+            # match by project name directly.
+            rows = conn.execute(
+                "SELECT s.slack_channel_id FROM sessions s "
+                "JOIN projects p ON s.project_id = p.project_id "
+                "WHERE p.name = ? AND s.slack_channel_id IS NOT NULL "
+                "AND s.status IN ('active', 'pending_auth') "
+                "ORDER BY s.started_at DESC LIMIT 1",
+                (PROJECT_NAME,),
+            ).fetchall()
+            if rows and rows[0][0]:
+                return rows[0][0]
     except Exception as exc:
         click.echo(f"  DB lookup failed ({exc}), trying Slack API...", err=True)
 
@@ -506,6 +493,72 @@ _THREAD_VIEW_CSS = """
         display: none !important;
     }
 """
+
+# CSS that isolates the sidebar at full viewport height for the channel list screenshot.
+_SIDEBAR_VIEW_CSS = """
+    /* Show sidebar, hide everything else */
+    .p-view_contents--primary,
+    .p-view_contents--secondary,
+    .p-flexpane {
+        display: none !important;
+    }
+    .p-channel_sidebar {
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        width: 280px !important;
+        height: 100vh !important;
+        z-index: 99999 !important;
+    }
+    .p-tab_rail {
+        display: none !important;
+    }
+"""
+
+# JS that hides non-summon channels in the sidebar and returns the bounding
+# box of the remaining visible channels.  Accepts the session base name
+# (e.g. "docs-screenshots") as its sole argument.
+_SIDEBAR_FILTER_JS = """(sessionName) => {
+    const items = document.querySelectorAll('.p-channel_sidebar__channel');
+    let kept = 0;
+    let top = Infinity, bottom = 0;
+    for (const item of items) {
+        const text = (item.textContent || '').trim();
+        if (text.startsWith('zzz-')) {
+            item.style.display = 'none';
+            continue;
+        }
+        const isCurrentRun = text.includes(sessionName);
+        const isScribe = text.includes('summon-scribe');
+        const isGlobalPm = text.includes('global-pm');
+        if (isCurrentRun || isScribe || isGlobalPm) {
+            kept++;
+            const r = item.getBoundingClientRect();
+            if (r.top < top) top = r.top;
+            if (r.bottom > bottom) bottom = r.bottom;
+        } else {
+            item.style.display = 'none';
+        }
+    }
+    document.querySelectorAll('.p-channel_sidebar__section_heading').forEach(h => {
+        const section = h.closest('.p-channel_sidebar__section');
+        if (!section) return;
+        const visible = section.querySelectorAll(
+            '.p-channel_sidebar__channel:not([style*="display: none"])'
+        );
+        if (visible.length === 0) {
+            section.style.display = 'none';
+        }
+    });
+    if (kept === 0) return null;
+    return {
+        x: 0,
+        y: Math.max(0, top - 12),
+        width: 280,
+        height: bottom - top + 24,
+        kept: kept
+    };
+}"""
 
 
 def create_browser_context(
@@ -1054,13 +1107,7 @@ _SCHEMA_TABLES = [
 
 def _extract_table_sql(table_name: str) -> str:
     """Extract the CREATE TABLE statement for a table from the live DB."""
-    import sqlite3
-
-    from summon_claude.config import get_data_dir
-
-    db_path = get_data_dir() / "registry.db"
-    conn = sqlite3.connect(str(db_path))
-    try:
+    with _registry_db() as conn:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
             (table_name,),
@@ -1068,23 +1115,13 @@ def _extract_table_sql(table_name: str) -> str:
         if not row or not row[0]:
             return f"-- table '{table_name}' not found"
         return str(row[0])
-    finally:
-        conn.close()
 
 
 def _extract_schema_version() -> str:
     """Get the current schema version from the live DB."""
-    import sqlite3
-
-    from summon_claude.config import get_data_dir
-
-    db_path = get_data_dir() / "registry.db"
-    conn = sqlite3.connect(str(db_path))
-    try:
+    with _registry_db() as conn:
         row = conn.execute("SELECT version FROM schema_version WHERE id=1").fetchone()
         return str(row[0]) if row else "unknown"
-    finally:
-        conn.close()
 
 
 def _extract_migration_history() -> str:
@@ -1738,86 +1775,11 @@ def main(
                     page.wait_for_timeout(3_000)
 
                 nav(channel_url, wait_ms=5_000)
-                _inject_screenshot_css(
-                    page,
-                    """
-                    /* Show sidebar, hide everything else */
-                    .p-view_contents--primary,
-                    .p-view_contents--secondary,
-                    .p-flexpane {
-                        display: none !important;
-                    }
-                    .p-channel_sidebar {
-                        position: fixed !important;
-                        top: 0 !important;
-                        left: 0 !important;
-                        width: 280px !important;
-                        height: 100vh !important;
-                        z-index: 99999 !important;
-                    }
-                    .p-tab_rail {
-                        display: none !important;
-                    }
-                """,
-                )
+                _inject_screenshot_css(page, _SIDEBAR_VIEW_CSS)
 
                 # Hide all sidebar channel items that aren't summon channels,
                 # then crop tightly to the remaining visible items.
-                bbox = page.evaluate(
-                    """(sessionName) => {
-                    // Find all sidebar channel link items
-                    const items = document.querySelectorAll(
-                        '.p-channel_sidebar__channel'
-                    );
-                    let kept = 0;
-                    let top = Infinity, bottom = 0;
-                    for (const item of items) {
-                        const text = (item.textContent || '').trim();
-                        // Skip archived channels (zzz- prefix)
-                        if (text.startsWith('zzz-')) {
-                            item.style.display = 'none';
-                            continue;
-                        }
-                        // Keep: current run's PM channel
-                        const isCurrentRun = text.includes(sessionName);
-                        // Keep: scribe and global PM (non-archived)
-                        const isScribe = text.includes('summon-scribe');
-                        const isGlobalPm = text.includes('global-pm');
-                        if (isCurrentRun || isScribe || isGlobalPm) {
-                            kept++;
-                            const r = item.getBoundingClientRect();
-                            if (r.top < top) top = r.top;
-                            if (r.bottom > bottom) bottom = r.bottom;
-                        } else {
-                            item.style.display = 'none';
-                        }
-                    }
-                    // Also hide section headers that have no visible children
-                    document.querySelectorAll(
-                        '.p-channel_sidebar__section_heading'
-                    ).forEach(h => {
-                        const section = h.closest(
-                            '.p-channel_sidebar__section'
-                        );
-                        if (!section) return;
-                        const visible = section.querySelectorAll(
-                            '.p-channel_sidebar__channel:not([style*="display: none"])'
-                        );
-                        if (visible.length === 0) {
-                            section.style.display = 'none';
-                        }
-                    });
-                    if (kept === 0) return null;
-                    return {
-                        x: 0,
-                        y: Math.max(0, top - 12),
-                        width: 280,
-                        height: bottom - top + 24,
-                        kept: kept
-                    };
-                }""",
-                    _SESSION_BASE,  # e.g. "docs-screenshots"
-                )
+                bbox = page.evaluate(_SIDEBAR_FILTER_JS, _SESSION_BASE)
 
                 if bbox and bbox.get("kept", 0) > 0:
                     click.echo(f"  Sidebar: showing {bbox['kept']} summon channel(s)")

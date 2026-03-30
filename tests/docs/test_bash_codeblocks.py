@@ -164,6 +164,9 @@ def test_bash_commands_execute(
         if env_credentials:
             config_dir = tmp / "config" / "summon"
             config_dir.mkdir(parents=True, exist_ok=True)
+            # env_credentials keys may use SUMMON_TEST_* names (from .env)
+            # or SUMMON_* names (from CI env vars). Strip _TEST_ so summon
+            # reads them as standard config keys (e.g. SUMMON_SLACK_BOT_TOKEN).
             (config_dir / "config.env").write_text(
                 "".join(f"{k.replace('_TEST_', '_')}={v}\n" for k, v in env_credentials.items())
             )
