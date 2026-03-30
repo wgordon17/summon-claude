@@ -418,7 +418,6 @@ async def _post_session_header(
     client: SlackClient, cwd: str, model: str | None, session_id: str, git_branch: str | None
 ) -> None:
     """Post the initial session header block."""
-
     safe_cwd = cwd.replace("`", "'")
     fields = [
         {"type": "mrkdwn", "text": f"*Directory:*\n`{safe_cwd}`"},

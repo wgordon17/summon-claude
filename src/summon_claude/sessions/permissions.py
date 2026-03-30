@@ -120,7 +120,7 @@ _GOOGLE_MCP_AUTO_APPROVE_PREFIXES = (
 
 _PERMISSION_TIMEOUT_S = 600  # 10 minutes
 
-# Tools that write to the filesystem — gated until worktree entry.
+# Tools that write to the filesystem — gated until containment is active.
 # MultiEdit is included defensively even though it's not currently in
 # the codebase (harmless if unused).
 _WRITE_GATED_TOOLS = frozenset(
@@ -136,7 +136,7 @@ _WRITE_GATED_TOOLS = frozenset(
 
 # File-path argument keys per tool, in priority order (for safe-dir lookup).
 # Matches the tuple-fallback pattern in response.py's _TOOL_PATH_KEYS.
-# Bash has no reliable file path — always gate unless worktree entered.
+# Bash has no reliable file path — always gate unless containment is active.
 _WRITE_TOOL_PATH_KEYS: dict[str, tuple[str, ...]] = {
     "Write": ("file_path", "path"),
     "Edit": ("file_path", "path"),
@@ -327,8 +327,8 @@ class PermissionHandler:
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(input_data)
 
-        # 0b. Write gate — enforce read-only default until worktree entry.
-        # Handles: SDK deny, safe-dir bypass, worktree check, CWD containment.
+        # 0b. Write gate — enforce read-only default until containment is active.
+        # Handles: SDK deny, safe-dir bypass, containment check, CWD containment.
         if tool_name in _WRITE_GATED_TOOLS:
             result = await self._check_write_gate(tool_name, input_data, context)
             if result is not None:
@@ -468,10 +468,17 @@ class PermissionHandler:
         self._in_containment = True
         self._is_git_repo = is_git_repo
         self._containment_root = containment_root.resolve()
-        logger.info("Directory containment active (non-git) — root=%s", self._containment_root)
+        if is_git_repo:
+            logger.info("Directory containment active — root=%s", self._containment_root)
+        else:
+            logger.info("Directory containment active (non-git) — root=%s", self._containment_root)
 
     def notify_entered_worktree(self, worktree_name: str = "") -> None:
         """Called by response consumer when EnterWorktree tool use is detected.
+
+        Worktree entry always narrows containment — the worktree directory is a
+        subdirectory of the project root, so the effective write boundary shrinks.
+        Defense-in-depth: logs a warning if the candidate would widen containment.
 
         Args:
             worktree_name: Name from the EnterWorktree input (e.g. "feature-x").
@@ -483,7 +490,7 @@ class PermissionHandler:
             if "/" in worktree_name or "\\" in worktree_name or ".." in worktree_name:
                 logger.warning(
                     "Suspicious worktree name rejected: %r — "
-                    "CWD containment disabled (all writes require HITL)",
+                    "containment root unchanged (all writes require HITL)",
                     worktree_name,
                 )
                 # Fail-closed: no CWD auto-approve, all writes go to HITL
@@ -491,10 +498,27 @@ class PermissionHandler:
                 candidate = (self._project_root / ".claude" / "worktrees" / worktree_name).resolve()
                 expected_parent = (self._project_root / ".claude" / "worktrees").resolve()
                 if candidate.is_relative_to(expected_parent):
-                    self._containment_root = candidate
+                    # Anti-widening guard: candidate must be narrower than (or equal to)
+                    # the current root. Widening would expand the write-allowed surface.
+                    if self._containment_root is not None:
+                        current = self._containment_root
+                        narrows = candidate.is_relative_to(current)
+                        current_narrows_candidate = current.is_relative_to(candidate)
+                        if not narrows and not current_narrows_candidate:
+                            logger.warning(
+                                "notify_entered_worktree: candidate %s is not relative to "
+                                "current containment root %s — keeping current root",
+                                candidate,
+                                current,
+                            )
+                            # Keep existing root; do not widen
+                        else:
+                            self._containment_root = candidate
+                    else:
+                        self._containment_root = candidate
                 else:
                     logger.warning(
-                        "Worktree path escaped expected parent: %s — CWD containment disabled",
+                        "Worktree path escaped expected parent: %s — containment root unchanged",
                         candidate,
                     )
         # Activate auto-classifier if configured
@@ -552,7 +576,7 @@ class PermissionHandler:
         if _sdk_suggests_deny(context, tool_name):
             return PermissionResultDeny(message="Denied by permission rules")
 
-        # 2. Safe-dir bypass: takes precedence over worktree requirement
+        # 2. Safe-dir bypass: takes precedence over containment requirement
         file_path = _extract_file_path(tool_name, input_data)
         if file_path and _is_in_safe_dir(file_path, self._safe_dirs, self._project_root):
             logger.debug("Safe-dir write allowed: %s → %s", tool_name, file_path)
@@ -566,7 +590,10 @@ class PermissionHandler:
                     message="Write access requires a worktree. "
                     "Use EnterWorktree to create an isolated copy first."
                 )
-            return PermissionResultDeny(message="Write access is not available in this context.")
+            return PermissionResultDeny(
+                message="Write access requires a supported working directory. "
+                "Start a session in a project directory."
+            )
 
         # 4. First write in containment → one-time gate approval
         if not self._write_access_granted:

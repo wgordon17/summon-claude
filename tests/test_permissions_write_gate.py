@@ -528,7 +528,7 @@ class TestNonGitContainment:
         result = await handler.handle("Write", {"file_path": "/f"}, None)
         assert isinstance(result, PermissionResultDeny)
         assert "EnterWorktree" not in result.message
-        assert "not available" in result.message.lower()
+        assert "project directory" in result.message.lower()
 
     async def test_gate_message_includes_non_git_warning(self, tmp_path: Path):
         """SC-02: non-git warning must appear inline in gate approval message."""
@@ -625,19 +625,18 @@ class TestNonGitContainment:
         assert isinstance(result, PermissionResultDeny)
 
     async def test_worktree_entry_narrows_containment(self, tmp_path: Path):
-        """Entering a worktree after non-git containment is already active is a no-op
-        (anti-widening SC-04 applies — worktree entry cannot replace non-git root).
+        """Worktree entry after non-git containment is active correctly narrows the root.
+
+        The worktree directory is a subdirectory of the project root (which is the
+        non-git containment root), so notify_entered_worktree narrows the write boundary.
+        This is the expected and safe direction — narrowing is always allowed.
         """
         handler, _ = self._make_non_git_handler(tmp_path)
         original_root = handler._containment_root
-        # notify_entered_worktree sets _in_containment=True but anti-widening
-        # from notify_containment_active already fired; worktree entry goes through
-        # notify_entered_worktree which does NOT call notify_containment_active —
-        # it sets _containment_root directly. Verify the behavior is consistent.
         wt_dir = tmp_path / ".claude" / "worktrees" / "feat"
         wt_dir.mkdir(parents=True)
         handler.notify_entered_worktree("feat")
-        # worktree narrows the root — this is expected behavior
+        # worktree is a subdirectory of original_root — containment narrows as expected
         assert handler._containment_root == wt_dir.resolve()
         assert handler._in_containment is True
         _ = original_root  # used above for context
