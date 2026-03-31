@@ -54,16 +54,16 @@ def sanitize_for_mrkdwn(text: str, max_len: int = 100) -> str:
 
 
 # Note: Atlassian OAuth access tokens are standard JWTs (eyJ...) with no
-# Atlassian-specific prefix, so they cannot be reliably distinguished from
-# other JWTs and are NOT included here (SEC-005 / SC-09). The primary defence
-# is architectural: Atlassian tokens are passed only to the MCP server
-# subprocess via config headers and never flow through summon's Slack output
-# methods. Do not add a blanket "eyJ" pattern — it would cause widespread
-# false positives across all base64-encoded content.
+# Atlassian-specific prefix. A blanket "eyJ" pattern would cause widespread
+# false positives. Instead, we match the specific JWT header prefix that
+# Atlassian tokens use (eyJhbGci = {"alg":...) with a minimum length guard
+# to avoid matching short base64 fragments. Defense-in-depth alongside the
+# architectural defence (tokens only flow to MCP subprocess, not Slack output).
 _SECRET_RE = re.compile(
     r"xox[a-z]-[A-Za-z0-9\-]+|xapp-[A-Za-z0-9\-]+|sk-ant-[A-Za-z0-9\-]+"
     r"|ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+"
     r"|gho_[A-Za-z0-9_]+|ghu_[A-Za-z0-9_]+|ghs_[A-Za-z0-9_]+|ghr_[A-Za-z0-9_]+"
+    r"|eyJhbGci[A-Za-z0-9._\-]{20,}"
 )
 
 

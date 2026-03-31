@@ -227,13 +227,24 @@ def auth_slack_channels(refresh: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+_SAFE_HOSTNAME_RE = re.compile(
+    r"^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?"
+    r"(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$"
+)
+
+
 def _normalize_site(site: str) -> str:
-    """Normalize a site input to a bare hostname (e.g. 'myorg' → 'myorg.atlassian.net')."""
+    """Normalize a site input to a bare hostname (e.g. 'myorg' → 'myorg.atlassian.net').
+
+    Raises ``click.BadParameter`` if the result is not a valid hostname.
+    """
     s = site.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
     # Strip any path component (e.g. "myorg.atlassian.net/wiki" → "myorg.atlassian.net")
     s = s.split("/")[0]
     if "." not in s:
         s = f"{s}.atlassian.net"
+    if not _SAFE_HOSTNAME_RE.match(s):
+        raise click.BadParameter(f"'{site}' does not look like a valid hostname")
     return s
 
 

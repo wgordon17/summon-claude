@@ -83,6 +83,8 @@ def save_jira_token(token_data: dict[str, Any]) -> None:
     """
     creds_dir = get_jira_credentials_dir()
     creds_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Enforce 0o700 even if the directory pre-existed with wider permissions
+    creds_dir.chmod(0o700)
 
     token_path = get_jira_token_path()
     content = json.dumps(token_data, indent=2).encode()

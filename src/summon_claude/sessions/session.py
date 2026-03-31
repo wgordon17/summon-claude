@@ -1850,7 +1850,10 @@ class SummonSession:
                 refresh_jira_token_if_needed,
             )
 
-            await refresh_jira_token_if_needed()
+            try:
+                await asyncio.wait_for(refresh_jira_token_if_needed(), timeout=35)
+            except TimeoutError:
+                logger.warning("Jira token refresh timed out — proceeding without Jira")
             _jira_token = load_jira_token()
             if _jira_token is not None:
                 _access_token = _jira_token.get("access_token")
