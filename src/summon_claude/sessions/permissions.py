@@ -9,10 +9,11 @@ Permission check flow (handle() steps):
   2b. GitHub deny-list → _GITHUB_MCP_REQUIRE_APPROVAL always sent to Slack
   2c. GitHub allowlist → exact names and get_/list_/search_ prefixes
   2d. Google MCP       → workspace-{label}__* read tools auto-approved
-  2e. Summon MCP       → summon-cli/summon-slack/summon-canvas tools
-  2f. Session cache    → tools approved for the session lifetime
-  2g. Arg cache        → per-argument exact-match (Bash cmd, file path, etc.)
-  2h. Auto-classifier  → Sonnet classifier (only active after worktree entry)
+  2e. Jira MCP         → read-only enforcement (fail-closed, deny-before-approve)
+  2f. Summon MCP       → summon-cli/summon-slack/summon-canvas tools
+  2g. Session cache    → tools approved for the session lifetime
+  2h. Arg cache        → per-argument exact-match (Bash cmd, file path, etc.)
+  2i. Auto-classifier  → Sonnet classifier (only active after worktree entry)
   3.  SDK allow        → secondary, after static lists
   4.  Slack HITL       → interactive approve/deny/approve-for-session buttons
 """
