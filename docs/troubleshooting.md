@@ -421,6 +421,52 @@ This page covers common problems and their solutions. Issues are grouped by cate
 
 ---
 
+## Jira
+
+???+ tip "`summon auth jira status` says 'no cloud_id'"
+    **Symptom:** Jira status check reports missing cloud_id despite successful login.
+
+    **Cause:** Cloud site discovery failed during login (network issue or no accessible sites).
+
+    **Fix:** Re-run `summon auth jira login`. If using `--site`, verify the hostname matches one of your Atlassian cloud sites.
+
+???+ tip "Browser doesn't open during Jira login"
+    **Symptom:** Running `summon auth jira login` prints nothing and hangs.
+
+    **Cause:** The `$BROWSER` environment variable is not set, or summon can't find a browser.
+
+    **Fix:** Check that `$BROWSER` is set, or look for a URL printed to the terminal and open it manually.
+
+???+ tip "'DCR failed' error during Jira login"
+    **Symptom:** Login fails with "DCR failed with HTTP..." error.
+
+    **Cause:** Atlassian's Dynamic Client Registration endpoint may be temporarily unavailable.
+
+    **Fix:** Retry after a few minutes. If persistent, check that the Atlassian MCP endpoint is reachable from your network.
+
+???+ tip "Token refresh failures in session logs"
+    **Symptom:** Session logs show "Token refresh failed" warnings, and Jira tools are unavailable.
+
+    **Cause:** The refresh token may have been revoked, or the Atlassian token endpoint is unreachable.
+
+    **Fix:** Sessions proceed without Jira tools when refresh fails (graceful degradation). If persistent, re-authenticate:
+    ```{ .bash .notest }
+    summon auth jira login
+    ```
+
+???+ tip "Jira tools not available in session"
+    **Symptom:** Claude reports Jira tools are not found or returns errors when using them.
+
+    **Cause:** Credentials may not exist, the token may be expired without a valid refresh token, or the Rovo MCP server may be unreachable.
+
+    **Fix:**
+    1. Check status: `summon auth jira status`
+    2. Check config: `summon config check`
+    3. If status shows issues, re-authenticate: `summon auth jira login`
+    4. If the MCP server is unreachable, individual tool calls will return errors — Claude adapts automatically.
+
+---
+
 ## Project Lifecycle
 
 ???+ tip "Channels named zzz-..."

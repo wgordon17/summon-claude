@@ -152,6 +152,40 @@ Any GitHub MCP tool not on either list also requires Slack approval (fail-closed
 
 ---
 
+## Jira MCP permissions
+
+When Jira is authenticated (via `summon auth jira login`), Claude has access to Jira tools via the Atlassian Rovo MCP server. Jira uses a **strictly read-only** permission model — all write operations are hard-denied, not routed to Slack for approval.
+
+**Auto-approved (read-only):** Tools matching `get*`, `search*`, or `lookup*` prefixes, plus the exact match `atlassianUserInfo`.
+
+**Hard-denied (always blocked)** — checked before auto-approve prefixes:
+
+| Tool | Reason |
+|------|--------|
+| `createJiraIssue` | Write operation |
+| `editJiraIssue` | Write operation |
+| `transitionJiraIssue` | Write operation |
+| `addCommentToJiraIssue` | Write operation |
+| `addWorklogToJiraIssue` | Write operation |
+| `createIssueLink` | Write operation |
+| `createConfluencePage` | Write operation |
+| `createConfluenceFooterComment` | Write operation |
+| `createConfluenceInlineComment` | Write operation |
+| `updateConfluencePage` | Write operation |
+| `fetchAtlassian` | Generic ARI accessor — bypasses per-tool gating |
+
+!!! warning "`fetchAtlassian` is not a read-only tool"
+    Despite its name, `fetchAtlassian` is a generic Atlassian Resource Identifier (ARI) accessor that can fetch arbitrary resources across projects and products. It bypasses the per-tool permission model and is always blocked.
+
+Any Jira MCP tool not in either list is denied by default (fail-closed). New tools from future Rovo MCP updates require explicit classification before they can be used.
+
+!!! note "No HITL tier for Jira"
+    Unlike GitHub, Jira has no "requires Slack approval" tier. The OAuth scope is `read:jira-work` — write operations would fail at the API level even if summon allowed them. The hard-deny list provides defense-in-depth.
+
+For the full integration guide, see [Jira Integration](../guide/jira-integration.md).
+
+---
+
 ## AskUserQuestion
 
 Claude can ask you structured questions mid-task using the `AskUserQuestion` tool. This appears as an interactive message in the session channel:
@@ -215,7 +249,9 @@ The full permission evaluation order in `handle()`:
 | 3 | SDK deny suggestions | Deny |
 | 4 | Static auto-approve (`_AUTO_APPROVE_TOOLS`) | Allow |
 | 5 | GitHub deny-list (`_GITHUB_MCP_REQUIRE_APPROVAL`) | Always HITL |
+| 5a | Jira hard-deny (`_JIRA_MCP_HARD_DENY`) | Always Deny |
 | 6 | GitHub auto-approve (prefix matching) | Allow |
+| 6a | Jira auto-approve (prefix + exact matching) | Allow |
 | 7 | Summon MCP auto-approve (prefix matching) | Allow |
 | 8 | Session-lifetime cached approvals | Allow (GitHub deny-list excluded) |
 | 9 | Per-argument cache (exact match on primary arg) | Allow if arg matches (GitHub deny-list excluded) |

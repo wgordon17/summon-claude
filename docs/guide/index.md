@@ -20,6 +20,10 @@ Learn how to use summon-claude effectively. Most users work through **projects**
 
     PR review, code search, and GitHub tools.
 
+-   :simple-jirasoftware: **[Jira Integration](jira-integration.md)**
+
+    Read-only Jira access, PM triage, and JQL filters.
+
 -   :material-puzzle: **[Scribe Integrations](scribe-integrations.md)**
 
     Google Workspace and Slack browser monitoring.
