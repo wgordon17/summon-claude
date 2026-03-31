@@ -21,6 +21,7 @@ import dataclasses
 import logging
 import os
 import pathlib
+import re
 import secrets
 import time
 import uuid
@@ -1728,7 +1729,10 @@ class SessionManager:
         if pm_session is None or not pm_session.channel_id or not self._web_client:
             return
         ip = entry.options.initial_prompt or ""
-        prompt_snippet = redact_secrets(ip[:200])
+        snippet = re.sub(r"<!(channel|here|everyone)>", r"\1", ip[:200])
+        snippet = re.sub(r"<@(U\w+)>", r"user:\1", snippet)
+        snippet = re.sub(r"<!subteam\^[^>]+>", "group", snippet)
+        prompt_snippet = redact_secrets(snippet)
         suffix = "..." if len(ip) > 200 else ""
         msg = (
             f"_Queued session '{entry.options.name}' started (session_id: {new_session_id[:8]}...)_"
