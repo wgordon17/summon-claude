@@ -64,7 +64,7 @@ This validates credentials, checks token formats, tests database writability, an
   [PASS] Slack bot scopes: all 16 required scopes granted
   [INFO] GitHub: not configured (run `summon auth github login`)
   Google: no credentials found
-  [INFO] Google Workspace: not configured (summon auth google login)
+  [INFO] Google Workspace: not configured (summon auth google setup)
   [INFO] workspace-mcp (Google): installed
   [INFO] playwright (Slack browser): installed
 

@@ -27,6 +27,24 @@ logger = logging.getLogger(__name__)
 # (e.g., a large Google Doc) from bloating the session context.
 _MAX_CONTENT_CHARS = 100_000
 
+# workspace-mcp returns an auth URL when scopes are insufficient.
+# The URL targets workspace-mcp's own callback server which isn't running
+# in our context. Replace with actionable CLI guidance.
+_SCOPE_ERROR_NEEDLE = "ACTION REQUIRED: Google Authentication Needed"
+_SCOPE_ERROR_REPLACEMENT = (
+    "Google Workspace scope error: this tool requires write access "
+    "that was not granted during authentication.\n"
+    "The user should run: summon auth google login\n"
+    "and grant write access to the relevant service when prompted."
+)
+
+
+def _rewrite_scope_error(text: str) -> str:
+    """Replace workspace-mcp's auth-URL error with CLI guidance."""
+    if _SCOPE_ERROR_NEEDLE in text:
+        return _SCOPE_ERROR_REPLACEMENT
+    return text
+
 
 def _mark_tool_result(message: dict[str, Any], source: str) -> dict[str, Any]:
     """Wrap tool result content with untrusted data markers.
@@ -48,7 +66,7 @@ def _mark_tool_result(message: dict[str, Any], source: str) -> dict[str, Any]:
             continue
         item_type = item.get("type")
         if item_type == "text":
-            original = str(item.get("text", ""))
+            original = _rewrite_scope_error(str(item.get("text", "")))
             if len(original) > _MAX_CONTENT_CHARS:
                 original = original[:_MAX_CONTENT_CHARS] + "\n[truncated by security proxy]"
             item["text"] = mark_untrusted(original, source)

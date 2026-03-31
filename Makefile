@@ -57,7 +57,9 @@ py-test: ## Run full Python test suite (excludes Slack and LLM integration)
 
 py-test-slack: ## Run Slack integration tests (requires credentials)
 	@echo "Running Slack integration tests..."
-	uv run pytest tests/integration/ -v -m slack -n0
+	uv run pytest tests/integration/ -v -m slack -n0 || \
+		(echo "Retrying failed tests..." && sleep 5 && \
+		 uv run pytest tests/integration/ -v -m slack -n0 --lf)
 
 py-test-llm: ## Run LLM classifier integration tests (requires Claude CLI, makes API calls)
 	@echo "Running LLM classifier tests..."

@@ -211,25 +211,17 @@ _WORKTREE_DISALLOWED_TOOLS = frozenset(
 #
 # NOTE: disallowed_tools bare names don't match MCP-namespaced tool names
 # (mcp__server__tool). MCP tools are primarily defended by:
-# - workspace-mcp: --read-only flag (write tools never registered)
+# - workspace-mcp: PermissionHandler gates all non-read tools via Slack HITL
+#   (see _GOOGLE_MCP_AUTO_APPROVE_PREFIXES in permissions.py)
 # - Slack/Canvas MCP: can_use_tool callback requires Slack button approval
 # - summon-cli: registered with is_pm=False (excludes session_start/stop/message/resume/log_status)
 # The bare names below are defense-in-depth for built-in tools (Cron*, Task*)
 # and in case the CLI ever changes to match bare names.
 _SCRIBE_DISALLOWED_TOOLS: frozenset[str] = frozenset(
     {
-        # Google Workspace write tools — PRIMARY defense is --read-only flag
-        # on workspace-mcp. These names are defense-in-depth only.
-        "send_gmail_message",
-        "manage_event",
-        "create_drive_file",
-        "create_drive_folder",
-        "import_to_google_doc",
-        # These "get_" tools have write side-effects despite their names:
-        # get_drive_shareable_link modifies sharing permissions,
-        # get_drive_file_download_url writes to local disk.
-        "get_drive_shareable_link",
-        "get_drive_file_download_url",
+        # Google Workspace write tools (send_gmail_message, manage_event, etc.)
+        # are gated by PermissionHandler — always require Slack approval.
+        #
         # Slack MCP write tools (from slack/mcp.py)
         "slack_upload_file",
         "slack_create_thread",
@@ -295,8 +287,10 @@ def _build_google_workspace_mcp_untrusted(services: str) -> dict:
 
     For Scribe sessions: all tool results from workspace-mcp are wrapped
     with untrusted data markers before reaching the Claude SDK.
-    Uses ``--read-only`` to prevent write tools from being registered
-    (disallowed_tools bare names don't match MCP-namespaced tool names).
+    Write access is gated by the OAuth scopes granted at ``summon auth
+    google login`` time — workspace-mcp's ``@require_google_service``
+    decorator validates scopes at tool invocation and returns a clear
+    error if the credential lacks the required scope.
     """
     mcp_bin = find_workspace_mcp_bin()
     service_list = [s.strip() for s in services.split(",") if s.strip()]
@@ -307,7 +301,6 @@ def _build_google_workspace_mcp_untrusted(services: str) -> dict:
         "--tool-tier",
         "core",
         "--single-user",
-        "--read-only",
     ]
     return {
         "type": "stdio",

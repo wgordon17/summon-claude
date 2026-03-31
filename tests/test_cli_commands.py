@@ -711,7 +711,6 @@ class TestAuthStatus:
             patch("summon_claude.cli.auth._check_github_status", return_value=None),
             patch("summon_claude.cli.auth._check_google_status", return_value=None),
             patch("summon_claude.cli.auth.get_workspace_config_path", return_value=tmp_path / "x"),
-            patch("summon_claude.cli.auth.get_config_file", return_value=tmp_path / "cfg"),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "status"])
@@ -725,7 +724,6 @@ class TestAuthStatus:
             patch("summon_claude.cli.auth._check_github_status", return_value=True),
             patch("summon_claude.cli.auth._check_google_status", return_value=None),
             patch("summon_claude.cli.auth.get_workspace_config_path", return_value=tmp_path / "x"),
-            patch("summon_claude.cli.auth.get_config_file", return_value=tmp_path / "cfg"),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "status"])
@@ -740,7 +738,6 @@ class TestAuthStatus:
             patch("summon_claude.cli.auth._check_github_status", return_value=None),
             patch("summon_claude.cli.auth._check_google_status", return_value=None),
             patch("summon_claude.cli.auth.get_workspace_config_path", return_value=ws_file),
-            patch("summon_claude.cli.auth.get_config_file", return_value=tmp_path / "cfg"),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "status"])

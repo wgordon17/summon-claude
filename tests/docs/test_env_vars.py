@@ -98,6 +98,9 @@ _TYPE_MAP: dict[str, str] = {
 # Defaults that docs render differently than Python repr
 FUZZY_DEFAULTS: dict[str, str | None] = {
     # None / missing-value fields rendered as descriptive prose in docs
+    "SUMMON_SCRIBE_ENABLED": None,  # auto-detect (None → bool at model_validator)
+    "SUMMON_SCRIBE_GOOGLE_ENABLED": None,  # auto-detect (None → bool at model_validator)
+    "SUMMON_SCRIBE_SLACK_ENABLED": None,  # auto-detect (None → bool at model_validator)
     "SUMMON_DEFAULT_MODEL": None,
     "SUMMON_SCRIBE_CWD": None,
     "SUMMON_SCRIBE_MODEL": None,

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import logging
 import os
 import secrets
@@ -230,8 +231,31 @@ class EventConsumer:
         return events
 
 
+_SOCKET_MODE_LOCK = Path(__file__).resolve().parents[2] / ".cache" / "slack-test.lock"
+
+
+@pytest.fixture(scope="session")
+def _slack_socket_lock():
+    """Exclusive file lock for Socket Mode tests.
+
+    Slack distributes Socket Mode events across all connected consumers
+    for the same app token.  Concurrent test runs (e.g. overlapping
+    ``git push`` hooks) would steal each other's events, causing
+    non-deterministic timeouts.  This lock serialises access so only
+    one process holds a Socket Mode connection at a time.
+    """
+    _SOCKET_MODE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    fd = _SOCKET_MODE_LOCK.open("w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
+
+
 @pytest.fixture
-async def slack_harness():
+async def slack_harness(_slack_socket_lock):
     """Harness — skips if credentials not set."""
     if not os.environ.get("SUMMON_TEST_SLACK_BOT_TOKEN"):
         pytest.skip("SUMMON_TEST_SLACK_BOT_TOKEN not set")
@@ -289,43 +313,6 @@ async def fresh_channel(slack_harness):
     yield channel_id
     with contextlib.suppress(Exception):
         await slack_harness.client.conversations_archive(channel=channel_id)
-
-
-@pytest.fixture
-async def event_consumer(slack_harness, test_channel):
-    """Socket Mode consumer — connects, verifies pipeline, disconnects.
-
-    Each test gets a fresh connection. A canary message verifies the
-    event pipeline is live before the test starts — this both proves
-    Socket Mode delivery works AND naturally drains stale events from
-    other tests that accumulated while no consumer was connected.
-    """
-    consumer = EventConsumer(
-        bot_token=slack_harness.bot_token,
-        app_token=slack_harness.app_token,
-        signing_secret=slack_harness.signing_secret,
-    )
-    try:
-        await asyncio.wait_for(consumer.start(), timeout=15.0)
-    except TimeoutError:
-        pytest.skip("Socket Mode connection timed out (15s)")
-    except Exception as exc:
-        pytest.skip(f"Socket Mode connection failed: {exc}")
-    # Canary: post a message and verify it arrives via Socket Mode.
-    # Proves the pipeline is live and drains stale events in the process.
-    canary = f"canary-{secrets.token_hex(4)}"
-    await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
-    try:
-        await consumer.wait_for_event(
-            lambda e: e.get("type") == "message" and canary in e.get("text", ""),
-            timeout=10.0,
-        )
-    except TimeoutError:
-        await consumer.stop()
-        pytest.skip("Socket Mode canary failed — events not flowing")
-    consumer.drain()  # clear any remaining stale events after canary
-    yield consumer
-    await consumer.stop()
 
 
 @pytest.fixture

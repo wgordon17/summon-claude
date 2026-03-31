@@ -925,6 +925,107 @@ class TestArgBasedCaching:
         provider.post_interactive.assert_called()
 
 
+class TestGoogleWorkspaceMCPReadToolsAutoApproved:
+    """Google Workspace MCP read-only tools should be auto-approved without Slack prompt."""
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__workspace__get_gmail_message_content",
+            "mcp__workspace__get_events",
+            "mcp__workspace__get_drive_file_content",
+            "mcp__workspace__list_calendars",
+            "mcp__workspace__search_gmail_messages",
+            "mcp__workspace__search_drive_files",
+            "mcp__workspace__query_freebusy",
+            "mcp__workspace__read_sheet_values",
+            "mcp__workspace__check_drive_file_public_access",
+            "mcp__workspace__inspect_doc_structure",
+        ],
+    )
+    async def test_read_tool_auto_approved(self, tool_name):
+        handler, provider, _ = make_handler()
+        result = await handler.handle(tool_name, {}, None)
+        assert isinstance(result, PermissionResultAllow)
+        provider.post_interactive.assert_not_called()
+
+
+class TestGoogleWorkspaceMCPWriteToolsRequireApproval:
+    """Google Workspace MCP write tools require HITL approval via Slack."""
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__workspace__send_gmail_message",
+            "mcp__workspace__manage_event",
+            "mcp__workspace__create_drive_file",
+            "mcp__workspace__create_drive_folder",
+            "mcp__workspace__import_to_google_doc",
+            "mcp__workspace__draft_gmail_message",
+            "mcp__workspace__modify_gmail_message_labels",
+            "mcp__workspace__update_drive_file",
+            "mcp__workspace__set_drive_file_permissions",
+            "mcp__workspace__manage_drive_access",
+            "mcp__workspace__copy_drive_file",
+            # Unknown (fail-closed: new tools default to requiring approval)
+            pytest.param(
+                "mcp__workspace__some_future_write_tool",
+                id="unknown_tool_requires_approval",
+            ),
+        ],
+    )
+    async def test_requires_slack_approval(self, tool_name):
+        handler, provider, _ = make_handler()
+        provider.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))
+        result = await handler.handle(tool_name, {}, None)
+        assert isinstance(result, PermissionResultAllow)
+        provider.post_interactive.assert_called()
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__workspace__send_gmail_message",
+            "mcp__workspace__manage_event",
+        ],
+    )
+    async def test_ignores_sdk_allow_suggestion(self, tool_name):
+        """Write tools must require Slack approval even when SDK suggests allow."""
+        handler, provider, _ = make_handler()
+        provider.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))
+
+        suggestion = MagicMock()
+        suggestion.behavior = "allow"
+        context = MagicMock()
+        context.suggestions = [suggestion]
+
+        result = await handler.handle(tool_name, {}, context)
+        assert isinstance(result, PermissionResultAllow)
+        provider.post_interactive.assert_called()
+
+
+class TestGoogleWorkspaceMCPGuardTests:
+    """Guard tests: pin prefix sets so changes aren't silently missed."""
+
+    def test_auto_approve_prefixes_pinned(self):
+        from summon_claude.sessions.permissions import _GOOGLE_MCP_AUTO_APPROVE_PREFIXES
+
+        assert _GOOGLE_MCP_AUTO_APPROVE_PREFIXES == (
+            "mcp__workspace__get_",
+            "mcp__workspace__list_",
+            "mcp__workspace__search_",
+            "mcp__workspace__query_",
+            "mcp__workspace__read_",
+            "mcp__workspace__check_",
+            "mcp__workspace__debug_",
+            "mcp__workspace__inspect_",
+        )
+
+    def test_prefix_pinned(self):
+        from summon_claude.sessions.permissions import _GOOGLE_MCP_PREFIX
+
+        assert _GOOGLE_MCP_PREFIX == "mcp__workspace__"
+
+
 class TestIdentityVerificationFailClosed:
     """Guard tests: identity checks are fail-closed (no truthy bypass)."""
 

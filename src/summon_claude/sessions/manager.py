@@ -1233,8 +1233,10 @@ class SessionManager:
             from summon_claude.config import get_google_credentials_dir  # noqa: PLC0415
 
             creds_dir = get_google_credentials_dir()
-            if not creds_dir.is_dir() or not any(creds_dir.glob("*.json")):
-                logger.error("Run 'summon auth google login' before starting scribe")
+            if not creds_dir.is_dir() or not any(
+                f.suffix == ".json" and "@" in f.stem for f in creds_dir.glob("*.json")
+            ):
+                logger.error("Run 'summon auth google setup' before starting scribe")
                 return
 
         if self._config.scribe_slack_enabled:

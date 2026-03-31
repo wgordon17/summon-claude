@@ -25,21 +25,19 @@ Key behaviors:
 
 ## Setup
 
-### Step 1: Enable the scribe
+### Step 1: Configure data sources
 
-```{ .bash .notest }
-summon config set SUMMON_SCRIBE_ENABLED true
-```
-
-### Step 2: Enable data sources
-
-The scribe has two data collectors, each with its own enable flag. Enable at least one.
+The scribe auto-enables when it detects any configured data source. Set up at least one.
 
 #### Google Workspace
 
+First, run the guided setup to create Google OAuth credentials:
+
 ```{ .bash .notest }
-summon config set SUMMON_SCRIBE_GOOGLE_ENABLED true
+summon auth google setup
 ```
+
+This walks you through creating a GCP project, enabling the required APIs, configuring the OAuth consent screen, and downloading your credentials.
 
 Then authenticate with Google:
 
@@ -47,11 +45,11 @@ Then authenticate with Google:
 summon auth google login
 ```
 
-This opens a browser for OAuth consent. Grant access to the Google services you want the scribe to monitor. Once complete, credentials are stored in summon's config directory.
+This prompts which services need write access (all are read-only by default), then opens a browser for OAuth consent. Once complete, credentials are stored in summon's config directory and the scribe automatically detects them — no manual config flag needed.
 
 To verify authentication status:
 
-```bash
+```{ .bash .notest }
 summon auth google status
 ```
 
@@ -59,11 +57,11 @@ summon auth google status
 
 See [Scribe Integrations — Slack Browser Monitoring](scribe-integrations.md#slack-browser-monitoring) for full setup instructions.
 
-### Step 3: Start the scribe
+### Step 2: Start the scribe
 
 The scribe auto-spawns when you run:
 
-```{ .bash .notest }
+```bash
 summon project up
 ```
 
@@ -81,7 +79,7 @@ All scribe configuration uses `SUMMON_SCRIBE_*` environment variables. These can
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SUMMON_SCRIBE_ENABLED` | `false` | Enable the scribe agent |
+| `SUMMON_SCRIBE_ENABLED` | auto-detect | Enable the scribe agent (auto-enables when Google or Slack is detected) |
 | `SUMMON_SCRIBE_MODEL` | (inherits `SUMMON_DEFAULT_MODEL`) | Model to use for the scribe session |
 | `SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES` | `5` | How often the scribe polls for new data |
 | `SUMMON_SCRIBE_CWD` | `<data-dir>/scribe` | Working directory for the scribe session |
@@ -95,7 +93,7 @@ All scribe configuration uses `SUMMON_SCRIBE_*` environment variables. These can
 
 **Example with keyword filtering and quiet hours:**
 
-```{ .bash .notest }
+```bash
 summon config set SUMMON_SCRIBE_IMPORTANCE_KEYWORDS urgent,outage,deploy,PagerDuty
 summon config set SUMMON_SCRIBE_QUIET_HOURS 23:00-07:00
 ```
@@ -104,18 +102,18 @@ summon config set SUMMON_SCRIBE_QUIET_HOURS 23:00-07:00
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SUMMON_SCRIBE_GOOGLE_ENABLED` | `false` | Enable the Google Workspace data collector |
+| `SUMMON_SCRIBE_GOOGLE_ENABLED` | auto-detect | Enable the Google Workspace data collector (auto-detected when credentials exist) |
 | `SUMMON_SCRIBE_GOOGLE_SERVICES` | `gmail,calendar,drive` | Comma-separated list of Google services to monitor |
 
 The default services are `gmail`, `calendar`, `drive`. The full set of supported services is: `gmail`, `calendar`, `drive`, `docs`, `sheets`, `chat`, `forms`, `slides`, `tasks`, `contacts`, `search`, `appscript`.
 
-```{ .bash .notest }
+```bash
 # Monitor only Gmail and Calendar, not Drive
 summon config set SUMMON_SCRIBE_GOOGLE_SERVICES gmail,calendar
 ```
 
 !!! note "Requires workspace-mcp"
-    The Google collector requires the `google` extra: `uv tool install "summon-claude[google]"`. Google OAuth credentials must also be configured via `summon auth google login`.
+    The Google collector requires the `google` extra: `uv tool install "summon-claude[google]"`. Google OAuth credentials must also be configured via `summon auth google setup` and `summon auth google login`.
 
 ### Slack channel monitoring
 
@@ -123,7 +121,7 @@ The scribe can monitor an external Slack workspace using browser-based WebSocket
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SUMMON_SCRIBE_SLACK_ENABLED` | `false` | Enable Slack channel monitoring |
+| `SUMMON_SCRIBE_SLACK_ENABLED` | auto-detect | Enable Slack channel monitoring (auto-detected when Playwright and browser auth exist) |
 | `SUMMON_SCRIBE_SLACK_BROWSER` | `chrome` | Browser to use: `chrome`, `chromium`, `firefox`, or `webkit` |
 | `SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS` | (unset) | Comma-separated channel IDs to monitor |
 
@@ -132,7 +130,7 @@ DMs and @mentions are always captured regardless of `SUMMON_SCRIBE_SLACK_MONITOR
 **Example:**
 
 ```bash
-summon config set SUMMON_SCRIBE_SLACK_ENABLED true
+# Slack auto-enables when browser auth exists; these are optional overrides
 summon config set SUMMON_SCRIBE_SLACK_BROWSER chrome
 summon config set SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS C01ABC123,C02DEF456
 ```
@@ -202,11 +200,11 @@ The canvas is updated after each scan cycle. See [Canvas Integration](canvas.md)
 
 ## Full configuration example
 
-```{ .bash .notest }
+```bash
 # ~/.config/summon/config.env (or environment variables)
 
-# Enable scribe
-SUMMON_SCRIBE_ENABLED=true
+# Scribe auto-enables when Google or Slack is configured.
+# To force on/off: SUMMON_SCRIBE_ENABLED=true/false
 
 # Use a lighter model to reduce cost
 SUMMON_SCRIBE_MODEL=claude-haiku-4-5-20251001
@@ -220,12 +218,12 @@ SUMMON_SCRIBE_IMPORTANCE_KEYWORDS=urgent,sev1,sev2,outage,on-call
 # Don't post non-critical items overnight
 SUMMON_SCRIBE_QUIET_HOURS=22:00-08:00
 
-# Google Workspace collector
-SUMMON_SCRIBE_GOOGLE_ENABLED=true
+# Google Workspace collector (auto-detected when credentials exist)
+# SUMMON_SCRIBE_GOOGLE_ENABLED=true  # optional — auto-detected
 SUMMON_SCRIBE_GOOGLE_SERVICES=gmail,calendar
 
-# External Slack collector
-SUMMON_SCRIBE_SLACK_ENABLED=true
+# External Slack collector (auto-detected when browser auth exists)
+# SUMMON_SCRIBE_SLACK_ENABLED=true  # optional — auto-detected
 SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS=C01ABC123,C02DEF456
 ```
 

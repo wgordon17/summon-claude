@@ -131,6 +131,8 @@ ignore = [
 "src/summon_claude/cli/session.py" = ["PLR0911", "PLR0912", "PLR0915"]
 # cli/config: config_check has many validation branches by design
 "src/summon_claude/cli/config.py" = ["PLR0912", "PLR0915"]
+# cli/google_auth: google_setup wizard + google_auth have many branches/statements by design
+"src/summon_claude/cli/google_auth.py" = ["PLR0912", "PLR0915"]
 # Manager: _dispatch_control match arms each return
 "src/summon_claude/sessions/manager.py" = ["PLR0911"]
 # Permissions: handle() layered permission checks each return; action_id reserved for future routing

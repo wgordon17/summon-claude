@@ -110,6 +110,54 @@ class TestMarkToolResult:
         assert "[truncated by security proxy]" in text
         assert UNTRUSTED_BEGIN in text
 
+    def test_rewrites_scope_error_in_text(self):
+        """Scope error needle in tool result text is replaced with CLI guidance."""
+        from summon_claude.mcp_untrusted_proxy import _SCOPE_ERROR_NEEDLE
+
+        msg = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {"type": "text", "text": f"Error: {_SCOPE_ERROR_NEEDLE}\nVisit https://..."}
+                ]
+            },
+        }
+        result = _mark_tool_result(msg, "Google Workspace")
+        text = result["result"]["content"][0]["text"]
+        assert _SCOPE_ERROR_NEEDLE not in text
+        assert "summon auth google login" in text
+        assert UNTRUSTED_BEGIN in text
+
+    def test_passes_through_normal_text(self):
+        """Text without scope error needle passes through unchanged (except marking)."""
+        msg = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"content": [{"type": "text", "text": "normal tool output"}]},
+        }
+        result = _mark_tool_result(msg, "Google Workspace")
+        text = result["result"]["content"][0]["text"]
+        assert "normal tool output" in text
+        assert "summon auth google login" not in text
+
+    def test_scope_error_not_rewritten_in_resource(self):
+        """Resource items are not rewritten — scope errors only appear in text items."""
+        from summon_claude.mcp_untrusted_proxy import _SCOPE_ERROR_NEEDLE
+
+        msg = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {"type": "resource", "resource": {"text": f"Contains {_SCOPE_ERROR_NEEDLE}"}}
+                ]
+            },
+        }
+        result = _mark_tool_result(msg, "Drive")
+        text = result["result"]["content"][0]["resource"]["text"]
+        assert _SCOPE_ERROR_NEEDLE in text
+
 
 class TestRelayToParent:
     """Tests for _relay_to_parent error/fallback paths."""

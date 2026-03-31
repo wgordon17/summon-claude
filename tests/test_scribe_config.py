@@ -10,6 +10,34 @@ from click.testing import CliRunner
 
 from summon_claude.config import SummonConfig
 
+# Shortened patch target for google_auth module (keeps lines under 100 chars)
+_GA = "summon_claude.cli.google_auth"
+
+
+def _no_auto_detect():
+    """Context manager that disables all scribe auto-detection primitives."""
+    return _with_auto_detect()
+
+
+def _with_auto_detect(
+    *,
+    google_mcp: bool = False,
+    google_creds: bool = False,
+    playwright: bool = False,
+    slack_auth: bool = False,
+):
+    """Context manager that controls scribe auto-detection primitives."""
+    from contextlib import ExitStack
+    from unittest.mock import patch as _patch
+
+    stack = ExitStack()
+    _cfg = "summon_claude.config"
+    stack.enter_context(_patch(f"{_cfg}._workspace_mcp_installed", return_value=google_mcp))
+    stack.enter_context(_patch(f"{_cfg}._google_credentials_exist", return_value=google_creds))
+    stack.enter_context(_patch(f"{_cfg}.is_extra_installed", return_value=playwright))
+    stack.enter_context(_patch(f"{_cfg}._slack_browser_auth_exists", return_value=slack_auth))
+    return stack
+
 
 def _make_config(**overrides) -> SummonConfig:
     """Create a SummonConfig isolated from env vars and .env files."""
@@ -18,7 +46,8 @@ def _make_config(**overrides) -> SummonConfig:
 
 class TestScribeConfigDefaults:
     def test_scribe_disabled_by_default(self):
-        cfg = _make_config()
+        with _no_auto_detect():
+            cfg = _make_config()
         assert cfg.scribe_enabled is False
 
     def test_scan_interval_default(self):
@@ -42,15 +71,39 @@ class TestScribeConfigDefaults:
         assert cfg.scribe_quiet_hours == ""
 
     def test_google_enabled_default_false(self):
-        cfg = _make_config()
+        with _no_auto_detect():
+            cfg = _make_config()
         assert cfg.scribe_google_enabled is False
+
+    def test_google_enabled_auto_detects_true(self):
+        """Auto-detect enables Google when workspace-mcp and credentials exist."""
+        with _with_auto_detect(google_mcp=True, google_creds=True):
+            cfg = _make_config()
+        assert cfg.scribe_google_enabled is True
+
+    def test_google_enabled_auto_detect_no_creds(self):
+        """Auto-detect stays False when credentials are missing."""
+        with _with_auto_detect(google_mcp=True):
+            cfg = _make_config()
+        assert cfg.scribe_google_enabled is False
+
+    def test_google_enabled_explicit_false_overrides(self):
+        """Explicit SUMMON_SCRIBE_GOOGLE_ENABLED=false disables even with credentials."""
+        from summon_claude.config import _scribe_google_enabled
+
+        with _with_auto_detect(google_mcp=True, google_creds=True):
+            result = _scribe_google_enabled(
+                {"SUMMON_SCRIBE_ENABLED": "true", "SUMMON_SCRIBE_GOOGLE_ENABLED": "false"}
+            )
+        assert result is False
 
     def test_google_services_default(self):
         cfg = _make_config()
         assert cfg.scribe_google_services == "gmail,calendar,drive"
 
     def test_slack_disabled_by_default(self):
-        cfg = _make_config()
+        with _no_auto_detect():
+            cfg = _make_config()
         assert cfg.scribe_slack_enabled is False
 
     def test_slack_browser_default(self):
@@ -60,6 +113,64 @@ class TestScribeConfigDefaults:
     def test_monitored_channels_default_empty(self):
         cfg = _make_config()
         assert cfg.scribe_slack_monitored_channels == ""
+
+    def test_slack_enabled_auto_detects_true(self):
+        """Auto-detect enables Slack when Playwright and browser auth exist."""
+        with _with_auto_detect(playwright=True, slack_auth=True):
+            cfg = _make_config()
+        assert cfg.scribe_slack_enabled is True
+
+    def test_slack_enabled_auto_detect_no_auth(self):
+        """Auto-detect stays False when browser auth is missing."""
+        with _with_auto_detect(playwright=True):
+            cfg = _make_config()
+        assert cfg.scribe_slack_enabled is False
+
+    def test_slack_enabled_auto_detect_no_playwright(self):
+        """Auto-detect stays False when Playwright is not installed."""
+        with _with_auto_detect(slack_auth=True):
+            cfg = _make_config()
+        assert cfg.scribe_slack_enabled is False
+
+    def test_scribe_auto_enables_from_google(self):
+        """Scribe auto-enables when Google sub-feature is detected."""
+        with _with_auto_detect(google_mcp=True, google_creds=True):
+            cfg = _make_config()
+        assert cfg.scribe_enabled is True
+        assert cfg.scribe_google_enabled is True
+
+    def test_scribe_auto_enables_from_slack(self):
+        """Scribe auto-enables when Slack sub-feature is detected."""
+        with _with_auto_detect(playwright=True, slack_auth=True):
+            cfg = _make_config()
+        assert cfg.scribe_enabled is True
+        assert cfg.scribe_slack_enabled is True
+
+    def test_scribe_auto_enables_from_both(self):
+        """Scribe auto-enables when both sub-features are detected."""
+        with _with_auto_detect(
+            google_mcp=True,
+            google_creds=True,
+            playwright=True,
+            slack_auth=True,
+        ):
+            cfg = _make_config()
+        assert cfg.scribe_enabled is True
+        assert cfg.scribe_google_enabled is True
+        assert cfg.scribe_slack_enabled is True
+
+    def test_scribe_explicit_false_overrides_auto_detect(self):
+        """Explicit scribe_enabled=False stays off even with detected sub-features."""
+        with _with_auto_detect(google_mcp=True, google_creds=True):
+            cfg = _make_config(scribe_enabled=False)
+        assert cfg.scribe_enabled is False
+        assert cfg.scribe_google_enabled is True  # sub-feature still detected
+
+    def test_slack_explicit_false_overrides_auto_detect(self):
+        """Explicit scribe_slack_enabled=False stays off even with detected auth."""
+        with _with_auto_detect(playwright=True, slack_auth=True):
+            cfg = _make_config(scribe_slack_enabled=False)
+        assert cfg.scribe_slack_enabled is False
 
 
 class TestScribeConfigValidation:
@@ -165,14 +276,17 @@ class TestGoogleWorkspaceMCP:
 class TestGoogleAuthCLI:
     """Tests for auth google login/status CLI commands."""
 
-    def test_google_auth_missing_binary(self):
-        from pathlib import Path
-
+    def test_google_auth_exits_without_google_package(self):
         from summon_claude.cli import cli
 
         runner = CliRunner()
-        mock_path = Path("/nonexistent/workspace-mcp")
-        with patch("summon_claude.cli.config.find_workspace_mcp_bin", return_value=mock_path):
+        # Block the workspace-mcp auth package import that google_auth() needs
+        mocked = {
+            "auth": None,
+            "auth.credential_store": None,
+            "auth.google_auth": None,
+        }
+        with patch.dict(sys.modules, mocked):
             result = runner.invoke(cli, ["auth", "google", "login"])
         assert result.exit_code != 0
         assert "google" in result.output.lower()
@@ -198,7 +312,7 @@ class TestGoogleAuthCLI:
 
         runner = CliRunner()
         fake_dir = Path("/nonexistent")
-        with patch("summon_claude.cli.config.get_google_credentials_dir", return_value=fake_dir):
+        with patch(f"{_GA}.get_google_credentials_dir", return_value=fake_dir):
             result = runner.invoke(cli, ["auth", "google", "status"])
         assert "not configured" in result.output
 
@@ -400,20 +514,19 @@ class TestGoogleIntegration:
         runner = CliRunner()
         # Point to a temp dir with no credentials
         fake_dir = Path("/nonexistent")
-        with patch("summon_claude.cli.config.get_google_credentials_dir", return_value=fake_dir):
+        with patch(f"{_GA}.get_google_credentials_dir", return_value=fake_dir):
             result = runner.invoke(cli, ["auth", "google", "status"])
         assert result.exit_code == 0
         assert "not configured" in result.output.lower()
 
-    def test_ensure_secrets_expands_tilde_in_json_path(self):
-        """~ in JSON file paths is expanded to the home directory."""
+    def test_google_setup_parses_json_credentials(self):
+        """google_setup reads client_id and client_secret from a JSON file."""
         import json
         import tempfile
         from pathlib import Path
 
-        from summon_claude.cli.config import _ensure_google_client_secrets
+        from summon_claude.cli.google_auth import google_setup
 
-        # Create a real client_secret.json in a temp dir
         with tempfile.TemporaryDirectory() as tmpdir:
             secret_file = Path(tmpdir) / "client_secret.json"
             secret_file.write_text(
@@ -427,30 +540,245 @@ class TestGoogleIntegration:
                 )
             )
 
-            # Simulate user entering a path with ~
             fake_dir = Path(tmpdir) / "creds"
+            # Non-interactive, no gcloud: 3 choices (no current project option)
+            # select "3" (skip step 1); JSON path goes to builtins.input
+            prompts = iter([3])
+            # Step 2: "Open all?"(F), Step 3: "Already configured?"(T),
+            # Step 4: "Open?"(F)
+            confirms = iter([False, True, False])
+            _no_downloads = Path(tmpdir) / "fakehome"
+            env_patch = {"GOOGLE_OAUTH_CLIENT_ID": "", "GOOGLE_OAUTH_CLIENT_SECRET": ""}
             with (
-                patch("summon_claude.cli.config.get_google_credentials_dir", return_value=fake_dir),
-                patch("os.environ.get", return_value=""),
-                patch("click.prompt", return_value=str(secret_file)),
+                patch(f"{_GA}.get_google_credentials_dir", return_value=fake_dir),
+                patch(f"{_GA}.Path.home", return_value=_no_downloads),
+                patch("click.prompt", side_effect=prompts),
+                patch("click.confirm", side_effect=confirms),
+                patch("click.pause"),
+                patch("click.clear"),
+                patch("builtins.input", return_value=str(secret_file)),
+                patch(f"{_GA}.shutil.which", return_value=None),
+                patch(f"{_GA}.sys.stdin") as mock_stdin,
+                patch.dict("os.environ", env_patch),
             ):
-                result = _ensure_google_client_secrets()
-            assert result["GOOGLE_OAUTH_CLIENT_ID"] == "test-id.apps.googleusercontent.com"
-            assert result["GOOGLE_OAUTH_CLIENT_SECRET"] == "test-secret"
+                mock_stdin.isatty.return_value = False
+                google_setup()
 
-    def test_google_auth_cli_prompts_for_secrets(self):
-        """auth google login prompts interactively when no client secrets exist."""
+            client_env = fake_dir / "client_env"
+            assert client_env.exists()
+            content = client_env.read_text()
+            assert "GOOGLE_OAUTH_CLIENT_ID=test-id.apps.googleusercontent.com" in content
+            assert "GOOGLE_OAUTH_CLIENT_SECRET=test-secret" in content
+
+    def test_google_auth_cli_exits_without_credentials(self):
+        """auth google login exits with error when no credentials are configured."""
         from pathlib import Path
 
         from summon_claude.cli import cli
 
         runner = CliRunner()
-        # No env vars, no saved secrets -> should prompt
         fake_dir = Path("/nonexistent")
-        with patch("summon_claude.cli.config.get_google_credentials_dir", return_value=fake_dir):
-            result = runner.invoke(cli, ["auth", "google", "login"], input="\n\n")
-        # Prompts for credentials (aborted with empty input)
-        assert "google oauth client" in result.output.lower()
+        env_patch = {"GOOGLE_OAUTH_CLIENT_ID": "", "GOOGLE_OAUTH_CLIENT_SECRET": ""}
+        with (
+            patch(f"{_GA}.get_google_credentials_dir", return_value=fake_dir),
+            patch.dict("os.environ", env_patch),
+        ):
+            result = runner.invoke(cli, ["auth", "google", "login"])
+        assert result.exit_code != 0
+        assert "not configured" in result.output.lower() or "setup" in result.output.lower()
+
+    def test_google_setup_skips_when_credentials_exist(self):
+        """google_setup returns early when credentials exist and user declines re-run."""
+        import tempfile
+        from pathlib import Path
+
+        from summon_claude.cli.google_auth import google_setup
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_dir = Path(tmpdir) / "creds"
+            fake_dir.mkdir()
+            client_env = fake_dir / "client_env"
+            client_env.write_text(
+                "GOOGLE_OAUTH_CLIENT_ID=existing-id\nGOOGLE_OAUTH_CLIENT_SECRET=existing-secret\n"
+            )
+
+            with (
+                patch(f"{_GA}.get_google_credentials_dir", return_value=fake_dir),
+                patch("click.confirm", return_value=False),
+            ):
+                google_setup()
+            # File should be unchanged (no new credentials written)
+            assert "existing-id" in client_env.read_text()
+
+    @staticmethod
+    def _setup_gcloud_mock(**project_map):
+        """Build a _run_gcloud side_effect that resolves projects from a map.
+
+        Keys are project identifiers (ID, number, name), values are the
+        canonical project ID returned by ``projects describe``.  A value of
+        ``None`` means "not found".
+        """
+        from subprocess import CompletedProcess
+
+        def _mock(_gcloud_bin, args, *, timeout=30):
+            if args[0] == "config":
+                val = project_map.get("__current__", "(unset)")
+                return CompletedProcess(args=[], returncode=0, stdout=f"{val}\n", stderr="")
+            if args[:2] == ["projects", "describe"]:
+                proj = args[2]
+                resolved = project_map.get(proj)
+                if resolved:
+                    return CompletedProcess(
+                        args=[], returncode=0, stdout=f"{resolved}\n", stderr=""
+                    )
+                return CompletedProcess(args=[], returncode=1, stdout="", stderr="NOT_FOUND")
+            if args[:2] == ["projects", "create"]:
+                return CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            if args[:2] == ["services", "enable"]:
+                return CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            return CompletedProcess(args=[], returncode=1, stdout="", stderr="unknown")
+
+        return _mock
+
+    @staticmethod
+    def _run_wizard(*, prompts, confirms, gcloud_bin=None, gcloud_mock=None):
+        """Run google_setup with mocked I/O.  Returns the credentials dir."""
+        import contextlib
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from summon_claude.cli.google_auth import google_setup
+
+        tmpdir = tempfile.mkdtemp()
+        fake_dir = Path(tmpdir) / "creds"
+        secret_file = Path(tmpdir) / "client_secret.json"
+        secret_file.write_text(
+            json.dumps(
+                {
+                    "installed": {
+                        "client_id": "test-id.apps.googleusercontent.com",
+                        "client_secret": "test-secret",
+                    }
+                }
+            )
+        )
+        # Split prompts: __SECRET__ goes to builtins.input (readline-enabled),
+        # everything else goes to click.prompt
+        click_prompts = [v for v in prompts if v != "__SECRET__"]
+        input_responses = iter([str(secret_file)])
+
+        env_patch = {"GOOGLE_OAUTH_CLIENT_ID": "", "GOOGLE_OAUTH_CLIENT_SECRET": ""}
+        # Prevent auto-detection of real ~/Downloads/client_secret*.json
+        _no_downloads = Path(tmpdir) / "fakehome"
+        with (
+            patch(f"{_GA}.get_google_credentials_dir", return_value=fake_dir),
+            patch(f"{_GA}.Path.home", return_value=_no_downloads),
+            patch("click.prompt", side_effect=iter(click_prompts)),
+            patch("click.confirm", side_effect=iter(confirms)),
+            patch("click.pause"),
+            patch("click.clear"),
+            patch("click.launch"),
+            patch("builtins.input", side_effect=input_responses),
+            patch(f"{_GA}.shutil.which", return_value=gcloud_bin),
+            patch(f"{_GA}.sys.stdin") as mock_stdin,
+            patch.dict("os.environ", env_patch),
+            patch(f"{_GA}._run_gcloud", side_effect=gcloud_mock)
+            if gcloud_mock
+            else contextlib.nullcontext(),
+        ):
+            mock_stdin.isatty.return_value = False
+            google_setup()
+
+        return fake_dir
+
+    def test_google_setup_rejects_nonexistent_project(self):
+        """Wizard rejects a project that gcloud cannot verify."""
+        mock = self._setup_gcloud_mock(__current__="(unset)")
+        # Iter 1: existing(1), browse open(F), enter bad project → rejected
+        # Iter 2: skip(3)
+        # Step2: run(F)+openAll(F), Step3: already?(T), Step4: open(F)
+        fake_dir = self._run_wizard(
+            prompts=[1, "fake-nonexistent", 3, "__SECRET__"],
+            confirms=[False, False, False, True, False],
+            gcloud_bin="/usr/bin/gcloud",
+            gcloud_mock=mock,
+        )
+        assert (fake_dir / "client_env").exists()
+        assert "test-id.apps.googleusercontent.com" in (fake_dir / "client_env").read_text()
+
+    def test_google_setup_resolves_project_number(self):
+        """Wizard resolves a project number to canonical ID via gcloud."""
+        mock = self._setup_gcloud_mock(
+            __current__="(unset)",
+            **{"123456789": "resolved-proj-id", "resolved-proj-id": "resolved-proj-id"},
+        )
+        # existing(1), browse(F), confirm(T)
+        # Step2: run(F)+openAll(F), Step3: already?(T), Step4: open(F)
+        fake_dir = self._run_wizard(
+            prompts=[1, "123456789", "__SECRET__"],
+            confirms=[False, True, False, False, True, False],
+            gcloud_bin="/usr/bin/gcloud",
+            gcloud_mock=mock,
+        )
+        assert (fake_dir / "client_env").exists()
+
+    def test_google_setup_uses_current_gcloud_project(self):
+        """Wizard offers current gcloud project and verifies it."""
+        mock = self._setup_gcloud_mock(
+            __current__="my-current-proj",
+            **{"my-current-proj": "my-current-proj"},
+        )
+        # current(1), confirm(T)
+        # Step2: run(F)+openAll(F), Step3: already?(T), Step4: open(F)
+        fake_dir = self._run_wizard(
+            prompts=[1, "__SECRET__"],
+            confirms=[True, False, False, True, False],
+            gcloud_bin="/usr/bin/gcloud",
+            gcloud_mock=mock,
+        )
+        assert (fake_dir / "client_env").exists()
+
+    def test_google_setup_new_project_validates_format(self):
+        """Wizard rejects invalid project IDs for new projects."""
+        # No gcloud — [existing=1, new=2, skip=3]
+        # new(2), "BAD" → fail, skip(3)
+        # Step2: openAll(F), Step3: already?(T), Step4: open(F)
+        fake_dir = self._run_wizard(
+            prompts=[2, "BAD", 3, "__SECRET__"],
+            confirms=[False, True, False],
+        )
+        assert (fake_dir / "client_env").exists()
+
+    def test_google_setup_new_project_verifies_creation(self):
+        """Wizard rejects new project that was never created."""
+        mock = self._setup_gcloud_mock(__current__="(unset)")
+        # new(2), valid ID, create-run(F), create-browser(F)
+        # verify fails → skip(3)
+        # Step2: run(F)+openAll(F), Step3: already?(T), Step4: open(F)
+        fake_dir = self._run_wizard(
+            prompts=[2, "summon-claude-test1", 3, "__SECRET__"],
+            confirms=[False, False, False, False, True, False],
+            gcloud_bin="/usr/bin/gcloud",
+            gcloud_mock=mock,
+        )
+        assert (fake_dir / "client_env").exists()
+
+    def test_google_setup_confirm_loops_back(self):
+        """Declining confirm loops back to project selection."""
+        mock = self._setup_gcloud_mock(
+            __current__="(unset)",
+            **{"real-project-id": "real-project-id"},
+        )
+        # existing(1), browse(F), confirm(F) → loops back, skip(3)
+        # Step2: run(F)+openAll(F), Step3: already?(T), Step4: open(F)
+        fake_dir = self._run_wizard(
+            prompts=[1, "real-project-id", 3, "__SECRET__"],
+            confirms=[False, False, False, False, True, False],
+            gcloud_bin="/usr/bin/gcloud",
+            gcloud_mock=mock,
+        )
+        assert (fake_dir / "client_env").exists()
 
     def test_workspace_mcp_cli_lists_tools(self):
         """workspace-mcp --cli (no args) lists available tools without error."""
@@ -491,6 +819,181 @@ class TestGoogleIntegration:
                 f"Mismatch: summon has {sorted(VALID_GOOGLE_SERVICES - ws_services)} extra, "
                 f"missing {sorted(ws_services - VALID_GOOGLE_SERVICES)}"
             )
+
+
+class TestGoogleScopeHelpers:
+    """Tests for Google OAuth scope derivation and credential helpers."""
+
+    def test_google_scopes_readonly(self):
+        """Read-only service specs produce only .readonly scopes."""
+        from summon_claude.cli.google_auth import _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["gmail", "calendar", "drive"])
+        scope_names = {s.rsplit("/", 1)[-1] for s in scopes if "googleapis" in s}
+        assert "gmail.readonly" in scope_names
+        assert "calendar.readonly" in scope_names
+        assert "drive.readonly" in scope_names
+        assert "gmail.modify" not in scope_names
+        assert "calendar" not in scope_names  # full calendar = write
+
+    def test_google_scopes_readwrite(self):
+        """Read-write service specs produce write scopes."""
+        from summon_claude.cli.google_auth import _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["gmail:rw", "calendar", "drive:rw"])
+        scope_names = {s.rsplit("/", 1)[-1] for s in scopes if "googleapis" in s}
+        assert "gmail.modify" in scope_names
+        assert "calendar.readonly" in scope_names
+        assert "drive" in scope_names  # full drive scope = write
+        assert "gmail.readonly" not in scope_names
+        assert "drive.readonly" not in scope_names
+
+    def test_google_scopes_unknown_service_skipped(self):
+        """Unknown services are silently skipped."""
+        from summon_claude.cli.google_auth import _GOOGLE_BASE_SCOPES, _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["nonexistent"])
+        assert scopes == list(_GOOGLE_BASE_SCOPES)
+
+    def test_describe_granted_scopes(self):
+        """_describe_granted_scopes produces human-readable summaries."""
+        from summon_claude.cli.google_auth import (
+            _GOOGLE_SCOPE_PREFIX,
+            _describe_granted_scopes,
+        )
+
+        granted = {
+            f"{_GOOGLE_SCOPE_PREFIX}gmail.readonly",
+            f"{_GOOGLE_SCOPE_PREFIX}calendar",
+        }
+        desc = _describe_granted_scopes(granted)
+        assert "gmail (read-only)" in desc
+        assert "calendar (read-write)" in desc
+
+    def test_load_google_client_credentials_from_env(self):
+        """_load_google_client_credentials reads from environment variables."""
+        from summon_claude.cli.google_auth import _load_google_client_credentials
+
+        with patch.dict(
+            "os.environ",
+            {"GOOGLE_OAUTH_CLIENT_ID": "env-id", "GOOGLE_OAUTH_CLIENT_SECRET": "env-secret"},
+        ):
+            cid, csecret = _load_google_client_credentials()
+        assert cid == "env-id"
+        assert csecret == "env-secret"
+
+    def test_load_google_client_credentials_exits_when_missing(self):
+        """_load_google_client_credentials exits when no credentials are available."""
+        from pathlib import Path
+
+        from summon_claude.cli.google_auth import _load_google_client_credentials
+
+        with (
+            patch.dict(
+                "os.environ",
+                {"GOOGLE_OAUTH_CLIENT_ID": "", "GOOGLE_OAUTH_CLIENT_SECRET": ""},
+            ),
+            patch(
+                "summon_claude.cli.google_auth.get_google_credentials_dir",
+                return_value=Path("/nonexistent"),
+            ),
+            pytest.raises(SystemExit),
+        ):
+            _load_google_client_credentials()
+
+    def test_load_google_client_credentials_from_file(self):
+        """_load_google_client_credentials reads from client_env file."""
+        import tempfile
+        from pathlib import Path
+
+        from summon_claude.cli.google_auth import _load_google_client_credentials
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            creds_dir = Path(tmpdir) / "creds"
+            creds_dir.mkdir()
+            client_env = creds_dir / "client_env"
+            client_env.write_text(
+                "GOOGLE_OAUTH_CLIENT_ID=file-id\nGOOGLE_OAUTH_CLIENT_SECRET=file-secret\n"
+            )
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"GOOGLE_OAUTH_CLIENT_ID": "", "GOOGLE_OAUTH_CLIENT_SECRET": ""},
+                ),
+                patch(
+                    "summon_claude.cli.google_auth.get_google_credentials_dir",
+                    return_value=creds_dir,
+                ),
+            ):
+                cid, csecret = _load_google_client_credentials()
+            assert cid == "file-id"
+            assert csecret == "file-secret"
+
+    def test_google_credentials_exist_with_user_file(self):
+        """_google_credentials_exist returns True when a user@email.json file exists."""
+        import tempfile
+        from pathlib import Path
+
+        from summon_claude.config import _google_credentials_exist
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            creds = Path(tmpdir) / "google-credentials"
+            creds.mkdir()
+            (creds / "user@example.com.json").write_text("{}")
+            with patch("summon_claude.config.get_google_credentials_dir", return_value=creds):
+                assert _google_credentials_exist() is True
+
+    def test_google_credentials_exist_only_client_secret(self):
+        """_google_credentials_exist returns False when only client_secret.json exists."""
+        import tempfile
+        from pathlib import Path
+
+        from summon_claude.config import _google_credentials_exist
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            creds = Path(tmpdir) / "google-credentials"
+            creds.mkdir()
+            (creds / "client_secret.json").write_text("{}")
+            with patch("summon_claude.config.get_google_credentials_dir", return_value=creds):
+                assert _google_credentials_exist() is False
+
+    def test_google_credentials_exist_empty_dir(self):
+        """_google_credentials_exist returns False for an empty directory."""
+        import tempfile
+        from pathlib import Path
+
+        from summon_claude.config import _google_credentials_exist
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            creds = Path(tmpdir) / "google-credentials"
+            creds.mkdir()
+            with patch("summon_claude.config.get_google_credentials_dir", return_value=creds):
+                assert _google_credentials_exist() is False
+
+    def test_google_credentials_exist_no_dir(self):
+        """_google_credentials_exist returns False when credentials directory doesn't exist."""
+        from pathlib import Path
+
+        from summon_claude.config import _google_credentials_exist
+
+        with patch(
+            "summon_claude.config.get_google_credentials_dir",
+            return_value=Path("/nonexistent/google-credentials"),
+        ):
+            assert _google_credentials_exist() is False
+
+    def test_google_enabled_explicit_true_no_mcp(self):
+        """Explicit GOOGLE_ENABLED=true still requires workspace-mcp."""
+        from summon_claude.config import _scribe_google_enabled
+
+        with (
+            patch("summon_claude.config._workspace_mcp_installed", return_value=False),
+            patch("summon_claude.config._google_credentials_exist", return_value=True),
+        ):
+            result = _scribe_google_enabled(
+                {"SUMMON_SCRIBE_ENABLED": "true", "SUMMON_SCRIBE_GOOGLE_ENABLED": "true"}
+            )
+        assert result is False
 
 
 class TestGoogleOptionalDep:
@@ -612,19 +1115,21 @@ class TestScribeDisallowedTools:
         """Guard: pin the Scribe's disallowed tools set."""
         from summon_claude.sessions.session import _SCRIBE_DISALLOWED_TOOLS
 
-        # Write tools must be blocked
-        assert "send_gmail_message" in _SCRIBE_DISALLOWED_TOOLS
-        assert "manage_event" in _SCRIBE_DISALLOWED_TOOLS
+        # Summon/Slack/Canvas write tools must be blocked
         assert "session_start" in _SCRIBE_DISALLOWED_TOOLS
         assert "slack_upload_file" in _SCRIBE_DISALLOWED_TOOLS
         assert "CronCreate" in _SCRIBE_DISALLOWED_TOOLS
         assert "summon_canvas_write" in _SCRIBE_DISALLOWED_TOOLS
-        assert "get_drive_shareable_link" in _SCRIBE_DISALLOWED_TOOLS
-        assert "get_drive_file_download_url" in _SCRIBE_DISALLOWED_TOOLS
         # Exfiltration-capable built-in tools
         assert "Bash" in _SCRIBE_DISALLOWED_TOOLS
         assert "WebSearch" in _SCRIBE_DISALLOWED_TOOLS
         assert "WebFetch" in _SCRIBE_DISALLOWED_TOOLS
+
+        # Google Workspace write tools are NOT blocked — write access
+        # is gated by OAuth scopes granted at `summon auth google login`.
+        assert "send_gmail_message" not in _SCRIBE_DISALLOWED_TOOLS
+        assert "manage_event" not in _SCRIBE_DISALLOWED_TOOLS
+        assert "create_drive_file" not in _SCRIBE_DISALLOWED_TOOLS
 
         # Read-only tools must NOT be blocked
         assert "search_gmail_messages" not in _SCRIBE_DISALLOWED_TOOLS
@@ -638,11 +1143,6 @@ class TestScribeDisallowedTools:
         """Invariant: disallowed set must not include read-only tools."""
         from summon_claude.sessions.session import _SCRIBE_DISALLOWED_TOOLS
 
-        # These "get_" tools have write side-effects despite their names
-        write_action_get_tools = {
-            "get_drive_shareable_link",  # modifies sharing permissions
-            "get_drive_file_download_url",  # writes file to local disk
-        }
         read_prefixes = (
             "search_",
             "get_",
@@ -655,8 +1155,6 @@ class TestScribeDisallowedTools:
             "summon_canvas_read",
         )
         for tool_name in _SCRIBE_DISALLOWED_TOOLS:
-            if tool_name in write_action_get_tools:
-                continue
             assert not any(tool_name.startswith(p) for p in read_prefixes), (
                 f"Read-only tool '{tool_name}' must not be in disallowed set"
             )
@@ -670,7 +1168,7 @@ class TestScribeDisallowedTools:
 
         combined = _WORKTREE_DISALLOWED_TOOLS | _SCRIBE_DISALLOWED_TOOLS
         assert "Bash(git worktree add*)" in combined
-        assert "send_gmail_message" in combined
+        assert "session_start" in combined
 
     def test_pm_prompt_includes_instruction_priority(self):
         """PM prompt must include instruction priority hierarchy."""
@@ -723,7 +1221,8 @@ class TestScribeDisallowedTools:
         assert "--source" in result["args"]
         assert "Google Workspace" in result["args"]
         assert "--" in result["args"]
-        assert "--read-only" in result["args"]
+        # Write access is gated by OAuth scopes, not --read-only.
+        assert "--read-only" not in result["args"]
 
     def test_scribe_disallowed_workspace_tools_exist(self):
         """Guard: workspace-mcp write tools in disallowed set must exist in package."""

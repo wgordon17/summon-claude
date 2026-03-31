@@ -11,11 +11,98 @@ trigger persistent auto-disable.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
 import secrets
 
 import pytest
+import pytest_asyncio
 
-pytestmark = [pytest.mark.slack, pytest.mark.xdist_group("slack_events")]
+from summon_claude.slack.client import SlackClient
+from tests.integration.conftest import EventConsumer, SlackTestHarness
+
+pytestmark = [
+    pytest.mark.slack,
+    pytest.mark.xdist_group("slack_events"),
+    pytest.mark.asyncio(loop_scope="module"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped fixtures: all event-delivery tests share a single Socket Mode
+# connection and event loop, eliminating per-test reconnection flakiness.
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def slack_harness(_slack_socket_lock):
+    """Module-scoped harness — skips if credentials not set."""
+    if not os.environ.get("SUMMON_TEST_SLACK_BOT_TOKEN"):
+        pytest.skip("SUMMON_TEST_SLACK_BOT_TOKEN not set")
+    harness = SlackTestHarness()
+    await harness.resolve_bot_user_id()
+    yield harness
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def test_channel(slack_harness):
+    """Module-scoped test channel for event delivery tests."""
+    channel_id = await slack_harness.create_test_channel(prefix="events")
+    user_id = await slack_harness.find_non_bot_user()
+    if user_id:
+        with contextlib.suppress(Exception):
+            await slack_harness.client.conversations_invite(
+                channel=channel_id,
+                users=user_id,
+            )
+    await slack_harness.client.conversations_setTopic(
+        channel=channel_id,
+        topic="Event delivery integration tests",
+    )
+    yield channel_id
+
+
+@pytest.fixture(scope="module")
+def slack_client(slack_harness, test_channel):
+    """Module-scoped SlackClient bound to event test channel."""
+    return SlackClient(slack_harness.client, test_channel)
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def event_consumer(slack_harness, test_channel):
+    """Module-scoped Socket Mode consumer — connects once for all tests.
+
+    A single long-lived connection eliminates per-test reconnection overhead
+    and the flaky event delivery window during Socket Mode handshake. Tests
+    use unique nonces in predicates, so cross-test interference is impossible.
+    """
+    consumer = EventConsumer(
+        bot_token=slack_harness.bot_token,
+        app_token=slack_harness.app_token,
+        signing_secret=slack_harness.signing_secret,
+    )
+    try:
+        await asyncio.wait_for(consumer.start(), timeout=15.0)
+    except TimeoutError:
+        pytest.skip("Socket Mode connection timed out (15s)")
+    except Exception as exc:
+        pytest.skip(f"Socket Mode connection failed: {exc}")
+
+    canary = f"canary-{secrets.token_hex(4)}"
+    await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
+    try:
+        await consumer.wait_for_event(
+            lambda e: e.get("type") == "message" and canary in e.get("text", ""),
+            timeout=10.0,
+        )
+    except TimeoutError:
+        await consumer.stop()
+        pytest.skip("Socket Mode canary failed — events not flowing")
+    consumer.drain()
+
+    yield consumer
+    await consumer.stop()
 
 
 class TestMessageEvents:

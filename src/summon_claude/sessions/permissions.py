@@ -103,6 +103,21 @@ _GITHUB_MCP_REQUIRE_APPROVAL = frozenset(
     ]
 )
 
+# Google Workspace MCP (workspace-mcp) — read-only prefixes are auto-approved,
+# everything else requires Slack approval. Prefix-based rather than enumerated
+# so new write tools added by workspace-mcp are fail-closed (require approval).
+_GOOGLE_MCP_PREFIX = "mcp__workspace__"
+_GOOGLE_MCP_AUTO_APPROVE_PREFIXES = (
+    "mcp__workspace__get_",
+    "mcp__workspace__list_",
+    "mcp__workspace__search_",
+    "mcp__workspace__query_",
+    "mcp__workspace__read_",
+    "mcp__workspace__check_",
+    "mcp__workspace__debug_",
+    "mcp__workspace__inspect_",
+)
+
 _PERMISSION_TIMEOUT_S = 600  # 10 minutes
 
 # Tools that write to the filesystem — gated until worktree entry.
@@ -339,7 +354,16 @@ class PermissionHandler:
             logger.debug("Auto-approving GitHub MCP tool: %s", tool_name)
             return PermissionResultAllow()
 
-        # 2d. Summon's own MCP tools — always auto-approved.
+        # 2d. Google Workspace MCP (workspace-mcp): read-only prefixes auto-approved,
+        # all write/modify/create/send/manage tools require Slack HITL approval.
+        if tool_name.startswith(_GOOGLE_MCP_PREFIX):
+            if tool_name.startswith(_GOOGLE_MCP_AUTO_APPROVE_PREFIXES):
+                logger.debug("Auto-approving Google Workspace read tool: %s", tool_name)
+                return PermissionResultAllow()
+            logger.info("Google Workspace write tool requires approval: %s", tool_name)
+            return await self._request_approval(tool_name, input_data, context)
+
+        # 2e. Summon's own MCP tools — always auto-approved.
         # These are internal tools provided by the session's own MCP servers
         # (summon-cli, summon-slack, summon-canvas) and already scoped to
         # the session's permissions.
@@ -347,7 +371,7 @@ class PermissionHandler:
             logger.debug("Auto-approving summon MCP tool: %s", tool_name)
             return PermissionResultAllow()
 
-        # 2e. Session-lifetime cached approvals (defense-in-depth:
+        # 2f. Session-lifetime cached approvals (defense-in-depth:
         # GitHub require-approval tools are never session-cached)
         if (
             tool_name in self._session_approved_tools
@@ -356,10 +380,10 @@ class PermissionHandler:
             logger.debug("Session-approved tool: %s", tool_name)
             return PermissionResultAllow()
 
-        # 2f. Per-argument cache — exact match on full arg (Bash command,
+        # 2g. Per-argument cache — exact match on full arg (Bash command,
         # file path outside CWD).  Uses _get_cacheable_arg (not
         # get_tool_primary_arg) to avoid truncation collisions.
-        # Defense-in-depth: GitHub require-approval tools excluded (same as 2e).
+        # Defense-in-depth: GitHub require-approval tools excluded (same as 2f).
         cacheable_arg = _get_cacheable_arg(tool_name, input_data)
         if (
             cacheable_arg
@@ -369,7 +393,7 @@ class PermissionHandler:
             logger.debug("Session-approved %s arg: %s", tool_name, cacheable_arg)
             return PermissionResultAllow()
 
-        # 2g. Auto-mode classifier (only active after worktree entry)
+        # 2h. Auto-mode classifier (only active after worktree entry)
         if self._classifier_enabled and self._classifier is not None and self._in_worktree:
             context_text = extract_classifier_context(self._context_history)
             classify_result = await self._classifier.classify(

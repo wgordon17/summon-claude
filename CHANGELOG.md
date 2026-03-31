@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`summon reset data`** — Deletes all runtime data (database, logs, daemon state) and starts fresh
 - **`summon reset config`** — Deletes all configuration (Slack tokens, Google OAuth credentials)
 
+- **Google OAuth guided setup** — `summon auth google setup` is an interactive wizard with a step progress roadmap, clear-screen transitions, and `pick`-based menu selection. Console deep-links route through Google's account chooser for multi-account users. When `gcloud` CLI is detected, detects the current project, creates new projects, and enables APIs inline; when absent, offers to open browser links automatically via `click.launch()`. Styled output with `click.secho()` for visual hierarchy
 - **Config UX overhaul** — `summon init` groups options into core (Slack, model, scribe, GitHub) and advanced (display, behavior, thinking) with a gating prompt. Shows contextual help hints for Slack tokens and GitHub PAT. Auto-runs `config check` on completion
 - **Config check features section** — `summon config check` now shows a feature inventory (projects, workflow, hooks, hook bridge) with actionable commands, validates GitHub PAT via API, and nudges `summon auth google login` when scribe is enabled
 

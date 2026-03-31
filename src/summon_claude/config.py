@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -444,19 +444,27 @@ class SummonConfig(BaseSettings):
     # ------------------------------------------------------------------
 
     # Core scribe settings
-    scribe_enabled: bool = False
+    # Auto-detected: enabled when any sub-feature (Google or Slack) is
+    # detected.  Can be explicitly enabled/disabled with SUMMON_SCRIBE_ENABLED.
+    scribe_enabled: bool | None = None  # None = auto-detect
     scribe_scan_interval_minutes: int = 5
     scribe_cwd: str | None = None  # None -> get_data_dir() / "scribe"
     scribe_model: str | None = None  # None -> inherit default_model
     scribe_importance_keywords: str = ""  # comma-separated: "urgent,action required,deadline"
     scribe_quiet_hours: str = ""  # "22:00-07:00" — only level-5 alerts during this window
 
-    # Google Workspace data collector (requires workspace-mcp optional dep)
-    scribe_google_enabled: bool = False
+    # Google Workspace data collector (requires workspace-mcp optional dep).
+    # Auto-detected: enabled when workspace-mcp is installed AND a user
+    # credential exists (from ``summon auth google login``).  Can be
+    # explicitly disabled with SUMMON_SCRIBE_GOOGLE_ENABLED=false.
+    scribe_google_enabled: bool | None = None  # None = auto-detect
     scribe_google_services: str = "gmail,calendar,drive"  # comma-separated service list
 
     # External Slack data collector
-    scribe_slack_enabled: bool = False
+    # Auto-detected: enabled when Playwright is installed AND valid browser
+    # auth state exists (from ``summon auth slack login``).  Can be
+    # explicitly disabled with SUMMON_SCRIBE_SLACK_ENABLED=false.
+    scribe_slack_enabled: bool | None = None  # None = auto-detect
     scribe_slack_browser: str = "chrome"  # "chrome", "firefox", or "webkit"
     scribe_slack_monitored_channels: str = ""  # comma-separated channel IDs (e.g. "C01ABC,C02DEF")
 
@@ -476,6 +484,26 @@ class SummonConfig(BaseSettings):
     auto_mode_environment: str = ""
     auto_mode_deny: str = ""
     auto_mode_allow: str = ""
+
+    @model_validator(mode="after")
+    def _auto_detect_scribe(self) -> SummonConfig:
+        """Resolve auto-detect (None) fields for scribe and its sub-features.
+
+        Order matters: sub-features resolve first so scribe_enabled can
+        check whether any sub-feature is active.
+        """
+        # 1. Sub-feature: Google
+        if self.scribe_google_enabled is None:
+            self.scribe_google_enabled = _workspace_mcp_installed() and _google_credentials_exist()
+        # 2. Sub-feature: Slack
+        if self.scribe_slack_enabled is None:
+            self.scribe_slack_enabled = (
+                is_extra_installed("playwright") and _slack_browser_auth_exists()
+            )
+        # 3. Top-level: auto-enable when any sub-feature is detected
+        if self.scribe_enabled is None:
+            self.scribe_enabled = self.scribe_google_enabled or self.scribe_slack_enabled
+        return self
 
     @classmethod
     def for_test(cls, **overrides: object) -> SummonConfig:
@@ -743,22 +771,62 @@ def _workspace_mcp_installed() -> bool:
 
 
 def _scribe_enabled(cfg: dict[str, str]) -> bool:
-    return _is_truthy(cfg.get("SUMMON_SCRIBE_ENABLED", ""))
+    explicit = cfg.get("SUMMON_SCRIBE_ENABLED", "")
+    if explicit:
+        return _is_truthy(explicit)
+    # Auto-detect: enabled when any sub-feature's prerequisites are met.
+    # Uses raw detection primitives (not _scribe_google_enabled/_scribe_slack_enabled)
+    # to avoid circular dependency — those functions gate on _scribe_enabled.
+    google_detected = _workspace_mcp_installed() and _google_credentials_exist()
+    slack_detected = is_extra_installed("playwright") and _slack_browser_auth_exists()
+    return google_detected or slack_detected
+
+
+def _google_credentials_exist() -> bool:
+    """Check if a user has completed Google OAuth (credential file exists)."""
+    creds_dir = get_google_credentials_dir()
+    return any(f.suffix == ".json" and "@" in f.stem for f in creds_dir.glob("*.json"))
+
+
+def _slack_browser_auth_exists() -> bool:
+    """Check if valid Slack browser auth state exists (Playwright cookies).
+
+    Lightweight check: verifies the workspace config file references a state
+    file that exists.  Does NOT check cookie expiry — that's validated at
+    runtime by the browser monitor.
+    """
+    import json as _json  # noqa: PLC0415
+
+    ws_config = get_workspace_config_path()
+    if not ws_config.exists():
+        return False
+    try:
+        data = _json.loads(ws_config.read_text())
+    except (ValueError, OSError):
+        return False
+    state_path = Path(data.get("auth_state_path", ""))
+    return state_path.is_file()
 
 
 def _scribe_google_enabled(cfg: dict[str, str]) -> bool:
-    return (
-        _scribe_enabled(cfg)
-        and _is_truthy(cfg.get("SUMMON_SCRIBE_GOOGLE_ENABLED", ""))
-        and _workspace_mcp_installed()
-    )
+    # Explicit config takes precedence.  If unset, auto-detect from
+    # credentials: if workspace-mcp is installed AND a user credential
+    # file exists, Google is enabled automatically.
+    explicit = cfg.get("SUMMON_SCRIBE_GOOGLE_ENABLED", "")
+    if explicit:
+        return _scribe_enabled(cfg) and _is_truthy(explicit) and _workspace_mcp_installed()
+    return _scribe_enabled(cfg) and _workspace_mcp_installed() and _google_credentials_exist()
 
 
 def _scribe_slack_enabled(cfg: dict[str, str]) -> bool:
+    # Explicit config takes precedence.  If unset, auto-detect from
+    # browser auth: if Playwright is installed AND a saved auth state
+    # file exists, Slack is enabled automatically.
+    explicit = cfg.get("SUMMON_SCRIBE_SLACK_ENABLED", "")
+    if explicit:
+        return _scribe_enabled(cfg) and _is_truthy(explicit) and is_extra_installed("playwright")
     return (
-        _scribe_enabled(cfg)
-        and _is_truthy(cfg.get("SUMMON_SCRIBE_SLACK_ENABLED", ""))
-        and is_extra_installed("playwright")
+        _scribe_enabled(cfg) and is_extra_installed("playwright") and _slack_browser_auth_exists()
     )
 
 
@@ -875,7 +943,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_ENABLED",
         group="Scribe",
         label="Enable Scribe",
-        help_text="Enable the background scribe agent",
+        help_text="Enable the background scribe agent (auto-detected from Google/Slack)",
         input_type="flag",
         help_hint="Background agent that monitors Slack/Google and provides context to sessions",
     ),
@@ -954,7 +1022,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         label="Enable Scribe Slack Collector",
         help_text="Enable the Slack data collector for the scribe agent",
         input_type="flag",
-        visible=_scribe_enabled,
+        visible=lambda cfg: _scribe_enabled(cfg) and is_extra_installed("playwright"),
     ),
     ConfigOption(
         field_name="scribe_slack_browser",
