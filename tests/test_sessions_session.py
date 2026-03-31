@@ -426,6 +426,32 @@ class TestDetectGit:
         assert str(tmp_path.resolve()) in ceiling
         assert ceiling.startswith(existing_ceiling + ":")
 
+    async def test_git_dir_and_work_tree_scrubbed(self, tmp_path):
+        """SC-03: GIT_DIR and GIT_WORK_TREE must not leak into subprocess env."""
+        import os
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from summon_claude.sessions.session import _detect_git
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"true\nmain\n", b""))
+
+        captured_env = {}
+
+        async def capture_exec(*args, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return mock_proc
+
+        with (
+            patch.dict(os.environ, {"GIT_DIR": "/evil/.git", "GIT_WORK_TREE": "/evil"}),
+            patch("asyncio.create_subprocess_exec", side_effect=capture_exec),
+        ):
+            await _detect_git(str(tmp_path))
+
+        assert "GIT_DIR" not in captured_env
+        assert "GIT_WORK_TREE" not in captured_env
+
 
 class TestSessionShutdownControl:
     """Test request_shutdown() and authenticate() — the new public control API."""
@@ -3425,6 +3451,39 @@ class TestFinalizeEscalatingWarnings:
             ),
         ):
             await session._finalize_turn_result(rt, streamer, sr)
+
+    async def test_non_git_session_skips_detect_git_on_topic_update(self):
+        """Non-git sessions must not spawn a _detect_git subprocess for topic updates."""
+        from pathlib import Path
+
+        from summon_claude.sessions.context import ContextUsage
+
+        session = make_session()
+        session._is_git_repo = False
+        session._last_topic_model = None  # different from "opus" → triggers update
+        session._last_topic_branch = None
+        session._claude_session_id = "already-set"
+        session._last_context = ContextUsage(
+            input_tokens=20000, context_window=200000, percentage=10.0
+        )
+        rt = make_rt(AsyncMock())
+
+        detect_mock = AsyncMock(return_value=(False, None))
+        with (
+            patch("summon_claude.sessions.session.get_last_step_usage", return_value=None),
+            patch(
+                "summon_claude.sessions.session.derive_transcript_path",
+                return_value=Path("/fake"),
+            ),
+            patch("summon_claude.sessions.session._detect_git", detect_mock),
+        ):
+            await session._finalize_turn_result(
+                rt, self._make_streamer(), self._make_stream_result()
+            )
+
+        detect_mock.assert_not_called()
+        # Topic should still be updated (model changed)
+        rt.client.set_topic.assert_called_once()
 
     async def test_no_warning_below_75pct(self):
         session = make_session()

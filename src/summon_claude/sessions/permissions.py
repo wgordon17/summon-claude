@@ -253,7 +253,7 @@ class PermissionHandler:
         ]
         self._in_containment = False
         self._containment_root: Path | None = None
-        self._is_git_repo: bool = True
+        self._is_git_repo: bool = True  # updated by notify_containment_active(is_git_repo=False)
         self._write_access_granted = False
 
         # Pending requests waiting for batched approval
@@ -449,14 +449,18 @@ class PermissionHandler:
     def notify_containment_active(
         self, containment_root: Path, *, is_git_repo: bool = True
     ) -> None:
-        """Activate CWD-based containment for non-git or bare-directory sessions.
+        """Activate explicit CWD-based containment.
+
+        Call at session start for non-git directories (pass ``is_git_repo=False``)
+        or when a git session needs containment without worktree entry.
 
         SC-04: No-op if containment is already active (anti-widening guard).
         SC-01: containment_root is resolved eagerly at call time.
 
         Args:
             containment_root: The directory to use as containment root.
-            is_git_repo: False for non-git directories; affects denial messages.
+            is_git_repo: False for non-git directories; affects denial messages
+                and the one-time gate-approval warning.
         """
         if self._in_containment:
             logger.warning(

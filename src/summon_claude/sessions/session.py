@@ -347,7 +347,9 @@ async def _detect_git(cwd: str) -> tuple[bool, str | None]:
     if not os.path.isabs(cwd) or not os.path.isdir(cwd):  # noqa: ASYNC240, PTH117, PTH112
         return False, None
     resolved = os.path.realpath(cwd)  # noqa: ASYNC240
-    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
+    env = dict(os.environ)
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
     # Preserve caller's GIT_CEILING_DIRECTORIES if set; extend with resolved cwd
     existing_ceiling = env.get("GIT_CEILING_DIRECTORIES", "")
     env["GIT_CEILING_DIRECTORIES"] = (

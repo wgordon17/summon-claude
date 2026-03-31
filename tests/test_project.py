@@ -489,6 +489,19 @@ class TestBuildPmSystemPromptWorkflow:
         assert "## PR Review" in prompt
         assert "## Worktree Cleanup" in prompt
 
+    def test_git_scan_prompt_without_github_no_pr_review(self):
+        """Default case: git repo without GitHub must not include PR review."""
+        prompt = build_pm_scan_prompt(is_git_repo=True, github_enabled=False)
+        assert "## PR Review" not in prompt
+        assert "## On-Demand PR Review" not in prompt
+        assert "## Worktree Cleanup" not in prompt
+
+    def test_scan_prompt_canvas_update_always_present(self):
+        """Canvas Update must appear in scan prompt regardless of is_git_repo."""
+        for git in (True, False):
+            prompt = build_pm_scan_prompt(is_git_repo=git)
+            assert "## Canvas Update" in prompt
+
 
 # ---------------------------------------------------------------------------
 # PM welcome message
