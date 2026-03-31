@@ -560,6 +560,16 @@ class TestCheckJiraStatus:
         result = jira_auth.check_jira_status()
         assert result is None
 
+    def test_returns_error_when_no_access_token(self):
+        """Token file with valid JSON but missing access_token."""
+        token = _make_token()
+        del token["access_token"]
+        jira_auth.save_jira_token(token)
+
+        result = jira_auth.check_jira_status()
+        assert result is not None
+        assert "access_token" in result
+
 
 # ---------------------------------------------------------------------------
 # logout
@@ -763,6 +773,28 @@ class TestDoRefresh:
             result = await jira_auth._do_refresh(token)
 
         mock_discover.assert_not_called()
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_http_scheme_triggers_rediscovery(self):
+        """Cached token_endpoint with http:// (not https://) triggers rediscovery."""
+        token = _make_token()
+        token["token_endpoint"] = "http://cf.mcp.atlassian.com/v1/token"
+
+        server_response = {"access_token": "new", "expires_in": 3600}
+        mock_session = self._make_mock_http(200, server_response)
+
+        with (
+            patch("aiohttp.ClientSession", return_value=mock_session),
+            patch.object(
+                jira_auth,
+                "discover_oauth_metadata",
+                return_value={"token_endpoint": "https://cf.mcp.atlassian.com/v1/token"},
+            ) as mock_discover,
+        ):
+            result = await jira_auth._do_refresh(token)
+
+        mock_discover.assert_called_once()
         assert result is not None
 
     @pytest.mark.asyncio

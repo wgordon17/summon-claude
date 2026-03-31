@@ -571,7 +571,7 @@ async def _do_refresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
     token_endpoint = token_data.get("token_endpoint")
     if token_endpoint:
         parsed = urlparse(token_endpoint)
-        if parsed.netloc not in _TRUSTED_TOKEN_HOSTS:
+        if parsed.scheme != "https" or parsed.netloc not in _TRUSTED_TOKEN_HOSTS:
             logger.warning(
                 "Cached token_endpoint %r is not on a trusted Atlassian host — rediscovering",
                 parsed.netloc,

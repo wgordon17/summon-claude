@@ -226,8 +226,10 @@ def auth_slack_channels(refresh: bool) -> None:
 
 
 def _normalize_site(site: str) -> str:
-    """Normalize a site input to a full hostname (e.g. 'myorg' → 'myorg.atlassian.net')."""
+    """Normalize a site input to a bare hostname (e.g. 'myorg' → 'myorg.atlassian.net')."""
     s = site.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
+    # Strip any path component (e.g. "myorg.atlassian.net/wiki" → "myorg.atlassian.net")
+    s = s.split("/")[0]
     if "." not in s:
         s = f"{s}.atlassian.net"
     return s

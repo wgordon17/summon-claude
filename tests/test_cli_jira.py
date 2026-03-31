@@ -147,6 +147,32 @@ class TestJiraLogin:
         # Warning should have been emitted to stderr
         assert "warning" in result.output.lower() or "did not match" in result.output.lower()
 
+    def test_jira_login_site_flag_discovery_unavailable_stores_hostname(self):
+        """--site with discovery returning empty stores hostname with warning."""
+        token_data = {"access_token": "atoken"}
+
+        with (
+            patch(
+                "summon_claude.jira_auth.start_auth_flow",
+                new_callable=AsyncMock,
+                return_value=token_data,
+            ),
+            patch(
+                "summon_claude.jira_auth.discover_cloud_sites",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch("summon_claude.jira_auth.save_jira_token") as mock_save,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "jira", "login", "--site", "myorg"])
+
+        assert result.exit_code == 0
+        saved = mock_save.call_args[0][0]
+        assert saved["cloud_id"] == "myorg.atlassian.net"
+        output = result.output.lower()
+        assert "discovery unavailable" in output or "warning" in output
+
     def test_jira_login_timeout_exits_nonzero(self):
         """If start_auth_flow raises TimeoutError, CLI exits with code 1."""
         with patch(
@@ -333,6 +359,12 @@ class TestNormalizeSite:
 
     def test_whitespace_stripped(self):
         assert _normalize_site("  myorg  ") == "myorg.atlassian.net"
+
+    def test_url_with_path_strips_path(self):
+        assert _normalize_site("https://myorg.atlassian.net/jira") == "myorg.atlassian.net"
+
+    def test_url_with_deep_path_strips_path(self):
+        assert _normalize_site("https://myorg.atlassian.net/wiki/spaces") == "myorg.atlassian.net"
 
 
 # ---------------------------------------------------------------------------
