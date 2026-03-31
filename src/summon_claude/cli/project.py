@@ -246,6 +246,15 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
             parts.append("Global PM")
         click.echo(f"Suspended {', '.join(parts)}.")
 
+    # Clear any queued sessions for stopped projects (best-effort)
+    for project in projects:
+        try:
+            count = await daemon_client.clear_project_queue(project["project_id"])
+            if count:
+                click.echo(f"  Cleared {count} queued session(s) for {project['name']!r}.")
+        except Exception as e:
+            logger.debug("clear_project_queue failed for %s: %s", project["name"], e)
+
     # Run project_down hooks for all projects in the filter (even those with no
     # active sessions — their services/environment still need teardown).
     target_project_ids = [p["project_id"] for p in projects]

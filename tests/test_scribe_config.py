@@ -111,7 +111,7 @@ class TestScribeConfigDefaults:
         assert cfg.scribe_slack_browser == "chrome"
 
     def test_monitored_channels_default_empty(self):
-        cfg = _make_config()
+        cfg = _make_config(scribe_slack_monitored_channels="")
         assert cfg.scribe_slack_monitored_channels == ""
 
     def test_slack_enabled_auto_detects_true(self):

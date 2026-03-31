@@ -23,7 +23,7 @@ from summon_claude.sessions.scheduler import (
     explain_cron,
     sanitize_for_table,
 )
-from summon_claude.slack.client import redact_secrets
+from summon_claude.slack.client import sanitize_for_slack
 
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
@@ -32,8 +32,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SESSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,19}$")
-_MAX_MESSAGE_CHARS = 10_000
-MAX_SYSTEM_PROMPT_CHARS = 10_000
+MAX_PROMPT_CHARS = 10_000
 
 _SENSITIVE_FIELDS = frozenset({"pid", "error_message", "authenticated_user_id"})
 _MAX_TASKS_PER_SESSION = 100
@@ -63,6 +62,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     _ipc_stop_session: Callable[..., Awaitable[bool]] | None = None,
     _ipc_send_message: Callable[..., Awaitable[dict]] | None = None,
     _ipc_resume_session: Callable[..., Awaitable[dict]] | None = None,
+    _ipc_queue_session: Callable[..., int] | None = None,
     _web_client: Any | None = None,
     pm_status_ts: str | None = None,
 ) -> list[SdkMcpTool]:
@@ -85,6 +85,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         _ipc_stop_session: Override for daemon IPC stop (testing).
         _ipc_send_message: Override for daemon IPC send_message (testing).
         _ipc_resume_session: Override for daemon IPC resume (testing).
+        _ipc_queue_session: Override for daemon queue_session (testing).
         _web_client: AsyncWebClient for cross-channel Slack posts (testing).
     """
 
@@ -190,7 +191,9 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             "cwd: working directory (optional, defaults to calling session's cwd). "
             "model: model override (optional). "
             "system_prompt: additional system prompt text appended to session, "
-            "max 10000 chars (optional)."
+            f"max {MAX_PROMPT_CHARS} chars (optional). "
+            "initial_prompt: first message injected into the session after startup, "
+            f"max {MAX_PROMPT_CHARS} chars (optional)."
         ),
         {
             "type": "object",
@@ -198,12 +201,13 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 "name": {"type": "string"},
                 "cwd": {"type": "string"},
                 "model": {"type": "string"},
-                "system_prompt": {"type": "string", "maxLength": 10000},
+                "system_prompt": {"type": "string", "maxLength": MAX_PROMPT_CHARS},
+                "initial_prompt": {"type": "string", "maxLength": MAX_PROMPT_CHARS},
             },
             "required": ["name"],
         },
     )
-    async def session_start(args: dict) -> dict:  # noqa: PLR0911
+    async def session_start(args: dict) -> dict:  # noqa: PLR0911, PLR0912
         name = args.get("name", "")
         if not _SESSION_NAME_RE.match(name):
             return {
@@ -220,14 +224,29 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             }
 
         system_prompt_val = args.get("system_prompt")
-        if system_prompt_val and len(system_prompt_val) > MAX_SYSTEM_PROMPT_CHARS:
+        if system_prompt_val and len(system_prompt_val) > MAX_PROMPT_CHARS:
             return {
                 "content": [
                     {
                         "type": "text",
                         "text": (
-                            f"Error: system_prompt exceeds {MAX_SYSTEM_PROMPT_CHARS} chars "
+                            f"Error: system_prompt exceeds {MAX_PROMPT_CHARS} chars "
                             f"({len(system_prompt_val)} provided)."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+
+        initial_prompt_val = args.get("initial_prompt")
+        if initial_prompt_val and len(initial_prompt_val) > MAX_PROMPT_CHARS:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Error: initial_prompt exceeds {MAX_PROMPT_CHARS} chars "
+                            f"({len(initial_prompt_val)} provided)."
                         ),
                     }
                 ],
@@ -291,11 +310,65 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 "is_error": True,
             }
 
+        model = args.get("model")
+
+        # Auto-propagate project_id from calling session to spawned sessions
+        try:
+            calling_session = await registry.get_session(session_id)
+            parent_project_id = calling_session.get("project_id") if calling_session else None
+        except Exception as e:
+            logger.error("Failed to fetch calling session: %s", e)
+            parent_project_id = None
+
+        from summon_claude.sessions.session import SessionOptions  # noqa: PLC0415
+
+        options = SessionOptions(
+            cwd=target_cwd,
+            name=name,
+            model=model,
+            project_id=parent_project_id,
+            system_prompt_append=system_prompt_val,
+            initial_prompt=initial_prompt_val,
+        )
+
         # Enforce active-child cap before spawning (fail-closed)
         try:
             children = await registry.list_children(session_id, limit=500)
             active = [c for c in children if c.get("status") in ("pending_auth", "active")]
             if len(active) >= MAX_SPAWN_CHILDREN_PM:
+                # Queue if this is a PM with a project and a queue callback is available
+                if is_pm and parent_project_id and _ipc_queue_session is not None:
+                    position = _ipc_queue_session(
+                        options,
+                        project_id=parent_project_id,
+                        pm_session_id=session_id,
+                        authenticated_user_id=authenticated_user_id,
+                        parent_channel_id=channel_id,
+                    )
+                    if position == -1:
+                        return {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "Error: session queue is full. "
+                                        "Stop or wait for existing sessions to finish."
+                                    ),
+                                }
+                            ],
+                            "is_error": True,
+                        }
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Session '{name}' queued (position {position}). "
+                                    "It will start automatically when a slot opens."
+                                ),
+                            }
+                        ]
+                    }
                 active_list = ", ".join(
                     f"{c.get('session_name', 'unnamed')} ({c['session_id']})" for c in active
                 )
@@ -325,11 +398,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 "is_error": True,
             }
 
-        model = args.get("model")
-
         try:
-            from summon_claude.sessions.session import SessionOptions  # noqa: PLC0415
-
             gen_token = _generate_spawn_token
             if gen_token is None:
                 from summon_claude.sessions.auth import generate_spawn_token  # noqa: PLC0415
@@ -352,18 +421,6 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 parent_session_id=session_id,
                 parent_channel_id=channel_id,
                 parent_cwd=cwd,
-            )
-
-            # Auto-propagate project_id from calling session to spawned sessions
-            calling_session = await registry.get_session(session_id)
-            parent_project_id = calling_session.get("project_id") if calling_session else None
-
-            options = SessionOptions(
-                cwd=target_cwd,
-                name=name,
-                model=model,
-                project_id=parent_project_id,
-                system_prompt_append=system_prompt_val,
             )
 
             new_session_id = await ipc_create(options, spawn_auth.token)
@@ -578,8 +635,8 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 ],
                 "is_error": True,
             }
-        if len(text) > _MAX_MESSAGE_CHARS:
-            text = text[:_MAX_MESSAGE_CHARS]
+        if len(text) > MAX_PROMPT_CHARS:
+            text = text[:MAX_PROMPT_CHARS]
 
         try:
             target = await registry.get_session(target_id)
@@ -641,13 +698,9 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             # Observability: post to target's Slack channel (best-effort)
             target_channel_id = result.get("channel_id") or target.get("slack_channel_id")
             if target_channel_id and _web_client:
-                safe_text = re.sub(r"<!(channel|here|everyone)>", r"\1", text)
-                safe_text = re.sub(r"<@(U\w+)>", r"user:\1", safe_text)
-                safe_text = re.sub(r"<!subteam\^[^>]+>", "group", safe_text)
-                safe_sender = re.sub(r"<!(channel|here|everyone)>", r"\1", sender_info)
-                safe_sender = re.sub(r"<@(U\w+)>", r"user:\1", safe_sender)
-                safe_sender = re.sub(r"<!subteam\^[^>]+>", "group", safe_sender)
-                attribution = redact_secrets(f"_Message from {safe_sender}:_\n{safe_text}")
+                safe_text = sanitize_for_slack(text)
+                safe_sender = sanitize_for_slack(sender_info)
+                attribution = f"_Message from {safe_sender}:_\n{safe_text}"
                 attribution, sec_warnings = validate_agent_output(attribution)
                 for w in sec_warnings:
                     logger.warning("session_message output validation: %s", w)
@@ -1080,21 +1133,14 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             summary = summary[:500]
             details = args.get("details", "").strip()[:2000]
 
-            # Sanitize mentions (same pattern as session_message)
-            summary = re.sub(r"<!(channel|here|everyone)>", r"\1", summary)
-            summary = re.sub(r"<@(U\w+)>", r"user:\1", summary)
-            summary = re.sub(r"<!subteam\^[^>]+>", "group", summary)
-            details = re.sub(r"<!(channel|here|everyone)>", r"\1", details)
-            details = re.sub(r"<@(U\w+)>", r"user:\1", details)
-            details = re.sub(r"<!subteam\^[^>]+>", "group", details)
+            summary = sanitize_for_slack(summary)
+            details = sanitize_for_slack(details)
 
             now = datetime.datetime.now(tz=datetime.UTC).strftime("%Y-%m-%d %I:%M %p UTC")
             text = f"*Project Manager Status*\n---\n{summary}"
             if details:
                 text += f"\n\n{details}"
             text += f"\n\n_Last updated: {now}_"
-
-            text = redact_secrets(text)
             text, sec_warnings = validate_agent_output(text)
             for w in sec_warnings:
                 logger.warning("session_status_update output validation: %s", w)
@@ -1167,6 +1213,7 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
     project_id: str | None = None,
     on_task_change: Callable[[], Coroutine[Any, Any, None]] | None = None,
     pm_status_ts: str | None = None,
+    ipc_queue: Callable[..., int] | None = None,
 ) -> McpSdkServerConfig:
     """Create an MCP server with session lifecycle + scheduling tools."""
     tools = create_summon_cli_mcp_tools(
@@ -1181,6 +1228,7 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
         scheduler=scheduler,
         project_id=project_id,
         on_task_change=on_task_change,
+        _ipc_queue_session=ipc_queue,
         _web_client=web_client,
         pm_status_ts=pm_status_ts,
     )

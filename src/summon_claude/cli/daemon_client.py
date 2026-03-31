@@ -188,3 +188,16 @@ async def stop_all_sessions() -> list[tuple[str, bool]]:
         raise DaemonError(f"Unexpected daemon response: {response}")
     results: list[dict[str, Any]] = response.get("results", [])
     return [(r["session_id"], r["found"]) for r in results]
+
+
+async def clear_project_queue(project_id: str) -> int:
+    """Clear the session queue for *project_id* via daemon IPC.
+
+    Returns:
+        Number of queued sessions that were cleared.
+    """
+    response = await _request({"type": "clear_project_queue", "project_id": project_id})
+    if response.get("type") != "queue_cleared":
+        raise DaemonError(f"Unexpected daemon response: {response}")
+    count: int = response.get("count", 0)
+    return count
