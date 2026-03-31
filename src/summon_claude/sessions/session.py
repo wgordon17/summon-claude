@@ -99,7 +99,13 @@ from summon_claude.sessions.scheduler import SessionScheduler, explain_cron, san
 from summon_claude.sessions.types import FileChange
 from summon_claude.slack.canvas_store import CanvasStore
 from summon_claude.slack.canvas_templates import get_canvas_template
-from summon_claude.slack.client import ZZZ_PREFIX, SlackClient, make_zzz_name, redact_secrets
+from summon_claude.slack.client import (
+    ZZZ_PREFIX,
+    SlackClient,
+    make_zzz_name,
+    redact_secrets,
+    sanitize_for_slack,
+)
 from summon_claude.slack.mcp import create_summon_mcp_server
 from summon_claude.slack.router import ThreadRouter
 from summon_claude.summon_cli_mcp import create_summon_cli_mcp_server
@@ -252,6 +258,7 @@ _SCRIBE_DISALLOWED_TOOLS: frozenset[str] = frozenset(
         "WebFetch",
     }
 )
+
 
 # Words/phrases that trigger extended thinking (ultrathink) in the Claude CLI.
 # When detected, a :brain: reaction is added to the user's message (permanent).
@@ -2113,12 +2120,8 @@ class SummonSession:
                     # Inject initial_prompt on first startup only (not on compaction restart)
                     if self._initial_prompt and not self._initial_prompt_sent:
                         self._initial_prompt_sent = True
-                        safe_prompt = re.sub(
-                            r"<!(channel|here|everyone)>", r"\1", self._initial_prompt
-                        )
-                        safe_prompt = re.sub(r"<@(U\w+)>", r"user:\1", safe_prompt)
-                        safe_prompt = re.sub(r"<!subteam\^[^>]+>", "group", safe_prompt)
-                        safe_prompt = redact_secrets(safe_prompt)
+                        # Raw prompt sent to Claude (intentional — Claude needs full text).
+                        # Sanitization below is only for the Slack observability post.
                         pending_initial = _PendingTurn(message=self._initial_prompt, pre_sent=False)
                         try:
                             self._pending_turns.put_nowait(pending_initial)
@@ -2129,9 +2132,10 @@ class SummonSession:
                             )
                         else:
                             logger.info("initial_prompt enqueued for session %s", self._session_id)
-                            # Observability: post truncated prompt to session's Slack channel
+                            # Observability: post sanitized prompt to session's Slack channel
                             try:
-                                await rt.client.post(f"_Initial prompt:_ {safe_prompt[:500]}")
+                                safe = sanitize_for_slack(self._initial_prompt)
+                                await rt.client.post(f"_Initial prompt:_ {safe[:500]}")
                             except Exception:
                                 logger.debug("Failed to post initial_prompt observability message")
 

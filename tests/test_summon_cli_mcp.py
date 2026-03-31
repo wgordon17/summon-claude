@@ -576,6 +576,94 @@ class TestSessionStart:
         assert len(captured_options) == 1
         assert captured_options[0].system_prompt_append == "Review PR #42 thoroughly"
 
+    async def test_passes_initial_prompt_to_options(self, populated_registry, tmp_path):
+        """initial_prompt arg flows through to SessionOptions.initial_prompt."""
+        from summon_claude.sessions.auth import SpawnAuth
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        captured_options = []
+
+        async def capturing_ipc(options, token):
+            captured_options.append(options)
+            return "new-session-id"
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=capturing_ipc,
+            )
+        }
+
+        result = await local_tools["session_start"].handler(
+            {
+                "name": "test-task",
+                "initial_prompt": "Build the auth module",
+            }
+        )
+        assert not result.get("is_error"), result
+        assert len(captured_options) == 1
+        assert captured_options[0].initial_prompt == "Build the auth module"
+
+    async def test_pm_at_cap_without_queue_returns_hard_error(self, populated_registry, tmp_path):
+        """PM at cap with _ipc_queue_session=None falls through to hard error."""
+        original_list_children = populated_registry.list_children
+        original_get_session = populated_registry.get_session
+
+        active_children = [
+            {"status": "active", "session_id": f"c{i}", "session_name": f"s{i}"}
+            for i in range(MAX_SPAWN_CHILDREN_PM)
+        ]
+
+        async def patched_list_children(sid, limit=500):
+            return active_children
+
+        async def patched_get_session(sid):
+            return {"session_id": sid, "project_id": "proj-test"}
+
+        populated_registry.list_children = patched_list_children
+        populated_registry.get_session = patched_get_session
+
+        try:
+            local_tools = {
+                t.name: t
+                for t in create_summon_cli_mcp_tools(
+                    registry=populated_registry,
+                    session_id="parent-1111",
+                    authenticated_user_id="U_OWNER",
+                    channel_id="C100",
+                    cwd=str(tmp_path),
+                    scheduler=make_scheduler(),
+                    is_pm=True,
+                    # _ipc_queue_session is NOT passed (defaults to None)
+                )
+            }
+
+            result = await local_tools["session_start"].handler({"name": "blocked-task"})
+        finally:
+            populated_registry.list_children = original_list_children
+            populated_registry.get_session = original_get_session
+
+        assert result.get("is_error") is True
+        assert "active session limit reached" in result["content"][0]["text"]
+
 
 class TestSessionStop:
     async def test_not_found(self, tools):

@@ -42,7 +42,7 @@ from summon_claude.sessions.auth import (
 from summon_claude.sessions.prompts import format_pm_topic
 from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN_PM, SessionRegistry
 from summon_claude.sessions.session import SessionOptions, SummonSession
-from summon_claude.slack.client import redact_secrets
+from summon_claude.slack.client import redact_secrets, sanitize_for_slack
 from summon_claude.summon_cli_mcp import MAX_PROMPT_CHARS
 
 if TYPE_CHECKING:
@@ -1331,6 +1331,7 @@ class SessionManager:
             bot_user_id=self._bot_user_id,
             ipc_spawn=self.create_session_with_spawn_token,
             ipc_resume=self._ipc_resume,
+            ipc_queue=self.queue_session,
         )
         new_session.authenticate(user_id)
 
@@ -1456,6 +1457,7 @@ class SessionManager:
             bot_user_id=self._bot_user_id,
             ipc_spawn=self.create_session_with_spawn_token,
             ipc_resume=self._ipc_resume,
+            ipc_queue=self.queue_session,
         )
         new_session.authenticate(user_id)
 
@@ -1490,9 +1492,10 @@ class SessionManager:
         if session is not None and session.channel_id:
             self._dispatcher.unregister(session.channel_id)
 
-        # Clear PM topic cache when a PM exits so a replacement PM gets a fresh topic
+        # Clear PM topic cache and drain orphaned queue when a PM exits
         if session is not None and session.is_pm and session.project_id:
             self._pm_topic_cache.pop(session.project_id, None)
+            self.clear_queue(session.project_id)
 
         # Update PM topic if a non-PM child with a project finished; also try dequeue
         if session is not None and not session.is_pm and session.project_id:
@@ -1710,13 +1713,12 @@ class SessionManager:
         )
 
         # Fire-and-forget notifications (outside lock — non-critical)
-        if entry.options.project_id:
-            t = asyncio.create_task(
-                self._update_pm_topic(entry.options.project_id),
-                name=f"dequeue-topic-{new_session_id}",
-            )
-            t.add_done_callback(self._on_background_task_done)
-            self._background_tasks.add(t)
+        t = asyncio.create_task(
+            self._update_pm_topic(project_id),
+            name=f"dequeue-topic-{new_session_id}",
+        )
+        t.add_done_callback(self._on_background_task_done)
+        self._background_tasks.add(t)
 
         t = asyncio.create_task(
             self._notify_pm_of_dequeue(entry, new_session_id, live_pm_session=live_pm_session),
@@ -1745,9 +1747,10 @@ class SessionManager:
             pm_session = self._sessions.get(entry.pm_session_id)
         if pm_session is None:
             return
-        ip = entry.options.initial_prompt or ""
-        snippet = redact_secrets(ip[:200])
-        suffix = "..." if len(ip) > 200 else ""
+        initial_prompt = entry.options.initial_prompt or ""
+        sanitized = sanitize_for_slack(initial_prompt)
+        snippet = sanitized[:200]
+        suffix = "..." if len(sanitized) > 200 else ""
         msg = f"Queued session '{entry.options.name}' has started (session_id: {new_session_id})."
         if snippet:
             msg += f"\nInitial prompt: {snippet}{suffix}"

@@ -529,6 +529,33 @@ class TestNotifyPmOnDequeue:
         assert "new-sess-abc123" in text
         assert pm_stub.inject_message.call_args[1]["sender_info"] == "session-queue"
 
+    async def test_pm_notified_with_initial_prompt_snippet(self):
+        """Dequeue notification includes sanitized initial_prompt snippet."""
+        manager, _, _ = _make_manager()
+
+        pm_stub = _StubSession()
+        pm_stub.is_pm = True
+        pm_stub.project_id = "proj-1"
+        pm_stub.inject_message = AsyncMock(return_value=True)
+        manager._sessions["pm-sess-1"] = pm_stub  # type: ignore[assignment]
+
+        entry = _QueuedSession(
+            options=make_options(name="task-a", initial_prompt="Hello <!channel> build it"),
+            project_id="proj-1",
+            pm_session_id="pm-sess-1",
+            authenticated_user_id="U_OWNER",
+            queued_at=0.0,
+        )
+
+        await manager._notify_pm_of_dequeue(entry, "new-sess-456")
+
+        pm_stub.inject_message.assert_awaited_once()
+        text = pm_stub.inject_message.call_args[0][0]
+        assert "Initial prompt:" in text
+        # Mention should be sanitized
+        assert "<!channel>" not in text
+        assert "channel" in text
+
     async def test_pm_gone_at_dequeue_no_error(self):
         """If PM is gone at notification time, the call is suppressed (best-effort)."""
         manager, _, _ = _make_manager()
@@ -725,24 +752,26 @@ class TestMcpQueueBehavior:
         registry.list_children = patched_list_children
         registry.get_session = patched_get_session
 
-        tools = {
-            t.name: t
-            for t in create_summon_cli_mcp_tools(
-                registry=registry,
-                session_id="pm-sess-111",
-                authenticated_user_id="U_OWNER",
-                channel_id="C100",
-                cwd="/tmp",
-                scheduler=make_scheduler(),
-                is_pm=True,
-                project_id="proj-test",
-                _ipc_queue_session=fake_queue,
-            )
-        }
+        try:
+            tools = {
+                t.name: t
+                for t in create_summon_cli_mcp_tools(
+                    registry=registry,
+                    session_id="pm-sess-111",
+                    authenticated_user_id="U_OWNER",
+                    channel_id="C100",
+                    cwd="/tmp",
+                    scheduler=make_scheduler(),
+                    is_pm=True,
+                    project_id="proj-test",
+                    _ipc_queue_session=fake_queue,
+                )
+            }
 
-        result = await tools["session_start"].handler({"name": "new-task"})
-        registry.list_children = original_list_children
-        registry.get_session = original_get_session
+            result = await tools["session_start"].handler({"name": "new-task"})
+        finally:
+            registry.list_children = original_list_children
+            registry.get_session = original_get_session
 
         assert not result.get("is_error"), f"Expected queued response, got: {result}"
         text = result["content"][0]["text"]
@@ -825,24 +854,237 @@ class TestMcpQueueBehavior:
         registry.list_children = patched_list_children
         registry.get_session = patched_get_session
 
-        tools = {
-            t.name: t
-            for t in create_summon_cli_mcp_tools(
-                registry=registry,
-                session_id="pm-sess-222",
-                authenticated_user_id="U_OWNER",
-                channel_id="C200",
-                cwd="/tmp",
-                scheduler=make_scheduler(),
-                is_pm=True,
-                project_id="proj-test",
-                _ipc_queue_session=full_queue,
-            )
-        }
+        try:
+            tools = {
+                t.name: t
+                for t in create_summon_cli_mcp_tools(
+                    registry=registry,
+                    session_id="pm-sess-222",
+                    authenticated_user_id="U_OWNER",
+                    channel_id="C200",
+                    cwd="/tmp",
+                    scheduler=make_scheduler(),
+                    is_pm=True,
+                    project_id="proj-test",
+                    _ipc_queue_session=full_queue,
+                )
+            }
 
-        result = await tools["session_start"].handler({"name": "overflow-task"})
-        registry.list_children = original_list_children
-        registry.get_session = original_get_session
+            result = await tools["session_start"].handler({"name": "overflow-task"})
+        finally:
+            registry.list_children = original_list_children
+            registry.get_session = original_get_session
 
         assert result.get("is_error") is True
         assert "queue is full" in result["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: shutdown clears queue (qa-3)
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownClearsQueue:
+    async def test_shutdown_clears_session_queue(self):
+        """shutdown() clears _session_queue before stopping sessions."""
+        manager, _, _ = _make_manager()
+        manager.queue_session(
+            make_options(name="waiting"),
+            project_id="proj-1",
+            pm_session_id="pm-1",
+            authenticated_user_id="U_OWNER",
+        )
+        assert len(manager._session_queue) == 1
+
+        await manager.shutdown()
+
+        assert len(manager._session_queue) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: _dispatch_control("clear_project_queue") (qa-4)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchClearProjectQueue:
+    async def test_clear_project_queue_returns_count(self):
+        """Dispatch clears project queue and returns count."""
+        manager, _, _ = _make_manager()
+        manager.queue_session(
+            make_options(name="t1"),
+            project_id="proj-1",
+            pm_session_id="pm-1",
+            authenticated_user_id="U_OWNER",
+        )
+        manager.queue_session(
+            make_options(name="t2"),
+            project_id="proj-1",
+            pm_session_id="pm-1",
+            authenticated_user_id="U_OWNER",
+        )
+
+        response = await manager._dispatch_control(
+            {"type": "clear_project_queue", "project_id": "proj-1"}
+        )
+        assert response["type"] == "queue_cleared"
+        assert response["count"] == 2
+        assert "proj-1" not in manager._session_queue
+
+    async def test_clear_project_queue_missing_id_returns_error(self):
+        """Missing project_id returns error."""
+        manager, _, _ = _make_manager()
+        response = await manager._dispatch_control({"type": "clear_project_queue"})
+        assert response["type"] == "error"
+        assert "project_id" in response["message"]
+
+    async def test_clear_project_queue_empty_returns_zero(self):
+        """Clearing a project with no queued sessions returns count 0."""
+        manager, _, _ = _make_manager()
+        response = await manager._dispatch_control(
+            {"type": "clear_project_queue", "project_id": "nonexistent"}
+        )
+        assert response["type"] == "queue_cleared"
+        assert response["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: grace timer suppressed by non-empty queue (qa-5)
+# ---------------------------------------------------------------------------
+
+
+class TestGraceTimerWithQueue:
+    async def test_grace_timer_suppressed_by_nonempty_queue(self):
+        """Grace timer does not start when _session_queue is non-empty."""
+        manager, _, _ = _make_manager()
+
+        # Enqueue a session (queue is non-empty)
+        manager.queue_session(
+            make_options(name="waiting"),
+            project_id="proj-1",
+            pm_session_id="pm-1",
+            authenticated_user_id="U_OWNER",
+        )
+
+        stub = _StubSession()
+        stub.is_pm = False
+        stub.project_id = "proj-1"
+        stub.channel_id = None
+        manager._sessions["child-1"] = stub  # type: ignore[assignment]
+
+        manager._update_pm_topic = AsyncMock()  # type: ignore[method-assign]
+        manager._dequeue_and_start = AsyncMock()  # type: ignore[method-assign]
+
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+
+        manager._on_task_done(task, "child-1")
+
+        # Queue is non-empty → grace timer should NOT have started
+        assert manager._grace_timer is None
+        # _sessions is empty but queue is non-empty → timer suppressed
+        assert not manager._sessions
+        assert manager._session_queue  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# Tests: _notify_pm_of_dequeue with live_pm_session (qa-6)
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyPmWithLiveSession:
+    async def test_live_pm_session_used_when_provided(self):
+        """When live_pm_session is provided, it is used instead of lookup."""
+        manager, _, _ = _make_manager()
+
+        pm_stub = _StubSession()
+        pm_stub.inject_message = AsyncMock(return_value=True)
+        # Do NOT put in _sessions — verify live_pm_session param is used
+        # If it fell through to lookup, pm would be None and no call would happen
+
+        entry = _QueuedSession(
+            options=make_options(name="task-a"),
+            project_id="proj-1",
+            pm_session_id="pm-not-in-sessions",
+            authenticated_user_id="U_OWNER",
+            queued_at=0.0,
+        )
+
+        await manager._notify_pm_of_dequeue(
+            entry,
+            "new-sess-abc",
+            live_pm_session=pm_stub,  # type: ignore[arg-type]
+        )
+
+        pm_stub.inject_message.assert_awaited_once()
+        text = pm_stub.inject_message.call_args[0][0]
+        assert "task-a" in text
+
+
+# ---------------------------------------------------------------------------
+# Tests: PM death clears queue (cor-2)
+# ---------------------------------------------------------------------------
+
+
+class TestPmDeathClearsQueue:
+    async def test_pm_death_clears_project_queue(self):
+        """When a PM dies, its project's queue is cleared to prevent daemon hang."""
+        manager, _, _ = _make_manager()
+
+        # Enqueue sessions for proj-1
+        manager.queue_session(
+            make_options(name="orphan-1"),
+            project_id="proj-1",
+            pm_session_id="pm-1",
+            authenticated_user_id="U_OWNER",
+        )
+        manager.queue_session(
+            make_options(name="orphan-2"),
+            project_id="proj-1",
+            pm_session_id="pm-1",
+            authenticated_user_id="U_OWNER",
+        )
+        assert len(manager._session_queue["proj-1"]) == 2
+
+        # Add PM to _sessions
+        pm_stub = _StubSession()
+        pm_stub.is_pm = True
+        pm_stub.project_id = "proj-1"
+        pm_stub.channel_id = "C_PM"
+        manager._sessions["pm-1"] = pm_stub  # type: ignore[assignment]
+
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+
+        # PM dies — _on_task_done fires
+        manager._on_task_done(task, "pm-1")
+
+        # PM removed from _sessions and queue cleared (prevents daemon hang)
+        assert "pm-1" not in manager._sessions
+        assert "proj-1" not in manager._session_queue
+
+    async def test_pm_death_with_queue_starts_grace_timer(self):
+        """After PM dies and queue is cleared, grace timer can start."""
+        manager, _, _ = _make_manager()
+
+        manager.queue_session(
+            make_options(name="orphan"),
+            project_id="proj-1",
+            pm_session_id="pm-1",
+            authenticated_user_id="U_OWNER",
+        )
+
+        pm_stub = _StubSession()
+        pm_stub.is_pm = True
+        pm_stub.project_id = "proj-1"
+        pm_stub.channel_id = None
+        manager._sessions["pm-1"] = pm_stub  # type: ignore[assignment]
+
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+
+        manager._on_task_done(task, "pm-1")
+
+        # Both _sessions and _session_queue are now empty → grace timer should start
+        assert not manager._sessions
+        assert not manager._session_queue
+        assert manager._grace_timer is not None

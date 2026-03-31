@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -15,7 +15,7 @@ from summon_claude.sessions.session import (
     SummonSession,
     _PendingTurn,
 )
-from summon_claude.slack.client import MessageRef, SlackClient
+from summon_claude.slack.client import MessageRef, SlackClient, sanitize_for_slack
 from summon_claude.summon_cli_mcp import MAX_PROMPT_CHARS, create_summon_cli_mcp_tools
 
 # ---------------------------------------------------------------------------
@@ -198,41 +198,46 @@ class TestInitialPromptObservability:
 
     def test_mention_sanitization_channel(self):
         """<!channel> is replaced with 'channel' in the observability post."""
-        import re
-
-        prompt = "Hello <!channel> folks"
-        safe = re.sub(r"<!(channel|here|everyone)>", r"\1", prompt)
+        safe = sanitize_for_slack("Hello <!channel> folks")
         assert "<!channel>" not in safe
         assert "channel" in safe
 
     def test_mention_sanitization_here(self):
-        import re
-
-        prompt = "Attention <!here>!"
-        safe = re.sub(r"<!(channel|here|everyone)>", r"\1", prompt)
+        safe = sanitize_for_slack("Attention <!here>!")
         assert "here" in safe
         assert "<!here>" not in safe
 
     def test_mention_sanitization_user(self):
         """<@UABC123> is replaced with 'user:UABC123'."""
-        import re
-
-        prompt = "Hey <@UABC123> check this"
-        safe = re.sub(r"<@(U\w+)>", r"user:\1", prompt)
+        safe = sanitize_for_slack("Hey <@UABC123> check this")
         assert "<@UABC123>" not in safe
         assert "user:UABC123" in safe
 
-    def test_mention_sanitization_subteam(self):
-        import re
+    def test_mention_sanitization_everyone(self):
+        safe = sanitize_for_slack("Hey <!everyone> look at this")
+        assert "<!everyone>" not in safe
+        assert "everyone" in safe
 
-        prompt = "FYI <!subteam^S123|team-name>"
-        safe = re.sub(r"<!subteam\^[^>]+>", "group", prompt)
+    def test_mention_sanitization_subteam(self):
+        safe = sanitize_for_slack("FYI <!subteam^S123|team-name>")
         assert "<!subteam" not in safe
         assert "group" in safe
 
+    def test_sanitize_for_slack_redacts_secrets(self):
+        """Secrets like API keys are redacted by sanitize_for_slack."""
+        safe = sanitize_for_slack("key is sk-ant-abc123def456")
+        assert "sk-ant-" not in safe
+
+    def test_sanitize_for_slack_neutralizes_hyperlinks(self):
+        """Slack <url|label> hyperlinks are neutralized to prevent phishing."""
+        safe = sanitize_for_slack("Click <https://evil.example.com|here> now")
+        assert "<https://" not in safe
+        assert "here" in safe
+        assert "evil.example.com" in safe
+
     async def test_initial_prompt_observability_post_called(self, registry):
         """When initial_prompt provided and enqueued, client.post is called with the text."""
-        from summon_claude.sessions.session import _PendingTurn, _SessionRuntime
+        from summon_claude.sessions.session import _SessionRuntime
 
         session = make_session(initial_prompt="Implement the login endpoint")
 
@@ -248,15 +253,8 @@ class TestInitialPromptObservability:
 
         # Simulate the injection block from _run_session_tasks
         if session._initial_prompt and not session._initial_prompt_sent:
-            import re
-
-            from summon_claude.slack.client import redact_secrets
-
             session._initial_prompt_sent = True
-            safe_prompt = redact_secrets(session._initial_prompt)
-            safe_prompt = re.sub(r"<!(channel|here|everyone)>", r"\1", safe_prompt)
-            safe_prompt = re.sub(r"<@(U\w+)>", r"user:\1", safe_prompt)
-            safe_prompt = re.sub(r"<!subteam\^[^>]+>", "group", safe_prompt)
+            safe_prompt = sanitize_for_slack(session._initial_prompt)
             pending = _PendingTurn(message=session._initial_prompt, pre_sent=False)
             session._pending_turns.put_nowait(pending)
             await rt.client.post(f"_Initial prompt:_ {safe_prompt[:500]}")
@@ -268,7 +266,7 @@ class TestInitialPromptObservability:
 
     async def test_initial_prompt_mention_sanitized_in_post(self, registry):
         """<!channel> mentions are stripped before the observability post."""
-        from summon_claude.sessions.session import _PendingTurn, _SessionRuntime
+        from summon_claude.sessions.session import _SessionRuntime
 
         session = make_session(initial_prompt="Hi <!channel>, start the task")
 
@@ -283,15 +281,8 @@ class TestInitialPromptObservability:
         )
 
         if session._initial_prompt and not session._initial_prompt_sent:
-            import re
-
-            from summon_claude.slack.client import redact_secrets
-
             session._initial_prompt_sent = True
-            safe_prompt = redact_secrets(session._initial_prompt)
-            safe_prompt = re.sub(r"<!(channel|here|everyone)>", r"\1", safe_prompt)
-            safe_prompt = re.sub(r"<@(U\w+)>", r"user:\1", safe_prompt)
-            safe_prompt = re.sub(r"<!subteam\^[^>]+>", "group", safe_prompt)
+            safe_prompt = sanitize_for_slack(session._initial_prompt)
             pending = _PendingTurn(message=session._initial_prompt, pre_sent=False)
             session._pending_turns.put_nowait(pending)
             await rt.client.post(f"_Initial prompt:_ {safe_prompt[:500]}")

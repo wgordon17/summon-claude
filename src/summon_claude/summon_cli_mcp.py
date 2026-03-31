@@ -23,7 +23,7 @@ from summon_claude.sessions.scheduler import (
     explain_cron,
     sanitize_for_table,
 )
-from summon_claude.slack.client import redact_secrets
+from summon_claude.slack.client import sanitize_for_slack
 
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
@@ -698,13 +698,9 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             # Observability: post to target's Slack channel (best-effort)
             target_channel_id = result.get("channel_id") or target.get("slack_channel_id")
             if target_channel_id and _web_client:
-                safe_text = re.sub(r"<!(channel|here|everyone)>", r"\1", text)
-                safe_text = re.sub(r"<@(U\w+)>", r"user:\1", safe_text)
-                safe_text = re.sub(r"<!subteam\^[^>]+>", "group", safe_text)
-                safe_sender = re.sub(r"<!(channel|here|everyone)>", r"\1", sender_info)
-                safe_sender = re.sub(r"<@(U\w+)>", r"user:\1", safe_sender)
-                safe_sender = re.sub(r"<!subteam\^[^>]+>", "group", safe_sender)
-                attribution = redact_secrets(f"_Message from {safe_sender}:_\n{safe_text}")
+                safe_text = sanitize_for_slack(text)
+                safe_sender = sanitize_for_slack(sender_info)
+                attribution = f"_Message from {safe_sender}:_\n{safe_text}"
                 attribution, sec_warnings = validate_agent_output(attribution)
                 for w in sec_warnings:
                     logger.warning("session_message output validation: %s", w)
@@ -1137,21 +1133,14 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             summary = summary[:500]
             details = args.get("details", "").strip()[:2000]
 
-            # Sanitize mentions (same pattern as session_message)
-            summary = re.sub(r"<!(channel|here|everyone)>", r"\1", summary)
-            summary = re.sub(r"<@(U\w+)>", r"user:\1", summary)
-            summary = re.sub(r"<!subteam\^[^>]+>", "group", summary)
-            details = re.sub(r"<!(channel|here|everyone)>", r"\1", details)
-            details = re.sub(r"<@(U\w+)>", r"user:\1", details)
-            details = re.sub(r"<!subteam\^[^>]+>", "group", details)
+            summary = sanitize_for_slack(summary)
+            details = sanitize_for_slack(details)
 
             now = datetime.datetime.now(tz=datetime.UTC).strftime("%Y-%m-%d %I:%M %p UTC")
             text = f"*Project Manager Status*\n---\n{summary}"
             if details:
                 text += f"\n\n{details}"
             text += f"\n\n_Last updated: {now}_"
-
-            text = redact_secrets(text)
             text, sec_warnings = validate_agent_output(text)
             for w in sec_warnings:
                 logger.warning("session_status_update output validation: %s", w)

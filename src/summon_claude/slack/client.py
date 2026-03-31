@@ -65,6 +65,16 @@ def redact_secrets(text: str) -> str:
     return _SECRET_RE.sub("[REDACTED]", text)
 
 
+def sanitize_for_slack(text: str) -> str:
+    """Strip Slack mention markup and redact secrets for safe Slack display."""
+    safe = re.sub(r"<!(channel|here|everyone)>", r"\1", text)
+    safe = re.sub(r"<@(U\w+)>", r"user:\1", safe)
+    safe = re.sub(r"<!subteam\^[^>]+>", "group", safe)
+    # Neutralize hyperlink syntax: <url|label> → label [url]
+    safe = re.sub(r"<(https?://[^|>]+)\|([^>]*)>", r"\2 [\1]", safe)
+    return redact_secrets(safe)
+
+
 def _redact_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Redact secrets in Block Kit structures by round-tripping through JSON."""
     raw = json.dumps(blocks)
