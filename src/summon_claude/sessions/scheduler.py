@@ -9,9 +9,12 @@ import secrets
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cronsim import CronSim
+
+if TYPE_CHECKING:
+    from summon_claude.sessions.registry import SessionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,7 @@ class ScheduledJob:
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     max_lifetime_s: int = 86400  # 24h default, 0 = no limit for internal
+    db_session_id: str | None = field(default=None, repr=False)  # owning session for DB ops
 
 
 def explain_cron(cron_expr: str) -> tuple[str, str]:
@@ -77,11 +81,22 @@ class SessionScheduler:
         self,
         event_queue: asyncio.Queue[dict[str, Any]],
         shutdown_event: asyncio.Event,
+        *,
+        registry: SessionRegistry | None = None,
+        session_id: str | None = None,
+        resume_from_session_id: str | None = None,
     ) -> None:
+        if (registry is None) != (session_id is None):
+            raise ValueError("registry and session_id must both be set or both be None")
+        if resume_from_session_id is not None and registry is None:
+            raise ValueError("resume_from_session_id requires registry")
         self._event_queue = event_queue
         self._shutdown_event = shutdown_event
         self._jobs: dict[str, ScheduledJob] = {}
         self.on_change: Callable[[], Coroutine[Any, Any, None]] | None = None
+        self._registry = registry
+        self._session_id = session_id
+        self._resume_from_session_id = resume_from_session_id
 
     async def create(
         self,
@@ -132,6 +147,20 @@ class SessionScheduler:
         job.task = asyncio.create_task(self._run_job(job))
         self._jobs[job.id] = job
 
+        if self._registry is not None and self._session_id is not None and not internal:
+            try:
+                await self._registry.save_scheduled_job(
+                    session_id=self._session_id,
+                    job_id=job.id,
+                    cron_expr=job.cron_expr,
+                    prompt=job.prompt,
+                    recurring=job.recurring,
+                    max_lifetime_s=job.max_lifetime_s,
+                    created_at=job.created_at.isoformat(),
+                )
+            except Exception:
+                logger.warning("Failed to persist cron job %s to DB", job.id, exc_info=True)
+
         if self.on_change:
             await self.on_change()
 
@@ -149,6 +178,13 @@ class SessionScheduler:
         if job.task and not job.task.done():
             job.task.cancel()
         self._jobs.pop(job_id, None)
+
+        if self._should_persist(job):
+            await self._delete_job_from_db(
+                job_id,
+                "user-deleted",
+                session_id=job.db_session_id,
+            )
 
         if self.on_change:
             await self.on_change()
@@ -187,6 +223,39 @@ class SessionScheduler:
             )
             raise ValueError(msg)
 
+    def _should_persist(self, job: ScheduledJob) -> bool:
+        """Check if a job should be persisted/deleted in the DB."""
+        return self._registry is not None and self._session_id is not None and not job.internal
+
+    async def _delete_job_from_db(
+        self,
+        job_id: str,
+        reason: str,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        """Best-effort delete of a scheduled job from DB.
+
+        Pass *session_id* to override ``self._session_id`` — used in
+        ``restore_from_db`` when rows are still owned by the old session
+        after a failed FK migration.
+        """
+        sid = session_id or self._session_id
+        if self._registry is None or sid is None:
+            return
+        try:
+            await self._registry.delete_scheduled_job(
+                sid,
+                job_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to delete %s job %s from DB",
+                reason,
+                job_id,
+                exc_info=True,
+            )
+
     async def _run_job(self, job: ScheduledJob) -> None:  # noqa: PLR0912
         """Run a scheduled job, firing at each cron match."""
         try:
@@ -200,6 +269,12 @@ class SessionScheduler:
                     elapsed = (now - job.created_at).total_seconds()
                     if elapsed >= job.max_lifetime_s:
                         logger.info("Job %s expired after %ds", job.id, job.max_lifetime_s)
+                        if self._should_persist(job):
+                            await self._delete_job_from_db(
+                                job.id,
+                                "expired",
+                                session_id=job.db_session_id,
+                            )
                         self._jobs.pop(job.id, None)
                         if self.on_change:
                             await self.on_change()
@@ -211,6 +286,12 @@ class SessionScheduler:
                     next_fire = next(it)
                 except StopIteration:
                     logger.info("Job %s has no future fire times", job.id)
+                    if self._should_persist(job):
+                        await self._delete_job_from_db(
+                            job.id,
+                            "exhausted",
+                            session_id=job.db_session_id,
+                        )
                     self._jobs.pop(job.id, None)
                     if self.on_change:
                         await self.on_change()
@@ -246,6 +327,12 @@ class SessionScheduler:
                     )
 
                 if not job.recurring:
+                    if self._should_persist(job):
+                        await self._delete_job_from_db(
+                            job.id,
+                            "one-shot",
+                            session_id=job.db_session_id,
+                        )
                     self._jobs.pop(job.id, None)
                     if self.on_change:
                         await self.on_change()
@@ -255,6 +342,153 @@ class SessionScheduler:
                 await asyncio.sleep(1)
 
         except asyncio.CancelledError:
+            # Do NOT delete DB rows here — cancel_all() fires this during compaction.
+            # DB rows must survive so restore_from_db() can reload them.
             return
         except Exception:
             logger.exception("Scheduler job %s failed", job.id)
+
+    async def _try_migrate_from_old_session(
+        self,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Try to load and migrate jobs from resume_from_session_id.
+
+        Returns ``(rows, owning_session_id)`` — the session_id that currently
+        owns the returned rows in the DB (needed for correct corrupt-row cleanup).
+        """
+        assert self._registry is not None  # noqa: S101
+        assert self._resume_from_session_id is not None  # noqa: S101
+        assert self._session_id is not None  # noqa: S101
+
+        try:
+            rows = await self._registry.list_scheduled_jobs(
+                self._resume_from_session_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load scheduled jobs from resume session",
+                exc_info=True,
+            )
+            return [], self._session_id
+
+        if not rows:
+            return [], self._session_id
+
+        try:
+            await self._registry.migrate_scheduled_jobs(
+                self._resume_from_session_id,
+                self._session_id,
+            )
+        except Exception:
+            # Migration failed — rows still owned by resume_from_session_id.
+            # Expiry cleanup for these rows was skipped (delete_expired ran
+            # against self._session_id at the caller).  Orphaned rows will be
+            # cleaned by ON DELETE CASCADE when the old session is purged.
+            logger.warning(
+                "Fallback FK migration failed from %s, restoring from old session data",
+                self._resume_from_session_id[:8],
+                exc_info=True,
+            )
+            return rows, self._resume_from_session_id
+
+        # Migration succeeded — clean up any newly-migrated expired rows
+        try:
+            await self._registry.delete_expired_scheduled_jobs(self._session_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete expired jobs after migration",
+                exc_info=True,
+            )
+        try:
+            rows = await self._registry.list_scheduled_jobs(self._session_id)
+        except Exception:
+            logger.warning(
+                "Failed to reload jobs after migration",
+                exc_info=True,
+            )
+            return [], self._session_id
+        return rows, self._session_id
+
+    async def restore_from_db(self) -> None:
+        """Reload non-expired agent jobs from DB into the in-memory scheduler.
+
+        No-op if registry is None (memory-only mode).
+        Skips job IDs already in self._jobs (idempotency guard).
+        """
+        if self._registry is None or self._session_id is None:
+            return
+
+        # Clean up expired rows first so we don't restore them
+        try:
+            await self._registry.delete_expired_scheduled_jobs(self._session_id)
+        except Exception:
+            logger.warning("Failed to delete expired scheduled jobs from DB", exc_info=True)
+
+        # Load surviving jobs
+        try:
+            rows = await self._registry.list_scheduled_jobs(self._session_id)
+        except Exception:
+            logger.warning("Failed to load scheduled jobs from DB", exc_info=True)
+            return
+
+        # Track which session owns the rows (for correct corrupt-row cleanup)
+        rows_session_id = self._session_id
+
+        # Fallback: if no jobs found, try migrating from the old session
+        if not rows and self._resume_from_session_id:
+            rows, rows_session_id = await self._try_migrate_from_old_session()
+
+        restored = 0
+        agent_count = sum(1 for j in self._jobs.values() if not j.internal)
+        for row in rows:
+            job_id = row["id"]
+            if job_id in self._jobs:
+                continue  # idempotency guard
+
+            # Enforce agent job cap even on restore
+            if agent_count >= self._MAX_AGENT_JOBS:
+                logger.warning("Cap reached during restore, skipping job %s", job_id)
+                break
+
+            try:
+                # Validate cron expression
+                CronSim(row["cron_expr"], datetime.now().astimezone())
+                # Parse created_at from ISO 8601
+                created_at = datetime.fromisoformat(row["created_at"])
+                # Re-sanitize prompt (defense-in-depth for pre-strip DB rows)
+                prompt = re.sub(r"\[+(?:SYSTEM|CRON):", "", row["prompt"], flags=re.IGNORECASE)
+                job = ScheduledJob(
+                    id=job_id,
+                    cron_expr=row["cron_expr"],
+                    prompt=prompt,
+                    recurring=row["recurring"],
+                    internal=False,
+                    max_lifetime_s=row["max_lifetime_s"],
+                    created_at=created_at,
+                    db_session_id=rows_session_id,
+                )
+                job.task = asyncio.create_task(self._run_job(job))
+                self._jobs[job_id] = job
+                agent_count += 1
+                restored += 1
+            except Exception:
+                logger.warning(
+                    "Failed to restore cron job %s from DB — skipping and deleting corrupt row",
+                    job_id,
+                    exc_info=True,
+                )
+                await self._delete_job_from_db(
+                    job_id,
+                    "corrupt-row",
+                    session_id=rows_session_id,
+                )
+
+        if restored and self.on_change:
+            await self.on_change()
+
+        if restored:
+            logger.info(
+                "Restored %d cron job(s) from DB for session %s",
+                restored,
+                self._session_id,
+            )

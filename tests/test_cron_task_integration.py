@@ -64,7 +64,7 @@ class TestSchedulerSessionLifecycle:
         scheduler.cancel_all()
         assert len(scheduler.list_jobs()) == 0  # All cleared
 
-        # Re-register only internal job (agent jobs lost)
+        # Re-register only internal job (memory-only mode — no DB persistence)
         await scheduler.create("*/5 * * * *", "scan", internal=True, max_lifetime_s=0)
         jobs = scheduler.list_jobs()
         assert len(jobs) == 1
@@ -72,8 +72,8 @@ class TestSchedulerSessionLifecycle:
 
         scheduler.cancel_all()
 
-    async def test_lost_cron_jobs_captured_for_recovery(self):
-        """Agent cron jobs are snapshotted before cancel_all for recovery prompt."""
+    async def test_cancel_all_clears_in_memory_jobs(self):
+        """cancel_all clears in-memory jobs (DB rows preserved separately)."""
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
         ev = asyncio.Event()
         scheduler = SessionScheduler(q, ev)
@@ -82,15 +82,9 @@ class TestSchedulerSessionLifecycle:
         await scheduler.create("*/10 * * * *", "check CI")
         await scheduler.create("0 9 * * 1-5", "daily standup", recurring=True)
 
-        # Snapshot agent jobs (what session.py does before cancel_all)
-        lost = [
-            (j.cron_expr, j.prompt, j.recurring) for j in scheduler.list_jobs() if not j.internal
-        ]
-        assert len(lost) == 2
-        assert ("*/10 * * * *", "check CI", True) in lost
-        assert ("0 9 * * 1-5", "daily standup", True) in lost
-
+        assert len(scheduler.list_jobs()) == 3
         scheduler.cancel_all()
+        assert len(scheduler.list_jobs()) == 0
 
     async def test_hourly_scan_cron_expression(self):
         """Scan intervals ≥ 60 minutes produce hourly cron expressions."""

@@ -408,6 +408,304 @@ class TestMigrationStructure:
         )
 
 
+class TestScheduledJobs:
+    """Tests for the scheduled_jobs CRUD methods on SessionRegistry."""
+
+    async def test_save_and_list(self, registry):
+        await registry.register("sess-sj-1", 111, "/tmp")
+        now_iso = "2026-01-01T10:00:00+00:00"
+        await registry.save_scheduled_job(
+            session_id="sess-sj-1",
+            job_id="job-aaa",
+            cron_expr="*/5 * * * *",
+            prompt="do thing A",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at=now_iso,
+        )
+        await registry.save_scheduled_job(
+            session_id="sess-sj-1",
+            job_id="job-bbb",
+            cron_expr="0 9 * * 1",
+            prompt="do thing B",
+            recurring=False,
+            max_lifetime_s=3600,
+            created_at=now_iso,
+        )
+        jobs = await registry.list_scheduled_jobs("sess-sj-1")
+        assert len(jobs) == 2
+        ids = {j["id"] for j in jobs}
+        assert ids == {"job-aaa", "job-bbb"}
+
+        job_a = next(j for j in jobs if j["id"] == "job-aaa")
+        assert job_a["cron_expr"] == "*/5 * * * *"
+        assert job_a["prompt"] == "do thing A"
+        assert job_a["recurring"] is True  # bool conversion from INTEGER
+        assert job_a["max_lifetime_s"] == 86400
+        assert job_a["created_at"] == now_iso
+
+        job_b = next(j for j in jobs if j["id"] == "job-bbb")
+        assert job_b["recurring"] is False  # bool conversion: INTEGER 0 → False
+
+    async def test_delete(self, registry):
+        await registry.register("sess-sj-del", 111, "/tmp")
+        await registry.save_scheduled_job(
+            session_id="sess-sj-del",
+            job_id="job-del",
+            cron_expr="*/5 * * * *",
+            prompt="will be deleted",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at="2026-01-01T10:00:00+00:00",
+        )
+        deleted = await registry.delete_scheduled_job("sess-sj-del", "job-del")
+        assert deleted is True
+        jobs = await registry.list_scheduled_jobs("sess-sj-del")
+        assert jobs == []
+
+    async def test_delete_wrong_session(self, registry):
+        await registry.register("sess-sj-owner", 111, "/tmp")
+        await registry.register("sess-sj-other", 222, "/tmp")
+        await registry.save_scheduled_job(
+            session_id="sess-sj-owner",
+            job_id="job-owned",
+            cron_expr="*/5 * * * *",
+            prompt="owned job",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at="2026-01-01T10:00:00+00:00",
+        )
+        # Delete using the wrong session_id — must be scoped
+        result = await registry.delete_scheduled_job("sess-sj-other", "job-owned")
+        assert result is False
+        # Job still exists under the real owner
+        jobs = await registry.list_scheduled_jobs("sess-sj-owner")
+        assert len(jobs) == 1
+
+    async def test_delete_nonexistent(self, registry):
+        await registry.register("sess-sj-ne", 111, "/tmp")
+        result = await registry.delete_scheduled_job("sess-sj-ne", "nonexistent-job-id")
+        assert result is False
+
+    async def test_migrate(self, registry):
+        await registry.register("sess-sj-a", 111, "/tmp")
+        await registry.register("sess-sj-b", 222, "/tmp")
+        created_at = "2026-01-01T10:00:00+00:00"
+        for i in range(3):
+            await registry.save_scheduled_job(
+                session_id="sess-sj-a",
+                job_id=f"job-migrate-{i}",
+                cron_expr="*/5 * * * *",
+                prompt=f"prompt {i}",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at=created_at,
+            )
+
+        count = await registry.migrate_scheduled_jobs("sess-sj-a", "sess-sj-b")
+        assert count == 3
+
+        jobs_b = await registry.list_scheduled_jobs("sess-sj-b")
+        assert len(jobs_b) == 3
+        assert {j["id"] for j in jobs_b} == {"job-migrate-0", "job-migrate-1", "job-migrate-2"}
+
+        jobs_a = await registry.list_scheduled_jobs("sess-sj-a")
+        assert jobs_a == []
+
+    async def test_delete_expired(self, registry):
+        from datetime import UTC, datetime, timedelta
+
+        await registry.register("sess-sj-exp", 111, "/tmp")
+
+        # Save an expired job (created 25h ago, lifetime 24h)
+        old_created_at = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+        await registry.save_scheduled_job(
+            session_id="sess-sj-exp",
+            job_id="job-expired",
+            cron_expr="*/5 * * * *",
+            prompt="old job",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at=old_created_at,
+        )
+
+        # Save a fresh job (should survive)
+        fresh_created_at = datetime.now(UTC).isoformat()
+        await registry.save_scheduled_job(
+            session_id="sess-sj-exp",
+            job_id="job-fresh",
+            cron_expr="*/5 * * * *",
+            prompt="fresh job",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at=fresh_created_at,
+        )
+
+        deleted = await registry.delete_expired_scheduled_jobs("sess-sj-exp")
+        assert deleted == 1
+
+        surviving = await registry.list_scheduled_jobs("sess-sj-exp")
+        assert len(surviving) == 1
+        assert surviving[0]["id"] == "job-fresh"
+
+    async def test_save_validates_empty_ids(self, registry):
+        await registry.register("sess-sj-val", 111, "/tmp")
+        with pytest.raises(ValueError, match="job_id"):
+            await registry.save_scheduled_job(
+                session_id="sess-sj-val",
+                job_id="",
+                cron_expr="*/5 * * * *",
+                prompt="test",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at="2026-01-01T10:00:00+00:00",
+            )
+        with pytest.raises(ValueError, match="session_id"):
+            await registry.save_scheduled_job(
+                session_id="",
+                job_id="some-job-id",
+                cron_expr="*/5 * * * *",
+                prompt="test",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at="2026-01-01T10:00:00+00:00",
+            )
+
+    async def test_cascade_delete(self, registry):
+        """Deleting the parent session row cascades to delete scheduled_jobs rows."""
+        await registry.register("sess-sj-cascade", 111, "/tmp")
+        await registry.save_scheduled_job(
+            session_id="sess-sj-cascade",
+            job_id="job-cascade",
+            cron_expr="*/5 * * * *",
+            prompt="cascaded job",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at="2026-01-01T10:00:00+00:00",
+        )
+
+        # Verify the job exists
+        jobs_before = await registry.list_scheduled_jobs("sess-sj-cascade")
+        assert len(jobs_before) == 1
+
+        # Delete the parent session row directly via SQL
+        db = registry._check_connected()
+        await db.execute("DELETE FROM sessions WHERE session_id = ?", ("sess-sj-cascade",))
+        await db.commit()
+
+        # The job row must be gone due to ON DELETE CASCADE
+        jobs_after = await registry.list_scheduled_jobs("sess-sj-cascade")
+        assert jobs_after == []
+
+    async def test_save_duplicate_job_id_raises(self, registry):
+        """Plain INSERT raises IntegrityError on duplicate job_id."""
+        import sqlite3
+
+        await registry.register("sess-sj-dup", 111, "/tmp")
+        await registry.save_scheduled_job(
+            session_id="sess-sj-dup",
+            job_id="job-dup",
+            cron_expr="*/5 * * * *",
+            prompt="first",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at="2026-01-01T10:00:00+00:00",
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            await registry.save_scheduled_job(
+                session_id="sess-sj-dup",
+                job_id="job-dup",
+                cron_expr="0 9 * * *",
+                prompt="duplicate",
+                recurring=False,
+                max_lifetime_s=3600,
+                created_at="2026-01-01T11:00:00+00:00",
+            )
+
+    async def test_save_validates_timezone(self, registry):
+        """created_at must be timezone-aware."""
+        await registry.register("sess-sj-tz", 111, "/tmp")
+        with pytest.raises(ValueError, match="timezone-aware"):
+            await registry.save_scheduled_job(
+                session_id="sess-sj-tz",
+                job_id="job-tz",
+                cron_expr="*/5 * * * *",
+                prompt="test",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at="2026-01-01T10:00:00",
+            )
+
+    async def test_save_accepts_negative_utc_offset(self, registry):
+        """Negative UTC offsets like -05:00 are valid timezone-aware ISO 8601."""
+        await registry.register("sess-sj-neg", 111, "/tmp")
+        await registry.save_scheduled_job(
+            session_id="sess-sj-neg",
+            job_id="job-neg-tz",
+            cron_expr="*/5 * * * *",
+            prompt="test",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at="2026-01-01T10:00:00-05:00",
+        )
+        jobs = await registry.list_scheduled_jobs("sess-sj-neg")
+        assert len(jobs) == 1
+        # Verify normalized to UTC
+        assert jobs[0]["created_at"] == "2026-01-01T15:00:00+00:00"
+
+    async def test_save_fk_violation(self, registry):
+        """Saving a job with non-existent session_id raises IntegrityError."""
+        import sqlite3
+
+        with pytest.raises(sqlite3.IntegrityError):
+            await registry.save_scheduled_job(
+                session_id="nonexistent-session",
+                job_id="job-fk",
+                cron_expr="*/5 * * * *",
+                prompt="test",
+                recurring=True,
+                max_lifetime_s=86400,
+                created_at="2026-01-01T10:00:00+00:00",
+            )
+
+    async def test_migrate_to_nonexistent_session_raises(self, registry):
+        """Migrating to a non-existent new_session_id raises IntegrityError."""
+        import sqlite3
+
+        await registry.register("sess-sj-migrate-fk", 111, "/tmp")
+        await registry.save_scheduled_job(
+            session_id="sess-sj-migrate-fk",
+            job_id="job-migrate-fk",
+            cron_expr="*/5 * * * *",
+            prompt="test",
+            recurring=True,
+            max_lifetime_s=86400,
+            created_at="2026-01-01T10:00:00+00:00",
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            await registry.migrate_scheduled_jobs(
+                "sess-sj-migrate-fk",
+                "nonexistent-target",
+            )
+
+    async def test_scheduled_jobs_schema_columns(self, registry):
+        """Pin the column set of scheduled_jobs via PRAGMA table_info."""
+        db = registry._check_connected()
+        async with db.execute("PRAGMA table_info(scheduled_jobs)") as cursor:
+            rows = await cursor.fetchall()
+        columns = {row[1] for row in rows}
+        expected = {
+            "id",
+            "session_id",
+            "cron_expr",
+            "prompt",
+            "recurring",
+            "max_lifetime_s",
+            "created_at",
+        }
+        assert columns == expected
+
+
 class TestSchemaVersioning:
     """Tests for schema versioning and migrations."""
 
@@ -591,6 +889,8 @@ class TestSchemaVersioning:
             assert "schema_version" in tables
             assert "workflow_defaults" in tables
             assert "projects" in tables
+            assert "session_tasks" in tables
+            assert "scheduled_jobs" in tables
 
     async def test_migration_preserves_existing_data(self, tmp_path):
         """Migrations must not destroy existing rows."""
@@ -1004,6 +1304,7 @@ class TestReleasedMigrationsImmutable:
         "_migrate_11_to_12": "bfc95f1b44faef79",
         "_migrate_12_to_13": "4dd835d5b9aefb63",
         "_migrate_13_to_14": "cc893dd5f5eacae0",
+        "_migrate_14_to_15": "d9d62bd4554b85bd",
     }
 
     def test_released_migrations_unchanged(self):

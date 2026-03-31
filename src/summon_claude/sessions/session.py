@@ -470,6 +470,7 @@ class SessionOptions:
     project_id: str | None = None
     scan_interval_s: int = 900
     system_prompt_append: str | None = None
+    resume_from_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,6 +606,7 @@ class SummonSession:
         self._model = options.model
         self._effort = options.effort
         self._resume = options.resume
+        self._resume_from_session_id = options.resume_from_session_id
         self._channel_id_option = options.channel_id
 
         self._auth: SessionAuth | None = auth
@@ -805,6 +807,11 @@ class SummonSession:
                 session_id=self._session_id,
                 details={"cwd": self._cwd, "name": self._name, "model": self._model},
             )
+
+            # FK migration for cron jobs is handled lazily by
+            # scheduler.restore_from_db() after auth succeeds, not here.
+            # This avoids stranding jobs under an errored session_id if
+            # auth times out.
 
             try:
                 logger.info("Session %s: waiting for Slack authentication...", self._session_id)
@@ -1803,7 +1810,13 @@ class SummonSession:
             mcp_servers["summon-canvas"] = canvas_mcp
 
         # Create scheduler before MCP server so it can be passed in
-        scheduler = SessionScheduler(self._raw_event_queue, self._shutdown_event)
+        scheduler = SessionScheduler(
+            self._raw_event_queue,
+            self._shutdown_event,
+            registry=rt.registry,
+            session_id=self._session_id,
+            resume_from_session_id=self._resume_from_session_id,
+        )
         self._scheduler = scheduler
 
         # Wire canvas sync callbacks
@@ -1935,22 +1948,6 @@ class SummonSession:
         _scribe_scan_nonce = secrets.token_hex(8) if is_scribe else ""
 
         while True:
-            # Snapshot agent cron jobs before clearing, compute recovery prompt
-            _lost_cron_jobs = [
-                (j.cron_expr, j.prompt, j.recurring)
-                for j in scheduler.list_jobs()
-                if not j.internal
-            ]
-            _cron_recovery = ""
-            if _lost_cron_jobs:
-                cron_lines = "\n".join(
-                    f"  - CronCreate(cron={expr!r}, prompt={prompt[:100]!r}, recurring={rec})"
-                    for expr, prompt, rec in _lost_cron_jobs
-                )
-                _cron_recovery = (
-                    "\n\nScheduled jobs were lost during context compaction. "
-                    "Re-create them with CronCreate:\n" + cron_lines
-                )
             # Cancel any orphaned scheduler tasks from prior iteration and re-register
             scheduler.cancel_all()
             if self._global_pm_profile:
@@ -1988,17 +1985,16 @@ class SummonSession:
                     internal=True,
                     max_lifetime_s=0,
                 )
+            # Restore agent cron jobs from DB (no-op on first iteration if none persisted)
+            await scheduler.restore_from_db()
             if self._global_pm_profile:
                 reports_dir = str(get_reports_dir())
                 Path(reports_dir).mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
                 system_prompt = build_global_pm_system_prompt(reports_dir=reports_dir)
-                # Inject compaction context if present (same pattern as PM prompt)
                 if restart_count > 0 and system_prompt_append != base_prompt:
                     compaction_delta = system_prompt_append[len(base_prompt) :]
                     if compaction_delta:
                         system_prompt["append"] += compaction_delta
-                if _cron_recovery:
-                    system_prompt["append"] += _cron_recovery
                 if self._system_prompt_append:
                     system_prompt["append"] += "\n\n" + self._system_prompt_append
             elif is_pm:
@@ -2015,8 +2011,6 @@ class SummonSession:
                     compaction_delta = system_prompt_append[len(base_prompt) :]
                     if compaction_delta:
                         system_prompt["append"] += compaction_delta
-                if _cron_recovery:
-                    system_prompt["append"] += _cron_recovery
                 if self._system_prompt_append:
                     system_prompt["append"] += "\n\n" + self._system_prompt_append
             elif is_scribe:
@@ -2025,14 +2019,10 @@ class SummonSession:
                     google_enabled=google_mcp_wired,
                     slack_enabled=bool(self._slack_monitors),
                 )
-                if _cron_recovery:
-                    system_prompt["append"] += _cron_recovery
                 if self._system_prompt_append:
                     system_prompt["append"] += "\n\n" + self._system_prompt_append
             else:
                 effective_append = system_prompt_append
-                if _cron_recovery:
-                    effective_append = system_prompt_append + _cron_recovery
                 if self._system_prompt_append:
                     effective_append += "\n\n" + self._system_prompt_append
                 system_prompt = {
@@ -2136,8 +2126,6 @@ class SummonSession:
                     system_prompt_append = base_prompt + _COMPACT_SUMMARY_PREFIX + restart.summary
                 elif restart.recovery_mode:
                     system_prompt_append = base_prompt + _OVERFLOW_RECOVERY_PROMPT
-                # Cron recovery is computed at the TOP of the next iteration
-                # from the fresh snapshot (not here where _lost_cron_jobs is stale)
                 restart_count += 1
                 if restart_count > _MAX_SESSION_RESTARTS:
                     logger.warning("Max restart count (%d) exceeded", _MAX_SESSION_RESTARTS)

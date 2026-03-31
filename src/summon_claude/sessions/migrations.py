@@ -16,7 +16,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 15
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +256,26 @@ async def _migrate_13_to_14(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_14_to_15(db: aiosqlite.Connection) -> None:
+    """Create scheduled_jobs table for cron job persistence."""
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            cron_expr TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            recurring INTEGER NOT NULL DEFAULT 1,
+            max_lifetime_s INTEGER NOT NULL DEFAULT 86400,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+        )
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_session
+        ON scheduled_jobs(session_id)
+    """)
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the baseline DDL in _connect() produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
@@ -273,6 +293,7 @@ _MIGRATIONS: dict[int, Any] = {
     11: _migrate_11_to_12,
     12: _migrate_12_to_13,
     13: _migrate_13_to_14,
+    14: _migrate_14_to_15,
 }
 
 

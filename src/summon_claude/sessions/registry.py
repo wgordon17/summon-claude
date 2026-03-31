@@ -684,6 +684,114 @@ class SessionRegistry:
             result.setdefault(sid, []).append(task)
         return result
 
+    # --- Scheduled job methods ---
+
+    async def save_scheduled_job(
+        self,
+        session_id: str,
+        job_id: str,
+        cron_expr: str,
+        prompt: str,
+        recurring: bool,
+        max_lifetime_s: int,
+        created_at: str,
+    ) -> None:
+        """Persist a scheduled job to the database.
+
+        Raises ``ValueError`` if ``job_id`` or ``session_id`` is empty.
+        Uses plain INSERT (not INSERT OR REPLACE) so duplicate job_id raises IntegrityError.
+        """
+        if not job_id:
+            raise ValueError("job_id must not be empty")
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        try:
+            dt = datetime.fromisoformat(created_at)
+        except ValueError as e:
+            raise ValueError(f"created_at must be valid ISO 8601: {e}") from e
+        if dt.tzinfo is None:
+            raise ValueError("created_at must be timezone-aware ISO 8601")
+        # Normalize to UTC so SQLite datetime arithmetic works correctly
+        created_at = dt.astimezone(UTC).isoformat()
+        db = self._check_connected()
+        async with self._lock:
+            await db.execute(
+                "INSERT INTO scheduled_jobs "
+                "(id, session_id, cron_expr, prompt, recurring, max_lifetime_s, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    session_id,
+                    cron_expr,
+                    prompt,
+                    1 if recurring else 0,
+                    max_lifetime_s,
+                    created_at,
+                ),
+            )
+            await db.commit()
+
+    async def delete_scheduled_job(self, session_id: str, job_id: str) -> bool:
+        """Delete a scheduled job scoped to session_id. Returns True if deleted."""
+        db = self._check_connected()
+        async with self._lock:
+            cursor = await db.execute(
+                "DELETE FROM scheduled_jobs WHERE id = ? AND session_id = ?",
+                (job_id, session_id),
+            )
+            await db.commit()
+        return cursor.rowcount > 0
+
+    async def list_scheduled_jobs(self, session_id: str) -> list[dict[str, Any]]:
+        """Return all scheduled jobs for a session as a list of dicts."""
+        db = self._check_connected()
+        async with db.execute(
+            "SELECT id, cron_expr, prompt, recurring, max_lifetime_s, created_at "
+            "FROM scheduled_jobs WHERE session_id = ? ORDER BY created_at",
+            (session_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "cron_expr": r[1],
+                "prompt": r[2],
+                "recurring": bool(r[3]),
+                "max_lifetime_s": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+    async def migrate_scheduled_jobs(self, old_session_id: str, new_session_id: str) -> int:
+        """Update session_id FK for all jobs from old_session_id to new_session_id.
+
+        Returns count of migrated rows.
+        Precondition: new_session_id must already exist in sessions table.
+        """
+        db = self._check_connected()
+        async with self._lock:
+            cursor = await db.execute(
+                "UPDATE scheduled_jobs SET session_id = ? WHERE session_id = ?",
+                (new_session_id, old_session_id),
+            )
+            await db.commit()
+        return cursor.rowcount
+
+    async def delete_expired_scheduled_jobs(self, session_id: str) -> int:
+        """Delete jobs whose created_at + max_lifetime_s has elapsed. Returns count deleted."""
+        db = self._check_connected()
+        async with self._lock:
+            cursor = await db.execute(
+                "DELETE FROM scheduled_jobs "
+                "WHERE session_id = ? AND max_lifetime_s > 0 "
+                "AND datetime(created_at, '+' || CAST(max_lifetime_s AS INTEGER)"
+                " || ' seconds') <= datetime('now')",
+                (session_id,),
+            )
+            await db.commit()
+        return cursor.rowcount
+
     # --- Project methods ---
 
     async def add_project(self, name: str, directory: str) -> str:
