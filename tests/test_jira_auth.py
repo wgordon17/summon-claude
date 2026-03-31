@@ -392,6 +392,38 @@ class TestRefreshJiraTokenIfNeeded:
 
         mock_refresh.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_write_side_race_skips_overwrite(self):
+        """If another process refreshed during our HTTP call, don't overwrite their token."""
+        expired_token = _make_token(expires_at=time.time() - 10)
+        jira_auth.save_jira_token(expired_token)
+
+        async def fake_refresh(token_data):
+            # Simulate another process refreshing while we do HTTP I/O:
+            # write a fresh token to disk AFTER we released the read lock
+            # but BEFORE we re-acquire the write lock.
+            other_token = {
+                **token_data,
+                "access_token": "other-process-token",
+                "expires_at": time.time() + 7200,
+            }
+            jira_auth.save_jira_token(other_token)
+            # Return our own refreshed token (would normally overwrite)
+            return {
+                **token_data,
+                "access_token": "our-token",
+                "expires_at": time.time() + 3600,
+            }
+
+        with patch.object(jira_auth, "_do_refresh", side_effect=fake_refresh):
+            await jira_auth.refresh_jira_token_if_needed()
+
+        # The on-disk token should be the OTHER process's token (fresher),
+        # not ours — our write was skipped.
+        on_disk = jira_auth.load_jira_token()
+        assert on_disk is not None
+        assert on_disk["access_token"] == "other-process-token"
+
 
 # ---------------------------------------------------------------------------
 # Cloud site discovery

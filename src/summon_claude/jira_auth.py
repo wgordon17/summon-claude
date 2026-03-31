@@ -674,8 +674,9 @@ async def discover_cloud_sites(access_token: str) -> list[dict[str, Any]]:
 def check_jira_status() -> str | None:
     """Check Jira integration status.
 
-    Unlike _check_google_status (which returns bool|None and handles click.echo),
-    this returns an error message string when misconfigured, or None when OK.
+    Returns an error message string when misconfigured, or None when OK.
+    Different convention from _check_google_status (which returns bool|None
+    and calls click.echo internally) — this separates checking from presentation.
 
     Returns:
         None if Jira credentials are present and valid.
