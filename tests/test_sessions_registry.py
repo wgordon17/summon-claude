@@ -948,8 +948,8 @@ class TestSchemaVersioning:
                 assert version == CURRENT_SCHEMA_VERSION
 
 
-class TestMigration12To13:
-    """Targeted tests for migration 12 → 13 (adds jira_jql to projects table)."""
+class TestMigration15To16:
+    """Targeted tests for migration 15 → 16 (adds jira_jql to projects table)."""
 
     async def test_migrate_15_to_16_adds_jira_jql(self, tmp_path):
         """Migration must add jira_jql to a projects table that lacks it."""

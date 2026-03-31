@@ -195,10 +195,14 @@ def build_pm_system_prompt(  # noqa: PLR0913
             f"{workflow_instructions}"
         )
     if jira_enabled:
+        # SEC: strip newlines from operator-supplied JQL to prevent prompt injection
+        # via crafted JQL strings that break out of the backtick-delimited context.
+        safe_jql = jira_jql.replace("\n", " ").replace("\r", " ") if jira_jql else None
+        safe_cloud = jira_cloud_id.replace("\n", " ").replace("\r", " ") if jira_cloud_id else None
         jql_line = (
-            f"  JQL filter: `{jira_jql}`\n" if jira_jql else "  JQL filter: none (all issues)\n"
+            f"  JQL filter: `{safe_jql}`\n" if safe_jql else "  JQL filter: none (all issues)\n"
         )
-        cloud_line = f"  Cloud ID: `{jira_cloud_id}`\n" if jira_cloud_id else ""
+        cloud_line = f"  Cloud ID: `{safe_cloud}`\n" if safe_cloud else ""
         append_text += (
             "\n\n## Jira Triage\n\n"
             "You have access to Jira via the `mcp__jira__` tools. During each periodic scan, "
