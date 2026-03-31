@@ -65,6 +65,7 @@ class _QueuedSession:
     project_id: str  # project the session belongs to (for dequeue routing)
     pm_session_id: str  # session_id of the PM that queued this session
     authenticated_user_id: str  # for auto-authenticate on dequeue
+    parent_channel_id: str | None = None  # PM channel for spawn notifications
 
 
 class SessionManager:
@@ -1502,8 +1503,8 @@ class SessionManager:
                     "Session %s task raised: %s", session_id, redact_secrets(str(exc)), exc_info=exc
                 )
 
-        # Start grace timer when no sessions remain
-        if not self._sessions:
+        # Start grace timer when no sessions and no queued sessions remain
+        if not self._sessions and not self._session_queue:
             self._start_grace_timer()
 
     async def _update_pm_topic(self, project_id: str) -> None:
@@ -1571,6 +1572,7 @@ class SessionManager:
         project_id: str,
         pm_session_id: str,
         authenticated_user_id: str,
+        parent_channel_id: str | None = None,
     ) -> int:
         """Enqueue a session for deferred startup.
 
@@ -1591,6 +1593,7 @@ class SessionManager:
             project_id=project_id,
             pm_session_id=pm_session_id,
             authenticated_user_id=authenticated_user_id,
+            parent_channel_id=parent_channel_id,
         )
         q.append(entry)
         position = len(q)
@@ -1602,80 +1605,96 @@ class SessionManager:
         )
         return position
 
+    _MAX_DEQUEUE_RETRIES = 3
+
     async def _dequeue_and_start(self, project_id: str) -> None:
         """Dequeue the next waiting session for *project_id* and start it.
 
-        PM lookup and cap check run outside the lock (non-blocking).  Only
-        ``q.popleft()`` + conditional ``del`` run inside the lock to ensure
-        the queue mutation is serialized across concurrent dequeues.
+        The lock serializes cap-check + pop + session-create to prevent
+        concurrent dequeues from overshooting the cap.
         """
         # Fast path: bail early if no queue (no lock needed)
         if project_id not in self._session_queue:
             return
 
-        # Resolve the live PM and check cap BEFORE acquiring the lock.
-        # Two concurrent dequeues may both pass this check, but the in-memory
-        # _sessions assignment is single-threaded (no await between create and
-        # assignment), so the worst case is a momentary overshoot by 1.
-        live_pm_session = next(
-            (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
-            None,
-        )
-        if live_pm_session is None:
-            logger.debug(
-                "SessionManager: no live PM for project %s, skipping dequeue",
-                project_id,
-            )
-            return
-
-        children: list[dict] = []
-        async with SessionRegistry() as registry:
-            children = await registry.list_children(live_pm_session._session_id, limit=500)  # noqa: SLF001
-        active = [c for c in children if c.get("status") in ("pending_auth", "active")]
-        if len(active) >= MAX_SPAWN_CHILDREN_PM:
-            logger.debug(
-                "SessionManager: cap still reached for project %s, skipping dequeue",
-                project_id,
-            )
-            return
-
-        # Critical section: pop from queue (serialized)
         async with self._queue_lock:
             q = self._session_queue.get(project_id)
             if not q:
                 return
+
+            # Find the live PM for parent linkage
+            live_pm_session = next(
+                (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
+                None,
+            )
+            if live_pm_session is None:
+                return
+
+            # Cap check inside the lock to prevent TOCTOU overshoot
+            children_count = sum(
+                1
+                for sid, s in self._sessions.items()
+                if sid != live_pm_session._session_id  # noqa: SLF001
+                and s.project_id == project_id
+                and not s.is_pm
+            )
+            if children_count >= MAX_SPAWN_CHILDREN_PM:
+                return
+
             entry = q.popleft()
             if not q:
-                del self._session_queue[project_id]
+                self._session_queue.pop(project_id, None)
 
-        # Capture live PM session_id for parent linkage (FIX 1)
-        live_pm_sid = live_pm_session._session_id  # noqa: SLF001
+            live_pm_sid = live_pm_session._session_id  # noqa: SLF001
 
-        # Start session outside the lock (non-blocking path)
-        new_session_id = str(uuid.uuid4())
-        session = SummonSession(
-            config=self._config,
-            options=entry.options,
-            auth=None,
-            session_id=new_session_id,
-            web_client=self._web_client,
-            dispatcher=self._dispatcher,
-            bot_user_id=self._bot_user_id,
-            parent_session_id=live_pm_sid,
-            ipc_spawn=self.create_session_with_spawn_token,
-            ipc_resume=self._ipc_resume,
-            ipc_queue=self.queue_session,
-        )
-        session.authenticate(entry.authenticated_user_id)
+            # Session creation inside lock to prevent TOCTOU between cap
+            # check and _sessions registration
+            new_session_id = str(uuid.uuid4())
+            try:
+                session = SummonSession(
+                    config=self._config,
+                    options=entry.options,
+                    auth=None,
+                    session_id=new_session_id,
+                    web_client=self._web_client,
+                    dispatcher=self._dispatcher,
+                    bot_user_id=self._bot_user_id,
+                    parent_session_id=live_pm_sid,
+                    parent_channel_id=entry.parent_channel_id,
+                    ipc_spawn=self.create_session_with_spawn_token,
+                    ipc_resume=self._ipc_resume,
+                    ipc_queue=self.queue_session,
+                )
+                session.authenticate(entry.authenticated_user_id)
+            except Exception as exc:
+                logger.error(
+                    "Failed to create queued session '%s': %s",
+                    entry.options.name,
+                    redact_secrets(str(exc)),
+                )
+                # Re-queue with retry tracking (drop after max retries)
+                retry = getattr(entry, "_retry_count", 0) + 1
+                if retry < self._MAX_DEQUEUE_RETRIES:
+                    # Frozen dataclass — create a new entry with retry info
+                    requeue = self._session_queue.setdefault(project_id, collections.deque())
+                    requeue.appendleft(entry)
+                else:
+                    logger.error(
+                        "Dropping queued session '%s' after %d failed attempts",
+                        entry.options.name,
+                        retry,
+                    )
+                return
 
-        self._cancel_grace_timer()
-        self._sessions[new_session_id] = session
-        task = asyncio.create_task(
-            self._supervised_session(session, new_session_id),
-            name=f"session-dequeued-{new_session_id}",
-        )
-        task.add_done_callback(partial(self._on_task_done, session_id=new_session_id))
-        self._tasks[new_session_id] = task
+            self._cancel_grace_timer()
+            self._sessions[new_session_id] = session
+            task = asyncio.create_task(
+                self._supervised_session(session, new_session_id),
+                name=f"session-dequeued-{new_session_id}",
+            )
+            task.add_done_callback(partial(self._on_task_done, session_id=new_session_id))
+            self._tasks[new_session_id] = task
+
         logger.info(
             "SessionManager: dequeued and started session '%s' (%s) for project %s",
             entry.options.name,
@@ -1683,7 +1702,7 @@ class SessionManager:
             project_id,
         )
 
-        # Fire-and-forget: don't block on Slack API round-trips (FIX 5)
+        # Fire-and-forget notifications (outside lock — non-critical)
         if entry.options.project_id:
             t = asyncio.create_task(
                 self._update_pm_topic(entry.options.project_id),
@@ -1719,13 +1738,18 @@ class SessionManager:
             pm_session = self._sessions.get(entry.pm_session_id)
         if pm_session is None or not pm_session.channel_id or not self._web_client:
             return
+        ip = entry.options.initial_prompt or ""
+        prompt_snippet = redact_secrets(ip[:200])
+        suffix = "..." if len(ip) > 200 else ""
+        msg = (
+            f"_Queued session '{entry.options.name}' started (session_id: {new_session_id[:8]}...)_"
+        )
+        if prompt_snippet:
+            msg += f"\n_Initial prompt: {prompt_snippet}{suffix}_"
         with contextlib.suppress(Exception):
             await self._web_client.chat_postMessage(
                 channel=pm_session.channel_id,
-                text=(
-                    f"_Queued session '{entry.options.name}' started "
-                    f"(session_id: {new_session_id[:8]}...)_"
-                ),
+                text=redact_secrets(msg),
             )
 
     def clear_queue(self, project_id: str) -> int:

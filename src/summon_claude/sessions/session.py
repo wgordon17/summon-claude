@@ -2114,10 +2114,12 @@ class SummonSession:
                     # Inject initial_prompt on first startup only (not on compaction restart)
                     if self._initial_prompt and not self._initial_prompt_sent:
                         self._initial_prompt_sent = True
-                        safe_prompt = redact_secrets(self._initial_prompt)
-                        safe_prompt = re.sub(r"<!(channel|here|everyone)>", r"\1", safe_prompt)
+                        safe_prompt = re.sub(
+                            r"<!(channel|here|everyone)>", r"\1", self._initial_prompt
+                        )
                         safe_prompt = re.sub(r"<@(U\w+)>", r"user:\1", safe_prompt)
                         safe_prompt = re.sub(r"<!subteam\^[^>]+>", "group", safe_prompt)
+                        safe_prompt = redact_secrets(safe_prompt)
                         pending_initial = _PendingTurn(message=self._initial_prompt, pre_sent=False)
                         try:
                             self._pending_turns.put_nowait(pending_initial)

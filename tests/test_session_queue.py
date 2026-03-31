@@ -93,7 +93,13 @@ class TestQueuedSessionGuard:
 
     def test_fields_are_pinned(self):
         fields = {f.name for f in dataclasses.fields(_QueuedSession)}
-        assert fields == {"options", "project_id", "pm_session_id", "authenticated_user_id"}
+        assert fields == {
+            "options",
+            "project_id",
+            "pm_session_id",
+            "authenticated_user_id",
+            "parent_channel_id",
+        }
 
     def test_parent_session_id_not_a_field(self):
         """parent_session_id must NOT be a direct field on _QueuedSession."""
@@ -403,18 +409,14 @@ class TestDequeueAndStart:
         pm_stub._session_id = "pm-sess-1"
         manager._sessions["pm-sess-1"] = pm_stub  # type: ignore[assignment]
 
-        # Return children at the cap
-        active_children = [
-            {"status": "active", "session_id": f"c{i}"} for i in range(MAX_SPAWN_CHILDREN_PM)
-        ]
+        # Fill in-memory sessions to the cap (non-PM children)
+        for i in range(MAX_SPAWN_CHILDREN_PM):
+            child = _StubSession()
+            child.is_pm = False
+            child.project_id = "proj-1"
+            manager._sessions[f"child-{i}"] = child  # type: ignore[assignment]
 
-        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls:
-            mock_reg = AsyncMock()
-            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
-            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            mock_reg.list_children = AsyncMock(return_value=active_children)
-
-            await manager._dequeue_and_start("proj-1")
+        await manager._dequeue_and_start("proj-1")
 
         # Entry still in queue — cap was full
         assert "proj-1" in manager._session_queue
@@ -476,6 +478,43 @@ class TestDequeueAndStart:
         # Both entries should have been processed (lock serializes, not blocks entirely)
         assert len(started_sessions) == 2
         assert "proj-1" not in manager._session_queue
+
+    async def test_dequeue_failure_requeues_entry(self):
+        """If SummonSession() raises during dequeue, the entry is re-queued."""
+        manager, _, _ = _make_manager()
+
+        manager.queue_session(
+            make_options(name="fragile"),
+            project_id="proj-1",
+            pm_session_id="pm-sess-1",
+            authenticated_user_id="U_OWNER",
+        )
+
+        pm_stub = _StubSession()
+        pm_stub.is_pm = True
+        pm_stub.project_id = "proj-1"
+        pm_stub._session_id = "pm-sess-1"
+        manager._sessions["pm-sess-1"] = pm_stub  # type: ignore[assignment]
+
+        with (
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
+            patch(
+                "summon_claude.sessions.manager.SummonSession",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            mock_reg = AsyncMock()
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_reg.list_children = AsyncMock(return_value=[])
+
+            await manager._dequeue_and_start("proj-1")
+
+        # Entry should be re-queued (not lost)
+        assert "proj-1" in manager._session_queue
+        q = manager._session_queue["proj-1"]
+        assert len(q) == 1
+        assert q[0].options.name == "fragile"
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +739,14 @@ class TestMcpQueueBehavior:
         ]
         queued_calls: list[tuple] = []
 
-        def fake_queue(options, *, project_id, pm_session_id, authenticated_user_id):
+        def fake_queue(
+            options,
+            *,
+            project_id,
+            pm_session_id,
+            authenticated_user_id,
+            parent_channel_id=None,
+        ):
             queued_calls.append((options, project_id, pm_session_id))
             return 1  # position 1
 
@@ -795,7 +841,14 @@ class TestMcpQueueBehavior:
             for i in range(MAX_SPAWN_CHILDREN_PM)
         ]
 
-        def full_queue(options, *, project_id, pm_session_id, authenticated_user_id):
+        def full_queue(
+            options,
+            *,
+            project_id,
+            pm_session_id,
+            authenticated_user_id,
+            parent_channel_id=None,
+        ):
             return -1  # queue is full
 
         original_list_children = registry.list_children

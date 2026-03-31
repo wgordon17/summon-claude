@@ -343,6 +343,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                         project_id=parent_project_id,
                         pm_session_id=session_id,
                         authenticated_user_id=authenticated_user_id,
+                        parent_channel_id=channel_id,
                     )
                     if position == -1:
                         return {
