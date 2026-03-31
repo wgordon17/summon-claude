@@ -225,13 +225,27 @@ def auth_slack_channels(refresh: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_site(site: str) -> str:
+    """Normalize a site input to a full hostname (e.g. 'myorg' → 'myorg.atlassian.net')."""
+    s = site.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
+    if "." not in s:
+        s = f"{s}.atlassian.net"
+    return s
+
+
 @cmd_auth.group("jira")
 def auth_jira() -> None:
     """Jira authentication (OAuth 2.1 with PKCE + DCR)."""
 
 
 @auth_jira.command("login")
-def auth_jira_login() -> None:
+@click.option(
+    "--site",
+    default=None,
+    help="Atlassian site (e.g. 'myorg' or 'myorg.atlassian.net'). "
+    "Skips interactive site discovery.",
+)
+def auth_jira_login(site: str | None) -> None:
     """Authenticate with Jira via OAuth 2.1."""
     import sys  # noqa: PLC0415
 
@@ -241,7 +255,7 @@ def auth_jira_login() -> None:
         start_auth_flow,
     )
 
-    click.echo("Starting Jira OAuth flow — a browser window will open for authorization.")
+    click.echo("Starting Jira OAuth flow — a browser window will open.")
     try:
         token_data = asyncio.run(start_auth_flow())
     except TimeoutError as e:
@@ -251,42 +265,30 @@ def auth_jira_login() -> None:
         click.echo(f"Authentication failed: {e}", err=True)
         sys.exit(1)
 
-    # Discover accessible Atlassian cloud sites via REST API.
-    # Rovo MCP tokens may not be interoperable with api.atlassian.com —
-    # if discovery fails, fall back to user-provided site URL.
-    access_token = token_data.get("access_token", "")
-    sites = asyncio.run(discover_cloud_sites(access_token))
-
-    if sites:
-        if len(sites) == 1:
-            site = sites[0]
-        else:
-            click.echo("Multiple Atlassian cloud sites found:")
-            for i, s in enumerate(sites, 1):
-                click.echo(f"  {i}. {s.get('name', 'unnamed')} ({s.get('url', '')})")
-            choice = click.prompt(
-                "Select a site",
-                type=click.IntRange(1, len(sites)),
-                default=1,
-            )
-            site = sites[choice - 1]
-        token_data["cloud_id"] = site["id"]
-        token_data["cloud_name"] = site.get("name", "")
+    # Resolve cloud site: --site flag > REST API discovery > prompt
+    if site:
+        site_host = _normalize_site(site)
+        token_data["cloud_id"] = site_host
+        token_data["cloud_name"] = site_host.split(".")[0]
     else:
-        # REST API discovery failed (Rovo MCP token not interoperable).
-        # The MCP tools accept site hostnames as cloudId, so prompt for the URL.
-        click.echo(
-            "Could not auto-discover cloud sites (Rovo MCP tokens are not "
-            "interoperable with the Atlassian REST API)."
-        )
-        site_url = click.prompt(
-            "Enter your Atlassian site URL (e.g. myorg.atlassian.net)",
-            type=str,
-        )
-        # Normalize: strip protocol prefix if provided
-        site_url = site_url.strip().removeprefix("https://").removeprefix("http://")
-        token_data["cloud_id"] = site_url
-        token_data["cloud_name"] = site_url.split(".")[0]
+        access_token = token_data.get("access_token", "")
+        sites = asyncio.run(discover_cloud_sites(access_token))
+        if sites:
+            if len(sites) == 1:
+                chosen = sites[0]
+            else:
+                click.echo("Multiple Atlassian cloud sites found:")
+                for i, s in enumerate(sites, 1):
+                    click.echo(f"  {i}. {s.get('name', '')} ({s.get('url', '')})")
+                idx = click.prompt("Select a site", type=click.IntRange(1, len(sites)), default=1)
+                chosen = sites[idx - 1]
+            token_data["cloud_id"] = chosen["id"]
+            token_data["cloud_name"] = chosen.get("name", "")
+        else:
+            org = click.prompt("Enter your Atlassian org name (e.g. 'myorg')")
+            site_host = _normalize_site(org)
+            token_data["cloud_id"] = site_host
+            token_data["cloud_name"] = org.strip()
 
     save_jira_token(token_data)
     site_label = token_data.get("cloud_name", token_data["cloud_id"])

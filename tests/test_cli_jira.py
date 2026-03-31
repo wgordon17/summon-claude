@@ -45,8 +45,8 @@ class TestJiraLogin:
         assert saved["cloud_id"] == "cloud-abc"
         assert saved["cloud_name"] == "My Jira"
 
-    def test_jira_login_no_sites_prompts_for_url(self):
-        """Login with no auto-discovered sites → prompts for site URL, saves with cloud_id."""
+    def test_jira_login_no_sites_prompts_for_org(self):
+        """Login with no auto-discovered sites → prompts for org name, saves with cloud_id."""
         token_data = {"access_token": "atoken"}
 
         with (
@@ -63,14 +63,35 @@ class TestJiraLogin:
             patch("summon_claude.jira_auth.save_jira_token") as mock_save,
         ):
             runner = CliRunner()
-            result = runner.invoke(cli, ["auth", "jira", "login"], input="myorg.atlassian.net\n")
+            # User enters just the org name — auto-appends .atlassian.net
+            result = runner.invoke(cli, ["auth", "jira", "login"], input="myorg\n")
 
         assert result.exit_code == 0
         mock_save.assert_called()
         saved = mock_save.call_args[0][0]
         assert saved["cloud_id"] == "myorg.atlassian.net"
         assert saved["cloud_name"] == "myorg"
-        assert "could not auto-discover" in result.output.lower()
+
+    def test_jira_login_site_flag_skips_discovery(self):
+        """--site flag skips REST API discovery and interactive prompt."""
+        token_data = {"access_token": "atoken"}
+
+        with (
+            patch(
+                "summon_claude.jira_auth.start_auth_flow",
+                new_callable=AsyncMock,
+                return_value=token_data,
+            ),
+            patch("summon_claude.jira_auth.save_jira_token") as mock_save,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "jira", "login", "--site", "redhat"])
+
+        assert result.exit_code == 0
+        mock_save.assert_called()
+        saved = mock_save.call_args[0][0]
+        assert saved["cloud_id"] == "redhat.atlassian.net"
+        assert saved["cloud_name"] == "redhat"
 
     def test_jira_login_timeout_exits_nonzero(self):
         """If start_auth_flow raises TimeoutError, CLI exits with code 1."""
@@ -117,7 +138,7 @@ class TestJiraLogin:
             patch("summon_claude.jira_auth.save_jira_token"),
         ):
             # Should not raise
-            auth_jira_login.callback()
+            auth_jira_login.callback(site=None)
 
 
 # ---------------------------------------------------------------------------
