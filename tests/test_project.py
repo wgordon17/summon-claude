@@ -258,12 +258,10 @@ class TestProjectUpdate:
         project = await registry.get_project(project_id)
         assert project["workflow_instructions"] == "Use TDD."
 
-    async def test_update_ignores_unknown_fields(self, registry, tmp_path):
+    async def test_update_rejects_unknown_fields(self, registry, tmp_path):
         project_id = await registry.add_project("unk-proj", str(tmp_path))
-        # Should not raise
-        await registry.update_project(project_id, nonexistent_field="value")
-        project = await registry.get_project(project_id)
-        assert project is not None
+        with pytest.raises(ValueError, match="unknown field"):
+            await registry.update_project(project_id, nonexistent_field="value")
 
     async def test_update_nonexistent_raises_key_error(self, registry):
         with pytest.raises(KeyError, match="No project with id"):

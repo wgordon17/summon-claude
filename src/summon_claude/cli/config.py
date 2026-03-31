@@ -404,22 +404,35 @@ def jira_login() -> None:
         click.echo(f"Authentication failed: {e}", err=True)
         sys.exit(1)
 
-    # Discover accessible Atlassian cloud sites and pick the first one.
+    # Discover accessible Atlassian cloud sites.
     access_token = token_data.get("access_token", "")
     sites = asyncio.run(discover_cloud_sites(access_token))
-    if sites:
-        site = sites[0]
-        token_data["cloud_id"] = site["id"]
-        token_data["cloud_name"] = site.get("name", "")
-        save_jira_token(token_data)
-        click.echo(f"Jira authenticated successfully (site: {site.get('name', site['id'])}).")
-    else:
-        # No accessible resources — still save token; cloud_id left absent.
+    if not sites:
         save_jira_token(token_data)
         click.echo(
             "Jira authenticated but no accessible cloud sites found. "
             "Ensure your Atlassian account has access to a Jira project."
         )
+        return
+
+    # CR-008: let user pick when multiple sites are available
+    if len(sites) == 1:
+        site = sites[0]
+    else:
+        click.echo("Multiple Atlassian cloud sites found:")
+        for i, s in enumerate(sites, 1):
+            click.echo(f"  {i}. {s.get('name', 'unnamed')} ({s.get('url', '')})")
+        choice = click.prompt(
+            "Select a site",
+            type=click.IntRange(1, len(sites)),
+            default=1,
+        )
+        site = sites[choice - 1]
+
+    token_data["cloud_id"] = site["id"]
+    token_data["cloud_name"] = site.get("name", "")
+    save_jira_token(token_data)
+    click.echo(f"Jira authenticated successfully (site: {site.get('name', site['id'])}).")
 
 
 def jira_logout() -> None:

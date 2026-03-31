@@ -945,7 +945,7 @@ class SessionRegistry:
             if key in self._UPDATABLE_PROJECT_FIELDS:
                 updates[key] = val
             else:
-                logger.warning("update_project: ignoring unknown field %r", key)
+                raise ValueError(f"update_project: unknown field {key!r}")
         if not updates:
             return
         db = self._check_connected()

@@ -403,7 +403,10 @@ def project_add(ctx: click.Context, name: str, directory: str, jql: str | None) 
     """Register a project directory for PM agent management."""
     project_id = asyncio.run(async_project_add(name, directory))
     if jql is not None:
-        asyncio.run(async_project_update(project_id, jira_jql=jql or None))
+        try:
+            asyncio.run(async_project_update(project_id, jira_jql=jql or None))
+        except Exception as e:
+            click.echo(f"Warning: project registered but JQL update failed: {e}", err=True)
     if not ctx.obj.get("quiet"):
         click.echo(f"Project {name!r} registered (id: {project_id[:8]}...)")
         click.echo("Run 'summon project up' to start a PM agent for this project.")

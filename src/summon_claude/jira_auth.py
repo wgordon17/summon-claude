@@ -68,13 +68,22 @@ def get_jira_token_path() -> Path:
 
 
 def save_jira_token(token_data: dict[str, Any]) -> None:
-    """Save Jira token data to disk with 0600 permissions (SC-03)."""
+    """Save Jira token data to disk with 0600 permissions (SC-03).
+
+    SEC-P4-001: Uses os.open with O_CREAT to atomically create the file with
+    restrictive permissions, avoiding the write-then-chmod TOCTOU window.
+    SEC-P4-016: Directory created with 0o700 to prevent enumeration.
+    """
     creds_dir = get_jira_credentials_dir()
-    creds_dir.mkdir(parents=True, exist_ok=True)
+    creds_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     token_path = get_jira_token_path()
-    token_path.write_text(json.dumps(token_data, indent=2))
-    token_path.chmod(0o600)
+    content = json.dumps(token_data, indent=2).encode()
+    fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, content)
+    finally:
+        os.close(fd)
 
 
 def load_jira_token() -> dict[str, Any] | None:
@@ -403,7 +412,14 @@ async def _exchange_code(  # noqa: PLR0913
     ):
         body = await resp.json()
         if resp.status != 200:
-            raise RuntimeError(f"Token exchange failed with HTTP {resp.status}: {body}")
+            # SEC-P4-004: Only expose error/error_description — response may
+            # reflect client_secret from the POST body.
+            err = body.get("error", "unknown")
+            desc = body.get("error_description", "")
+            raise RuntimeError(
+                f"Token exchange failed (HTTP {resp.status}): {err}"
+                + (f" — {desc}" if desc else "")
+            )
         return body
 
 
@@ -505,6 +521,17 @@ async def refresh_jira_token_if_needed() -> None:  # noqa: PLR0911, PLR0912, PLR
             return
 
         try:
+            # Check if another process refreshed while we were doing HTTP I/O.
+            # If so, their token is newer — don't overwrite it.
+            try:
+                on_disk = json.loads(token_path.read_text())
+                disk_expires = on_disk.get("expires_at", 0)
+                if time.time() < (disk_expires - _REFRESH_BUFFER_SECONDS):
+                    logger.debug("Another process refreshed during our HTTP call — using theirs")
+                    return
+            except (json.JSONDecodeError, OSError):
+                pass  # Disk unreadable — write our refreshed token anyway
+
             save_jira_token(refreshed)
             logger.debug("Jira token refreshed and saved")
         finally:
@@ -537,8 +564,19 @@ async def _do_refresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
         logger.warning("Jira token missing refresh_token, client_id, or client_secret")
         return None
 
-    # Use cached token_endpoint if present, else discover
+    # Use cached token_endpoint if present and valid, else discover.
+    # SEC-P4-005: validate cached URL to prevent redirect-based exfiltration
+    # if the token file is tampered with by a local attacker.
     token_endpoint = token_data.get("token_endpoint")
+    trusted_token_hosts = ("cf.mcp.atlassian.com", "auth.atlassian.com")
+    if token_endpoint:
+        parsed = urlparse(token_endpoint)
+        if parsed.netloc not in trusted_token_hosts:
+            logger.warning(
+                "Cached token_endpoint %r is not on a trusted Atlassian host — rediscovering",
+                parsed.netloc,
+            )
+            token_endpoint = None
     if not token_endpoint:
         try:
             metadata = await discover_oauth_metadata("https://mcp.atlassian.com")
@@ -563,7 +601,9 @@ async def _do_refresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
             ) as resp:
                 body = await resp.json()
                 if resp.status != 200:
-                    logger.warning("Token refresh failed HTTP %d: %s", resp.status, body)
+                    # SEC-P4-004: sanitize — response may reflect client_secret
+                    err = body.get("error", "unknown")
+                    logger.warning("Token refresh failed HTTP %d: %s", resp.status, err)
                     return None
 
                 # Preserve DCR credentials and compute new expiry
