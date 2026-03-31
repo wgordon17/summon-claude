@@ -21,7 +21,6 @@ import dataclasses
 import logging
 import os
 import pathlib
-import re
 import secrets
 import time
 import uuid
@@ -66,6 +65,7 @@ class _QueuedSession:
     project_id: str  # project the session belongs to (for dequeue routing)
     pm_session_id: str  # session_id of the PM that queued this session
     authenticated_user_id: str  # for auto-authenticate on dequeue
+    queued_at: float  # time.monotonic() when enqueued
     parent_channel_id: str | None = None  # PM channel for spawn notifications
 
 
@@ -100,16 +100,14 @@ class SessionManager:
         self._resuming_channels: set[str] = set()  # guard against concurrent resume
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._pm_topic_cache: dict[str, str] = {}  # project_id → last-set topic
-<<<<<<< HEAD
         self._suspend_on_shutdown: bool = False  # set by health monitor on event pipeline failure
+        # FIFO queue: project_id → deque of _QueuedSession
+        self._session_queue: dict[str, collections.deque[_QueuedSession]] = {}
+        self._queue_lock = asyncio.Lock()
 
     def set_suspend_on_shutdown(self) -> None:
         """Mark for session suspension on shutdown (called on event pipeline failure)."""
         self._suspend_on_shutdown = True
-
-        # FIFO queue: project_id → deque of _QueuedSession
-        self._session_queue: dict[str, collections.deque[_QueuedSession]] = {}
-        self._queue_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -299,6 +297,10 @@ class SessionManager:
         before signalling stop, so they can be resumed via 'summon project up'.
         """
         self._cancel_grace_timer()
+
+        # Clear queue BEFORE signaling shutdown — prevents _on_task_done
+        # from starting new sessions as existing ones complete.
+        self._session_queue.clear()
 
         # Suspend project sessions on health failure so they can be resumed
         if self._suspend_on_shutdown and self._sessions:
@@ -500,6 +502,20 @@ class SessionManager:
                     options = SessionOptions(**msg["options"])
                 except (TypeError, KeyError) as e:
                     return {"type": "error", "message": f"Invalid session options: {e}"}
+                # Defense-in-depth: validate free-text fields at daemon boundary
+                if (
+                    options.system_prompt_append
+                    and len(options.system_prompt_append) > MAX_PROMPT_CHARS
+                ):
+                    return {
+                        "type": "error",
+                        "message": f"system_prompt_append exceeds {MAX_PROMPT_CHARS} chars",
+                    }
+                if options.initial_prompt and len(options.initial_prompt) > MAX_PROMPT_CHARS:
+                    return {
+                        "type": "error",
+                        "message": f"initial_prompt exceeds {MAX_PROMPT_CHARS} chars",
+                    }
                 try:
                     short_code = await self.create_session(options)
                 except ValueError as e:
@@ -1594,6 +1610,7 @@ class SessionManager:
             project_id=project_id,
             pm_session_id=pm_session_id,
             authenticated_user_id=authenticated_user_id,
+            queued_at=time.monotonic(),
             parent_channel_id=parent_channel_id,
         )
         q.append(entry)
@@ -1726,24 +1743,16 @@ class SessionManager:
             pm_session = live_pm_session
         else:
             pm_session = self._sessions.get(entry.pm_session_id)
-        if pm_session is None or not pm_session.channel_id or not self._web_client:
+        if pm_session is None:
             return
         ip = entry.options.initial_prompt or ""
-        snippet = re.sub(r"<!(channel|here|everyone)>", r"\1", ip[:200])
-        snippet = re.sub(r"<@(U\w+)>", r"user:\1", snippet)
-        snippet = re.sub(r"<!subteam\^[^>]+>", "group", snippet)
-        prompt_snippet = redact_secrets(snippet)
+        snippet = redact_secrets(ip[:200])
         suffix = "..." if len(ip) > 200 else ""
-        msg = (
-            f"_Queued session '{entry.options.name}' started (session_id: {new_session_id[:8]}...)_"
-        )
-        if prompt_snippet:
-            msg += f"\n_Initial prompt: {prompt_snippet}{suffix}_"
+        msg = f"Queued session '{entry.options.name}' has started (session_id: {new_session_id})."
+        if snippet:
+            msg += f"\nInitial prompt: {snippet}{suffix}"
         with contextlib.suppress(Exception):
-            await self._web_client.chat_postMessage(
-                channel=pm_session.channel_id,
-                text=redact_secrets(msg),
-            )
+            await pm_session.inject_message(msg, sender_info="session-queue")
 
     def clear_queue(self, project_id: str) -> int:
         """Remove all queued sessions for *project_id*. Returns count cleared."""

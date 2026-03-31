@@ -27,7 +27,7 @@ def make_config(**overrides) -> SummonConfig:
     defaults = {
         "slack_bot_token": "xoxb-test-token",
         "slack_app_token": "xapp-test-token",
-        "slack_signing_secret": "test-secret",
+        "slack_signing_secret": "abc123def456",
         "default_model": "claude-opus-4-6",
         "channel_prefix": "summon",
         "permission_debounce_ms": 10,

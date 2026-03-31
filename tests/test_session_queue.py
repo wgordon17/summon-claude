@@ -25,7 +25,7 @@ def make_config(**overrides) -> SummonConfig:
     defaults = {
         "slack_bot_token": "xoxb-test",
         "slack_app_token": "xapp-test",
-        "slack_signing_secret": "secret",
+        "slack_signing_secret": "abc123def456",
     }
     defaults.update(overrides)
     return SummonConfig.model_validate(defaults)
@@ -98,6 +98,7 @@ class TestQueuedSessionGuard:
             "project_id",
             "pm_session_id",
             "authenticated_user_id",
+            "queued_at",
             "parent_channel_id",
         }
 
@@ -116,6 +117,7 @@ class TestQueuedSessionGuard:
             project_id="proj-1",
             pm_session_id="pm-abc",
             authenticated_user_id="U_OWNER",
+            queued_at=0.0,
         )
         assert entry.project_id == "proj-1"
         assert entry.pm_session_id == "pm-abc"
@@ -328,18 +330,7 @@ class TestDequeueAndStart:
         pm_stub.channel_id = "C_PM"
         manager._sessions["pm-sess-1"] = pm_stub  # type: ignore[assignment]
 
-        new_sessions: list = []
-
-        with (
-            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
-            patch("summon_claude.sessions.manager.SummonSession") as mock_sess_cls,
-        ):
-            mock_reg = AsyncMock()
-            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
-            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            # Return empty children — cap not reached
-            mock_reg.list_children = AsyncMock(return_value=[])
-
+        with patch("summon_claude.sessions.manager.SummonSession") as mock_sess_cls:
             mock_sess_instance = MagicMock()
             mock_sess_instance.start = AsyncMock()
             mock_sess_instance.authenticate = MagicMock()
@@ -347,7 +338,6 @@ class TestDequeueAndStart:
             mock_sess_instance.is_pm = False
             mock_sess_instance.project_id = "proj-1"
             mock_sess_cls.return_value = mock_sess_instance
-            new_sessions.append(mock_sess_instance)
 
             await manager._dequeue_and_start("proj-1")
 
@@ -422,8 +412,8 @@ class TestDequeueAndStart:
         assert "proj-1" in manager._session_queue
         assert len(manager._session_queue["proj-1"]) == 1
 
-    async def test_concurrent_dequeue_no_cap_overshoot(self):
-        """Lock serializes concurrent _dequeue_and_start calls for the same project."""
+    async def test_concurrent_dequeue_respects_cap(self):
+        """Lock serializes concurrent _dequeue_and_start; second sees cap and skips."""
         manager, _, _ = _make_manager()
 
         # Enqueue 2 sessions for proj-1
@@ -441,18 +431,16 @@ class TestDequeueAndStart:
         pm_stub._session_id = "pm-sess-1"
         manager._sessions["pm-sess-1"] = pm_stub  # type: ignore[assignment]
 
+        # Fill to cap - 1 so only ONE more can start
+        for i in range(MAX_SPAWN_CHILDREN_PM - 1):
+            child = _StubSession()
+            child.is_pm = False
+            child.project_id = "proj-1"
+            manager._sessions[f"child-{i}"] = child  # type: ignore[assignment]
+
         started_sessions: list[str] = []
 
-        with (
-            patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls,
-            patch("summon_claude.sessions.manager.SummonSession") as mock_sess_cls,
-        ):
-            mock_reg = AsyncMock()
-            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
-            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            # Return empty list (below cap)
-            mock_reg.list_children = AsyncMock(return_value=[])
-
+        with patch("summon_claude.sessions.manager.SummonSession") as mock_sess_cls:
             call_count = 0
 
             def make_stub_session(*args, **kwargs):
@@ -469,15 +457,17 @@ class TestDequeueAndStart:
 
             mock_sess_cls.side_effect = make_stub_session
 
-            # Fire two concurrent dequeues
+            # Fire two concurrent dequeues — only 1 slot available
             await asyncio.gather(
                 manager._dequeue_and_start("proj-1"),
                 manager._dequeue_and_start("proj-1"),
             )
 
-        # Both entries should have been processed (lock serializes, not blocks entirely)
-        assert len(started_sessions) == 2
-        assert "proj-1" not in manager._session_queue
+        # Only 1 session should start (cap enforced by lock)
+        assert len(started_sessions) == 1
+        # 1 entry should remain in the queue (the second one)
+        assert "proj-1" in manager._session_queue
+        assert len(manager._session_queue["proj-1"]) == 1
 
     async def test_dequeue_failure_drops_entry(self):
         """If SummonSession() raises during dequeue, the entry is dropped (not re-queued)."""
@@ -513,13 +503,14 @@ class TestDequeueAndStart:
 
 class TestNotifyPmOnDequeue:
     async def test_pm_notified_on_dequeue(self):
-        """After a session is dequeued, PM channel gets a notification."""
+        """After a session is dequeued, PM gets an inject_message notification."""
         manager, mock_provider, _ = _make_manager()
 
         pm_stub = _StubSession()
         pm_stub.is_pm = True
         pm_stub.project_id = "proj-1"
         pm_stub.channel_id = "C_PM_CHAN"
+        pm_stub.inject_message = AsyncMock(return_value=True)
         manager._sessions["pm-sess-1"] = pm_stub  # type: ignore[assignment]
 
         entry = _QueuedSession(
@@ -527,22 +518,20 @@ class TestNotifyPmOnDequeue:
             project_id="proj-1",
             pm_session_id="pm-sess-1",
             authenticated_user_id="U_OWNER",
+            queued_at=0.0,
         )
 
         await manager._notify_pm_of_dequeue(entry, "new-sess-abc123")
 
-        mock_provider.chat_postMessage.assert_awaited_once()
-        call_kwargs = mock_provider.chat_postMessage.call_args[1]
-        assert call_kwargs["channel"] == "C_PM_CHAN"
-        text = call_kwargs["text"]
+        pm_stub.inject_message.assert_awaited_once()
+        text = pm_stub.inject_message.call_args[0][0]
         assert "task-a" in text
-        # The format is "{session_id[:8]}..." — verify the 8-char prefix is present
-        assert "new-sess" in text  # "new-sess-abc123"[:8] == "new-sess"
-        assert "..." in text
+        assert "new-sess-abc123" in text
+        assert pm_stub.inject_message.call_args[1]["sender_info"] == "session-queue"
 
     async def test_pm_gone_at_dequeue_no_error(self):
         """If PM is gone at notification time, the call is suppressed (best-effort)."""
-        manager, mock_provider, _ = _make_manager()
+        manager, _, _ = _make_manager()
         # PM not in _sessions
 
         entry = _QueuedSession(
@@ -550,31 +539,11 @@ class TestNotifyPmOnDequeue:
             project_id="proj-1",
             pm_session_id="pm-gone",
             authenticated_user_id="U_OWNER",
+            queued_at=0.0,
         )
 
-        # Should not raise
+        # Should not raise — PM not found, notification silently dropped
         await manager._notify_pm_of_dequeue(entry, "new-sess-123")
-        mock_provider.chat_postMessage.assert_not_awaited()
-
-    async def test_pm_no_channel_id_no_notification(self):
-        """PM with no channel_id skips the notification."""
-        manager, mock_provider, _ = _make_manager()
-
-        pm_stub = _StubSession()
-        pm_stub.is_pm = True
-        pm_stub.project_id = "proj-1"
-        pm_stub.channel_id = None  # no channel yet
-        manager._sessions["pm-sess-1"] = pm_stub  # type: ignore[assignment]
-
-        entry = _QueuedSession(
-            options=make_options(name="task-a"),
-            project_id="proj-1",
-            pm_session_id="pm-sess-1",
-            authenticated_user_id="U_OWNER",
-        )
-
-        await manager._notify_pm_of_dequeue(entry, "new-sess-123")
-        mock_provider.chat_postMessage.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

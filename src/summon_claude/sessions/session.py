@@ -1890,7 +1890,6 @@ class SummonSession:
                 scheduler=scheduler,
                 project_id=self._project_id,
                 on_task_change=_on_task_change,
-<<<<<<< HEAD
                 pm_status_ts=self._pm_status_ts,
                 ipc_queue=self._ipc_queue,
             )
