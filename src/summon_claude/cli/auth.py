@@ -72,16 +72,18 @@ def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912
         any_configured = True
 
     # Jira
-    from summon_claude.jira_auth import check_jira_status  # noqa: PLC0415
+    from summon_claude.jira_auth import (  # noqa: PLC0415
+        check_jira_status,
+        jira_credentials_exist,
+    )
 
-    jira_err = check_jira_status()
-    if jira_err is None:
+    if jira_credentials_exist():
         any_configured = True
-        if not quiet:
-            click.echo("  [PASS] Jira: authenticated")
-    elif jira_err != "no credentials":
-        any_configured = True
-        if not quiet:
+        jira_err = check_jira_status()
+        if jira_err is None:
+            if not quiet:
+                click.echo("  [PASS] Jira: authenticated")
+        elif not quiet:
             click.echo(f"  [FAIL] Jira: {jira_err}")
     elif not quiet:
         click.echo("  [INFO] Jira: not configured (run `summon auth jira login`)")

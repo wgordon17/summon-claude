@@ -711,7 +711,7 @@ class TestAuthStatus:
             patch("summon_claude.cli.auth._check_github_status", return_value=None),
             patch("summon_claude.cli.auth._check_google_status", return_value=None),
             patch("summon_claude.cli.auth.get_workspace_config_path", return_value=tmp_path / "x"),
-            patch("summon_claude.jira_auth.check_jira_status", return_value="no credentials"),
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=False),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "status"])
