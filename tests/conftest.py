@@ -12,8 +12,44 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import summon_claude.github_auth
+from summon_claude.config import SummonConfig
 from summon_claude.sessions.registry import SessionRegistry
 from summon_claude.sessions.scheduler import SessionScheduler
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_summon_config():
+    """Prevent SummonConfig from reading real env vars or .env files.
+
+    Two leak vectors:
+      1. SUMMON_* env vars in the developer's shell
+      2. .env / config.env files on disk (pydantic-settings reads env_file at init)
+
+    This fixture clears both at session scope and sets sensible defaults
+    for required fields, so bare ``SummonConfig()`` works in any test.
+    """
+    stashed = {
+        k: os.environ.pop(k)
+        for k in list(os.environ)
+        if k.startswith("SUMMON_") and not k.startswith("SUMMON_TEST_")
+    }
+    original_env_file = SummonConfig.model_config.get("env_file")
+    try:
+        SummonConfig.model_config["env_file"] = ()
+        # Set sensible defaults for required fields so bare SummonConfig() works
+        os.environ["SUMMON_SLACK_BOT_TOKEN"] = "xoxb-test-token"
+        os.environ["SUMMON_SLACK_APP_TOKEN"] = "xapp-test-token"
+        os.environ["SUMMON_SLACK_SIGNING_SECRET"] = "abc123def456"
+        yield
+    finally:
+        SummonConfig.model_config["env_file"] = original_env_file
+        for k in (
+            "SUMMON_SLACK_BOT_TOKEN",
+            "SUMMON_SLACK_APP_TOKEN",
+            "SUMMON_SLACK_SIGNING_SECRET",
+        ):
+            os.environ.pop(k, None)
+        os.environ.update(stashed)
 
 
 @pytest.fixture(autouse=True, scope="session")

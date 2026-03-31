@@ -1,14 +1,14 @@
 """Real SDK integration tests — spawn fresh Claude Code sessions.
 
-Skipped automatically when running inside an existing Claude Code session
-(CLAUDECODE env var is set) or when Claude Code CLI is not installed.
-Run outside Claude Code with:
-    uv run pytest tests/test_sdk_integration.py -m slow -v
+Skipped automatically when Claude Code CLI is not installed. Safe to run
+inside a Claude Code session — the CLAUDECODE env var is stripped from
+child subprocesses via an autouse fixture. Run with::
+
+    uv run pytest tests/test_sdk_integration.py -m llm -v
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -28,16 +28,19 @@ from claude_agent_sdk import (
 from summon_claude.sessions.commands import COMMAND_ACTIONS
 
 pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        "CLAUDECODE" in os.environ,
-        reason="Cannot nest Claude Code sessions (CLAUDECODE env var is set)",
-    ),
+    pytest.mark.llm,
     pytest.mark.skipif(
         shutil.which("claude") is None,
         reason="Claude Code CLI not installed",
     ),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _strip_claudecode(monkeypatch):
+    """Remove CLAUDECODE env var so SDK subprocesses don't detect nesting."""
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+
 
 # Common options applied to all SDK sessions.
 # Must match session.py's ClaudeAgentOptions configuration.
@@ -278,17 +281,17 @@ class TestThinkingConfigIntegration:
 # ------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="class")
 class TestSDKCommandInventory:
     """Verify COMMAND_ACTIONS covers all SDK commands."""
 
-    @pytest.fixture
+    @pytest.fixture(scope="class")
     async def server_info(self):
         """Get server_info from a real Claude SDK connection."""
-        os.environ.pop("CLAUDECODE", None)
         options = ClaudeAgentOptions(cwd="/tmp")
         async with ClaudeSDKClient(options) as client:
             info = await client.get_server_info()
-            yield info
+        yield info
 
     async def test_all_sdk_commands_in_inventory(self, server_info):
         if not server_info:

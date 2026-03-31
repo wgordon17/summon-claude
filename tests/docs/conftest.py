@@ -76,12 +76,33 @@ def all_md_files(docs_dir: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 
+def _map_test_env_vars() -> dict[str, str]:
+    """Read SUMMON_TEST_* env vars and map to SUMMON_* names.
+
+    Used as a fallback when no ``.env`` file provides credentials.
+    ``_isolate_summon_config`` preserves ``SUMMON_TEST_*`` vars, so
+    CI-injected credentials survive the session fixture.
+    """
+    creds: dict[str, str] = {}
+    for k, v in os.environ.items():
+        if k.startswith("SUMMON_TEST_") and v:
+            creds[k.replace("SUMMON_TEST_", "SUMMON_", 1)] = v
+    return creds
+
+
 @pytest.fixture(scope="session")
 def env_credentials() -> dict[str, str]:
-    """Load SUMMON_* credentials from sibling repo .env or environment."""
+    """Load SUMMON_* credentials from sibling repo .env or SUMMON_TEST_* env vars.
+
+    Primary: reads from ``<repo-parent>/summon-claude/.env``.
+    Fallback: reads ``SUMMON_TEST_*`` env vars via :func:`_map_test_env_vars`.
+    """
     env_file = _REPO_ROOT.parent / "summon-claude" / ".env"
     raw = dotenv_values(str(env_file)) if env_file.exists() else {}
-    return {k: v for k, v in raw.items() if k.startswith("SUMMON_") and v is not None}
+    creds = {k: v for k, v in raw.items() if k.startswith("SUMMON_") and v is not None}
+    if not creds:
+        creds = _map_test_env_vars()
+    return creds
 
 
 # ---------------------------------------------------------------------------

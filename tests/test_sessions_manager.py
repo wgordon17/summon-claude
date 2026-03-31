@@ -2414,7 +2414,10 @@ class TestSuspendOnShutdown:
         mock_adhoc_session.request_shutdown = MagicMock()
 
         manager._sessions = {"sid-1": mock_project_session, "sid-2": mock_adhoc_session}
-        manager._tasks = {"sid-1": MagicMock(), "sid-2": MagicMock()}
+        t1 = asyncio.create_task(asyncio.sleep(0))
+        t2 = asyncio.create_task(asyncio.sleep(0))
+        await asyncio.sleep(0)  # let tasks complete
+        manager._tasks = {"sid-1": t1, "sid-2": t2}
         manager._suspend_on_shutdown = True
 
         mock_reg = MagicMock()
@@ -2423,7 +2426,10 @@ class TestSuspendOnShutdown:
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_reg)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("summon_claude.sessions.manager.SessionRegistry", return_value=mock_ctx):
+        with (
+            patch("summon_claude.sessions.manager.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.sessions.manager._SHUTDOWN_WAIT_TIMEOUT", 0.01),
+        ):
             await manager.shutdown()
 
         # Project session should be suspended
@@ -2444,13 +2450,18 @@ class TestSuspendOnShutdown:
         mock_session.request_shutdown = MagicMock()
 
         manager._sessions = {"sid-1": mock_session}
-        manager._tasks = {"sid-1": MagicMock()}
+        t1 = asyncio.create_task(asyncio.sleep(0))
+        await asyncio.sleep(0)
+        manager._tasks = {"sid-1": t1}
         manager._suspend_on_shutdown = False
 
         mock_reg = MagicMock()
         mock_reg.update_status = AsyncMock()
 
-        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_cls:
+        with (
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_cls,
+            patch("summon_claude.sessions.manager._SHUTDOWN_WAIT_TIMEOUT", 0.01),
+        ):
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
             await manager.shutdown()

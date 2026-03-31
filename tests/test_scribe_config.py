@@ -40,8 +40,8 @@ def _with_auto_detect(
 
 
 def _make_config(**overrides) -> SummonConfig:
-    """Create a SummonConfig isolated from env vars and .env files."""
-    return SummonConfig.for_test(**overrides)
+    """Create a SummonConfig with test defaults; override any field via kwargs."""
+    return SummonConfig(**overrides)
 
 
 class TestScribeConfigDefaults:

@@ -15,14 +15,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  checks:
-    name: Lint & Test
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: uv sync --locked
@@ -30,8 +32,36 @@ jobs:
       - name: Lint
         run: make py-lint
 
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
       - name: Type check
         run: make py-typecheck
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
 
       - name: Test
         run: make py-test
@@ -67,6 +97,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: uv sync --locked
@@ -82,6 +114,6 @@ jobs:
         if: hashFiles('tests/docs/test_bash_codeblocks.py') != ''
         run: uv run pytest tests/docs/test_bash_codeblocks.py -v -m docs -n0
         env:
-          SUMMON_SLACK_BOT_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_BOT_TOKEN }}
-          SUMMON_SLACK_APP_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_APP_TOKEN }}
-          SUMMON_SLACK_SIGNING_SECRET: ${{ secrets.SUMMON_TEST_SLACK_SIGNING_SECRET }}
+          SUMMON_TEST_SLACK_BOT_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_BOT_TOKEN }}
+          SUMMON_TEST_SLACK_APP_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_APP_TOKEN }}
+          SUMMON_TEST_SLACK_SIGNING_SECRET: ${{ secrets.SUMMON_TEST_SLACK_SIGNING_SECRET }}

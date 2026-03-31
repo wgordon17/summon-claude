@@ -65,9 +65,9 @@ py-test-llm: ## Run LLM classifier integration tests (requires Claude CLI, makes
 	@echo "Running LLM classifier tests..."
 	uv run pytest tests/integration/test_classifier_llm.py -v -m llm
 
-py-test-quick: ## Run quick Python tests (exclude slow, fail-fast)
+py-test-quick: ## Run quick Python tests (excludes Slack and LLM integration, fail-fast)
 	@echo "Running quick pytest..."
-	uv run pytest --maxfail=1 -q -m "not slow and not slack and not llm and not docs"
+	uv run pytest --maxfail=1 -q -m "not slack and not llm"
 
 py-build: ## Build sdist and wheel
 	uv build
@@ -99,10 +99,7 @@ docs-screenshots: ## Generate documentation screenshots (all sections)
 docs-terminal: ## Capture terminal output and inject into docs
 	uv run python scripts/docs-screenshots.py --section terminal
 
-docs-test: ## Run doc validation tests (guard tests + Python blocks, no credentials)
-	uv run pytest --markdown-docs docs/ tests/docs/ -v -m "docs and not slow" -n0
-
-docs-test-full: ## Run all doc tests including link validation (slower, needs network)
+docs-test: ## Run doc validation tests (guard tests, code blocks, link checks, markdown code blocks)
 	uv run pytest --markdown-docs docs/ tests/docs/ -v -m docs -n0
 
 # ============================================================================

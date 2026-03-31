@@ -406,6 +406,8 @@ COMMAND_ACTIONS: dict[str, CommandDef] = {
     "remote-control": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY, aliases=["rc"]),
     "add-dir": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "agents": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
+    "batch": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
+    "claude-api": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "chrome": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "copy": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "diff": CommandDef(
@@ -423,6 +425,7 @@ COMMAND_ACTIONS: dict[str, CommandDef] = {
     "extra-usage": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "fast": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "fork": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
+    "heapdump": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "hooks": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "ide": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "install-github-app": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),

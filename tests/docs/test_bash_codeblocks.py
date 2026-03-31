@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.docs, pytest.mark.xdist_group("docs_bash")]
+pytestmark = [pytest.mark.docs]
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DOCS_DIR = _REPO_ROOT / "docs"
@@ -75,8 +75,31 @@ def _is_tier1(cmd: str) -> bool:
     return any(cmd.startswith(t) for t in TIER1_COMMANDS) or cmd.endswith("--help")
 
 
+# Global flags that accept a value argument (--flag VALUE, not --flag=VALUE)
+_FLAGS_WITH_VALUE = frozenset({"--config"})
+
+
 def _should_skip(cmd: str) -> bool:
-    """Check if command should be skipped."""
+    """Check if command should be skipped.
+
+    Handles global flags before the subcommand (e.g. ``summon -v start``
+    or ``summon --config path start`` matches ``summon start``).
+    """
+    parts = cmd.split()
+    if parts and parts[0] == "summon":
+        subcmd = [parts[0]]
+        skip_next = False
+        for p in parts[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if p.startswith("-"):
+                if p in _FLAGS_WITH_VALUE:
+                    skip_next = True
+                continue
+            subcmd.append(p)
+        normalized = " ".join(subcmd)
+        return any(normalized.startswith(s) for s in SKIP_COMMANDS)
     return any(cmd.startswith(s) for s in SKIP_COMMANDS)
 
 
@@ -253,4 +276,96 @@ def test_bash_syntax_valid(md_file: Path | None) -> None:
             f"Bash syntax error in {md_file.relative_to(_DOCS_DIR)} notest block {i + 1}:\n"
             f"stderr: {result.stderr[:500]}\n"
             f"block: {block[:200]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _should_skip normalization
+# ---------------------------------------------------------------------------
+
+
+class TestShouldSkip:
+    """Verify _should_skip handles global flags and flag-value pairs."""
+
+    def test_bare_skip_command(self):
+        assert _should_skip("summon start") is True
+
+    def test_bare_non_skip_command(self):
+        assert _should_skip("summon version") is False
+
+    def test_short_flag_before_subcommand(self):
+        assert _should_skip("summon -v start") is True
+
+    def test_long_flag_before_subcommand(self):
+        assert _should_skip("summon --verbose start") is True
+
+    def test_config_flag_with_value(self):
+        assert _should_skip("summon --config /path/to/config.env start") is True
+
+    def test_config_flag_with_value_non_skip(self):
+        assert _should_skip("summon --config /path/to/config.env version") is False
+
+    def test_config_flag_equals_syntax(self):
+        assert _should_skip("summon --config=/path start") is True
+
+    def test_mixed_flags_and_config(self):
+        assert _should_skip("summon -v --config /path --no-color start") is True
+
+    def test_subcommand_flag_value_not_stripped(self):
+        # --cwd is a subcommand flag, not global — its value stays in normalized string
+        # but "summon start" still matches via startswith
+        assert _should_skip("summon start --cwd /tmp") is True
+
+    def test_non_summon_command(self):
+        assert _should_skip("git status") is False
+
+
+class TestEnvCredentialsFallback:
+    """Verify _map_test_env_vars maps SUMMON_TEST_* → SUMMON_* correctly."""
+
+    def test_maps_test_prefix_to_production(self, monkeypatch):
+        from tests.docs.conftest import _map_test_env_vars
+
+        monkeypatch.setenv("SUMMON_TEST_SLACK_BOT_TOKEN", "xoxb-real")
+        monkeypatch.setenv("SUMMON_TEST_SLACK_APP_TOKEN", "xapp-real")
+        creds = _map_test_env_vars()
+        assert creds["SUMMON_SLACK_BOT_TOKEN"] == "xoxb-real"
+        assert creds["SUMMON_SLACK_APP_TOKEN"] == "xapp-real"
+
+    def test_excludes_empty_values(self, monkeypatch):
+        from tests.docs.conftest import _map_test_env_vars
+
+        monkeypatch.setenv("SUMMON_TEST_EMPTY", "")
+        creds = _map_test_env_vars()
+        assert "SUMMON_EMPTY" not in creds
+
+    def test_replace_uses_count_one(self, monkeypatch):
+        from tests.docs.conftest import _map_test_env_vars
+
+        monkeypatch.setenv("SUMMON_TEST_SUMMON_TEST_FOO", "bar")
+        creds = _map_test_env_vars()
+        assert "SUMMON_SUMMON_TEST_FOO" in creds
+        assert creds["SUMMON_SUMMON_TEST_FOO"] == "bar"
+
+
+class TestFlagsWithValueSynced:
+    """Guard: _FLAGS_WITH_VALUE must match CLI global options that take a value."""
+
+    def test_flags_with_value_matches_cli(self):
+        import click
+
+        from summon_claude.cli import cli as summon_cli
+
+        # Collect ALL forms (short and long) of global options that take a value.
+        # Both -p and --profile must be in _FLAGS_WITH_VALUE for _should_skip
+        # to correctly skip their value argument during normalization.
+        expected = set()
+        for param in summon_cli.params:
+            if isinstance(param, click.Option) and not param.is_flag:
+                expected.update(param.opts)
+
+        assert expected == _FLAGS_WITH_VALUE, (
+            f"_FLAGS_WITH_VALUE drifted from CLI.\n"
+            f"  Expected (from CLI): {expected}\n"
+            f"  Actual: {_FLAGS_WITH_VALUE}"
         )

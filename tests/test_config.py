@@ -17,8 +17,8 @@ from summon_claude.config import (
 
 
 def _make_config(**overrides) -> SummonConfig:
-    """Create a SummonConfig isolated from env vars and .env files."""
-    return SummonConfig.for_test(**overrides)
+    """Create a SummonConfig with test defaults; override any field via kwargs."""
+    return SummonConfig(**overrides)
 
 
 class TestSummonConfigDefaults:
@@ -99,15 +99,11 @@ class TestSummonConfigValidate:
 
 class TestGitHubMCPConfig:
     def test_github_mcp_config_returns_none_when_no_token(self):
-        from unittest.mock import patch
-
         cfg = _make_config()
         with patch("summon_claude.github_auth.load_token", return_value=None):
             assert cfg.github_mcp_config() is None
 
     def test_github_mcp_config_returns_dict_when_token_exists(self):
-        from unittest.mock import patch
-
         cfg = _make_config()
         with patch("summon_claude.github_auth.load_token", return_value="gho_test123"):
             result = cfg.github_mcp_config()
@@ -117,8 +113,6 @@ class TestGitHubMCPConfig:
         assert result["headers"]["Authorization"] == "Bearer gho_test123"
 
     def test_github_mcp_config_dict_structure(self):
-        from unittest.mock import patch
-
         cfg = _make_config()
         with patch("summon_claude.github_auth.load_token", return_value="gho_xyz"):
             result = cfg.github_mcp_config()

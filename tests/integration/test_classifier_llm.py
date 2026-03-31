@@ -23,7 +23,6 @@ import pytest
 from summon_claude.sessions.classifier import SummonAutoClassifier
 
 pytestmark = [
-    pytest.mark.slow,
     pytest.mark.llm,
     pytest.mark.skipif(
         shutil.which("claude") is None,
