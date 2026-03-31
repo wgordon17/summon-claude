@@ -200,24 +200,17 @@ class TestQueueBasicEnqueue:
 class TestQueueCapEnforcement:
     def test_queue_full_returns_minus_one(self):
         manager, _, _ = _make_manager()
-        # Fill up to the cap across two projects
-        half = _MAX_QUEUED_SESSIONS // 2
-        for i in range(half):
+        # Fill proj-a up to its per-project cap
+        for i in range(_MAX_QUEUED_SESSIONS):
             manager.queue_session(
                 make_options(name=f"a{i}"),
                 project_id="proj-a",
                 pm_session_id="pm-a",
                 authenticated_user_id="U_OWNER",
             )
-        for i in range(_MAX_QUEUED_SESSIONS - half):
-            manager.queue_session(
-                make_options(name=f"b{i}"),
-                project_id="proj-b",
-                pm_session_id="pm-b",
-                authenticated_user_id="U_OWNER",
-            )
 
-        # Now queue is exactly at cap — next should return -1
+        # proj-b is empty — it has its own independent cap
+        # proj-a is at cap — next enqueue for proj-a should return -1
         result = manager.queue_session(
             make_options(name="overflow"),
             project_id="proj-a",
@@ -225,6 +218,15 @@ class TestQueueCapEnforcement:
             authenticated_user_id="U_OWNER",
         )
         assert result == -1
+
+        # proj-b still accepts sessions (per-project isolation)
+        result_b = manager.queue_session(
+            make_options(name="b-ok"),
+            project_id="proj-b",
+            pm_session_id="pm-b",
+            authenticated_user_id="U_OWNER",
+        )
+        assert result_b == 1
 
     def test_queue_at_cap_does_not_add_entry(self):
         manager, _, _ = _make_manager()

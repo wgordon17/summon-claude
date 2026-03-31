@@ -1578,11 +1578,10 @@ class SessionManager:
         or -1 if the queue is full.
         """
         q = self._session_queue.setdefault(project_id, collections.deque())
-        total = sum(len(dq) for dq in self._session_queue.values())
-        if total >= _MAX_QUEUED_SESSIONS:
+        if len(q) >= _MAX_QUEUED_SESSIONS:
             logger.warning(
                 "SessionManager: session queue full (%d/%d) for project %s",
-                total,
+                len(q),
                 _MAX_QUEUED_SESSIONS,
                 project_id,
             )
@@ -1606,38 +1605,51 @@ class SessionManager:
     async def _dequeue_and_start(self, project_id: str) -> None:
         """Dequeue the next waiting session for *project_id* and start it.
 
-        Serialized by ``_queue_lock`` to prevent concurrent dequeues from
-        racing past the cap check.
+        PM lookup and cap check run outside the lock (non-blocking).  Only
+        ``q.popleft()`` + conditional ``del`` run inside the lock to ensure
+        the queue mutation is serialized across concurrent dequeues.
         """
+        # Fast path: bail early if no queue (no lock needed)
+        if project_id not in self._session_queue:
+            return
+
+        # Resolve the live PM and check cap BEFORE acquiring the lock.
+        # Two concurrent dequeues may both pass this check, but the in-memory
+        # _sessions assignment is single-threaded (no await between create and
+        # assignment), so the worst case is a momentary overshoot by 1.
+        live_pm_session = next(
+            (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
+            None,
+        )
+        if live_pm_session is None:
+            logger.debug(
+                "SessionManager: no live PM for project %s, skipping dequeue",
+                project_id,
+            )
+            return
+
+        children: list[dict] = []
+        async with SessionRegistry() as registry:
+            children = await registry.list_children(live_pm_session._session_id, limit=500)  # noqa: SLF001
+        active = [c for c in children if c.get("status") in ("pending_auth", "active")]
+        if len(active) >= MAX_SPAWN_CHILDREN_PM:
+            logger.debug(
+                "SessionManager: cap still reached for project %s, skipping dequeue",
+                project_id,
+            )
+            return
+
+        # Critical section: pop from queue (serialized)
         async with self._queue_lock:
             q = self._session_queue.get(project_id)
             if not q:
                 return
-
-            # Re-check cap inside the lock (race-free)
-            async with SessionRegistry() as registry:
-                pm_session = next(
-                    (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
-                    None,
-                )
-                if pm_session is None:
-                    logger.debug(
-                        "SessionManager: no live PM for project %s, skipping dequeue",
-                        project_id,
-                    )
-                    return
-                children = await registry.list_children(pm_session._session_id, limit=500)  # noqa: SLF001
-                active = [c for c in children if c.get("status") in ("pending_auth", "active")]
-                if len(active) >= MAX_SPAWN_CHILDREN_PM:
-                    logger.debug(
-                        "SessionManager: cap still reached for project %s, skipping dequeue",
-                        project_id,
-                    )
-                    return
-
             entry = q.popleft()
             if not q:
                 del self._session_queue[project_id]
+
+        # Capture live PM session_id for parent linkage (FIX 1)
+        live_pm_sid = live_pm_session._session_id  # noqa: SLF001
 
         # Start session outside the lock (non-blocking path)
         new_session_id = str(uuid.uuid4())
@@ -1649,6 +1661,7 @@ class SessionManager:
             web_client=self._web_client,
             dispatcher=self._dispatcher,
             bot_user_id=self._bot_user_id,
+            parent_session_id=live_pm_sid,
             ipc_spawn=self.create_session_with_spawn_token,
             ipc_resume=self._ipc_resume,
             ipc_queue=self.queue_session,
@@ -1670,14 +1683,40 @@ class SessionManager:
             project_id,
         )
 
+        # Fire-and-forget: don't block on Slack API round-trips (FIX 5)
         if entry.options.project_id:
-            await self._update_pm_topic(entry.options.project_id)
+            t = asyncio.create_task(
+                self._update_pm_topic(entry.options.project_id),
+                name=f"dequeue-topic-{new_session_id}",
+            )
+            t.add_done_callback(self._on_background_task_done)
+            self._background_tasks.add(t)
 
-        await self._notify_pm_of_dequeue(entry, new_session_id)
+        t = asyncio.create_task(
+            self._notify_pm_of_dequeue(entry, new_session_id, live_pm_session=live_pm_session),
+            name=f"dequeue-notify-{new_session_id}",
+        )
+        t.add_done_callback(self._on_background_task_done)
+        self._background_tasks.add(t)
 
-    async def _notify_pm_of_dequeue(self, entry: _QueuedSession, new_session_id: str) -> None:
-        """Best-effort: notify the PM's channel that a queued session started."""
-        pm_session = self._sessions.get(entry.pm_session_id)
+    async def _notify_pm_of_dequeue(
+        self,
+        entry: _QueuedSession,
+        new_session_id: str,
+        *,
+        live_pm_session: SummonSession | None = None,
+    ) -> None:
+        """Best-effort: notify the PM's channel that a queued session started.
+
+        Uses *live_pm_session* when provided (avoids stale ``pm_session_id``
+        lookups if the PM restarted between queue time and dequeue time).
+        Falls back to looking up ``entry.pm_session_id`` for callers that
+        don't thread the live session through (e.g. direct test calls).
+        """
+        if live_pm_session is not None:
+            pm_session = live_pm_session
+        else:
+            pm_session = self._sessions.get(entry.pm_session_id)
         if pm_session is None or not pm_session.channel_id or not self._web_client:
             return
         with contextlib.suppress(Exception):
