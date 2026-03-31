@@ -37,11 +37,11 @@ When a spawn token is consumed, the daemon logs a `spawn_token_consumed` audit e
 
 Every tool call from Claude goes through `PermissionHandler.handle()` before execution. The decision logic has seven layers, evaluated in order:
 
-### 0. AskUserQuestion (intercept first)
+### 1. AskUserQuestion (intercept first)
 
 `AskUserQuestion` is intercepted before any other logic and routed to Slack interactive buttons for user input. This is not a permission check — it is a structured Q&A mechanism.
 
-### 0b. Write Gate (read-only default)
+### 2. Write Gate (read-only default)
 
 Write-capable tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, `Bash`) are **denied by default** until containment is active (worktree or CWD). This prevents accidental writes to the main working directory.
 
@@ -52,11 +52,11 @@ Before the first write-gated tool is approved, if the session is not in a git re
 
 Safe-dir exceptions (`SUMMON_SAFE_WRITE_DIRS`) allow configured directories to bypass the containment requirement. Path validation uses `Path.resolve()` on both sides to prevent symlink escapes.
 
-### 1. SDK Deny Suggestions (always honored)
+### 3. SDK Deny Suggestions (always honored)
 
 If the Claude SDK provides a `deny` suggestion for a tool, it is denied immediately and unconditionally. SDK deny suggestions represent the user's own `settings.json` rules and are always respected.
 
-### 2. Static Auto-Approve List
+### 4. Static Auto-Approve List
 
 The following tools are auto-approved without any Slack prompt:
 
@@ -78,7 +78,7 @@ _GITHUB_MCP_AUTO_APPROVE_PREFIXES = (
 )
 ```
 
-### 2b. GitHub MCP Require-Approval List (checked before prefix auto-approve)
+### 5. GitHub MCP Require-Approval List (checked before prefix auto-approve)
 
 Destructive and externally-visible GitHub operations **always** require Slack approval, even if the SDK suggests allow or they match a read prefix:
 
@@ -100,7 +100,7 @@ _GITHUB_MCP_REQUIRE_APPROVAL = frozenset([
 
 This is defense-in-depth — deny-list precedence over prefix matching prevents a broadly-scoped `allowedTools` pattern in `settings.json` from silently bypassing human-in-the-loop review for externally-visible actions.
 
-### 2g. Auto-mode Classifier (post-worktree only)
+### 6. Auto-mode Classifier (post-worktree only)
 
 After the agent enters a worktree, a secondary Sonnet classifier can automatically approve or block tool calls based on configurable prose rules. This sits between the session caches and SDK allow suggestions — it only evaluates tools that weren't already handled by static lists or caches.
 
@@ -115,11 +115,11 @@ Security mitigations:
 
 The intended security layering is: **read-only** (pre-containment) → **write gate** (containment entry + one-time approval) → **auto-classifier** (post-worktree, configurable rules) → **Slack HITL** (fallback).
 
-### 3. SDK Allow Suggestions
+### 7. SDK Allow Suggestions
 
 If the SDK provides an `allow` suggestion (from `settings.json` `allowedTools`), the tool is approved. Write-gated tools that fell through CWD containment checks (paths outside the containment root, or `Bash`) are excluded — `allowedTools` cannot override CWD containment.
 
-### 4. Slack Approval Buttons (fallback)
+### 8. Slack Approval Buttons (fallback)
 
 All other tools — and write-gated tools after containment entry — go through the Slack approval flow:
 

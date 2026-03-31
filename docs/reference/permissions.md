@@ -210,18 +210,18 @@ The full permission evaluation order in `handle()`:
 
 | Step | Check | Result |
 |------|-------|--------|
-| 0 | AskUserQuestion intercept | Route to interactive UI |
-| 0b | Write gate (`_WRITE_GATED_TOOLS`) | SDK deny → Deny; safe-dir → Allow; no containment → Deny; first write → HITL; within containment root → Allow; outside containment root → fall through |
-| 1 | SDK deny suggestions | Deny |
-| 2 | Static auto-approve (`_AUTO_APPROVE_TOOLS`) | Allow |
-| 2b | GitHub deny-list (`_GITHUB_MCP_REQUIRE_APPROVAL`) | Always HITL |
-| 2c | GitHub auto-approve (prefix matching) | Allow |
-| 2d | Summon MCP auto-approve (prefix matching) | Allow |
-| 2e | Session-lifetime cached approvals | Allow (GitHub deny-list excluded) |
-| 2f | Per-argument cache (exact match on primary arg) | Allow if arg matches (GitHub deny-list excluded) |
-| 2g | Auto-classifier (Sonnet, only active after worktree entry) | Allow, Block, or fall through on uncertain |
-| 3 | SDK allow suggestions | Allow (write-gated tools excluded — CWD containment cannot be overridden) |
-| 4 | Slack HITL (interactive message, deleted after) | User decides |
+| 1 | AskUserQuestion intercept | Route to interactive UI |
+| 2 | Write gate (`_WRITE_GATED_TOOLS`) | SDK deny → Deny; safe-dir → Allow; no containment → Deny; first write → HITL; within containment root → Allow; outside containment root → fall through |
+| 3 | SDK deny suggestions | Deny |
+| 4 | Static auto-approve (`_AUTO_APPROVE_TOOLS`) | Allow |
+| 5 | GitHub deny-list (`_GITHUB_MCP_REQUIRE_APPROVAL`) | Always HITL |
+| 6 | GitHub auto-approve (prefix matching) | Allow |
+| 7 | Summon MCP auto-approve (prefix matching) | Allow |
+| 8 | Session-lifetime cached approvals | Allow (GitHub deny-list excluded) |
+| 9 | Per-argument cache (exact match on primary arg) | Allow if arg matches (GitHub deny-list excluded) |
+| 10 | Auto-classifier (Sonnet, only active after worktree entry) | Allow, Block, or fall through on uncertain |
+| 11 | SDK allow suggestions | Allow (write-gated tools excluded — CWD containment cannot be overridden) |
+| 12 | Slack HITL (interactive message, deleted after) | User decides |
 
 ---
 
