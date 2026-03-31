@@ -828,7 +828,8 @@ class TestSessionShutdown:
             mock_client.post = AsyncMock(side_effect=hanging_post)
             rt = make_rt(registry, "C_TIMEOUT_CHAN", client=mock_client)
 
-            await session._shutdown(rt)
+            with patch("summon_claude.sessions.session._CLEANUP_TIMEOUT_S", 0.1):
+                await session._shutdown(rt)
 
             sess = await registry.get_session("sess-timeout")
             assert sess["status"] == "completed"

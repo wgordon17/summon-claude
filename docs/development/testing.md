@@ -22,12 +22,12 @@ make test
 uv run pytest tests/ -v
 ```
 
-### Quick (skip slow + slack, fail-fast)
+### Quick (skip Slack + LLM integration, fail-fast)
 
 ```{ .bash .notest }
 make py-test-quick
 # or
-uv run pytest --maxfail=1 -q -m "not slow and not slack"
+uv run pytest --maxfail=1 -q -m "not slack and not llm"
 ```
 
 ### Single module
@@ -97,9 +97,10 @@ addopts = [
 ]
 cache_dir = ".cache/pytest"
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "slack: marks tests requiring real Slack workspace credentials",
+    "llm: marks tests that make real LLM API calls",
     "xdist_group: groups tests to run on the same worker (pytest-xdist)",
+    "docs: documentation validation tests",
 ]
 ```
 
@@ -187,16 +188,18 @@ async def test_daemon_connects(): ...
 async def test_daemon_disconnects(): ...
 ```
 
-### Marking slow tests
+### Marking LLM tests
+
+Tests that make real API calls (spawning Claude sessions, classifier calls) use `@pytest.mark.llm`:
 
 ```{ .python .notest }
-@pytest.mark.slow
-async def test_full_session_lifecycle():
-    # takes several seconds
+@pytest.mark.llm
+async def test_classifier_blocks_dangerous_command():
+    # spawns a real Claude subprocess
     ...
 ```
 
-Excluded from quick runs: `make py-test-quick` passes `-m "not slow and not slack"`.
+Excluded from pre-commit runs: `make py-test-quick` passes `-m "not slack and not llm"`.
 
 ---
 
@@ -206,9 +209,11 @@ Documentation tests (`pytest.mark.docs`) verify that docs stay in sync with the 
 
 ### Running doc tests
 
+Doc tests run automatically as part of the main test suite (`make py-test` or `make py-test-quick`).
+To run only doc tests:
+
 ```{ .bash .notest }
-make docs-test       # Guard tests + Python blocks (fast, no credentials)
-make docs-test-full  # All doc tests including link validation (slower)
+uv run pytest tests/docs/ -v -m docs
 ```
 
 ### Test categories
@@ -243,21 +248,20 @@ The `notest` attribute is invisible to documentation readers — markdown render
 
 ### CI integration
 
-- **`checks` job (PRs):** Runs `make docs-test` — guard tests and Tier 1 bash commands (`summon --version`, `summon --help`)
+- **`test` job:** `make py-test` runs guard tests (CLI, env vars, MCP, prompts) + bash code blocks + link checks. `make docs-test` runs markdown code block validation separately
 - **`slack-integration` job:** Runs bash CLI tests with real credentials (Tier 2 commands like `summon config show`)
-- **`make py-test`:** Includes doc guard tests (excludes `slow` link tests)
-- **`make py-test-quick`:** Excludes all doc tests for speed
 
 ---
 
 ## CI Testing
 
-The `ci.yaml` workflow runs on every PR to `main`:
+The `ci.yaml` workflow runs three parallel jobs on every PR to `main`:
 
-1. `make py-lint` — ruff check + format (fails if files were modified by auto-fix)
-2. `make py-test` — full pytest suite (4 parallel workers)
+1. **`lint`** — `make py-lint` (ruff check + format)
+2. **`typecheck`** — `make py-typecheck` (pyright)
+3. **`test`** — `make py-test` + `make docs-test` (full pytest suite + markdown code block validation)
 
-Lint runs first; tests only run if lint passes.
+All three jobs run independently in parallel. Slack integration tests run only on pushes to `main`.
 
 **Debugging CI failures:**
 
@@ -265,5 +269,3 @@ Lint runs first; tests only run if lint passes.
 - **Missing marker:** `--strict-markers` means any test with an undeclared marker fails; add the marker to `pyproject.toml`
 - **Asyncio fixture scope error:** Check `asyncio_default_fixture_loop_scope` — function scope means fixtures cannot be session/module scoped unless they manage their own loop
 - **Import error in tests:** Verify `pythonpath = ["tests"]` is set and the import is from a file in `tests/`, not a package import that should use `summon_claude.*`
-
-Type checking is a separate target (`make py-typecheck`) and is not currently enforced in CI — it can be run locally during development.

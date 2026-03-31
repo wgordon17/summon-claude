@@ -15,7 +15,7 @@ from summon_claude.slack.bolt import DiagnosticResult, EventProbe
 def _make_config(**overrides) -> SummonConfig:
     defaults = {"slack_app_token": "xapp-1-A0123ABCDE-12345-abc"}
     defaults.update(overrides)
-    return SummonConfig.for_test(**defaults)
+    return SummonConfig(**defaults)
 
 
 def _make_web_client(**overrides) -> AsyncMock:

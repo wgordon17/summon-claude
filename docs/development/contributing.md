@@ -40,7 +40,7 @@ make build           # Build sdist and wheel
 make py-lint         # Python lint only
 make py-typecheck    # Run pyright type checking
 make py-test         # Run full Python test suite
-make py-test-quick   # Quick tests only (skips slow + slack markers, fail-fast)
+make py-test-quick   # Quick tests only (skips Slack + LLM integration, fail-fast)
 make py-test-slack   # Slack integration tests (requires real credentials)
 
 make docs-serve      # Serve docs locally with live reload

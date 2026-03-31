@@ -2423,7 +2423,10 @@ class TestSuspendOnShutdown:
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_reg)
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("summon_claude.sessions.manager.SessionRegistry", return_value=mock_ctx):
+        with (
+            patch("summon_claude.sessions.manager.SessionRegistry", return_value=mock_ctx),
+            patch("summon_claude.sessions.manager._SHUTDOWN_WAIT_TIMEOUT", 0.01),
+        ):
             await manager.shutdown()
 
         # Project session should be suspended
@@ -2450,7 +2453,10 @@ class TestSuspendOnShutdown:
         mock_reg = MagicMock()
         mock_reg.update_status = AsyncMock()
 
-        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_cls:
+        with (
+            patch("summon_claude.sessions.manager.SessionRegistry") as mock_cls,
+            patch("summon_claude.sessions.manager._SHUTDOWN_WAIT_TIMEOUT", 0.01),
+        ):
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
             await manager.shutdown()

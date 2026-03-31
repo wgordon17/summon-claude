@@ -493,12 +493,12 @@ class TestSlackCheck:
         assert result.status == "skip"
 
     async def test_skip_no_token(self, check: SlackCheck) -> None:
-        config = SummonConfig.for_test(slack_bot_token="")
+        config = SummonConfig(slack_bot_token="")
         result = await check.run(config)
         assert result.status == "skip"
 
     async def test_auth_test_pass(self, check: SlackCheck) -> None:
-        config = SummonConfig.for_test()
+        config = SummonConfig()
         mock_client = MagicMock()
         mock_client.auth_test.return_value = {
             "ok": True,
@@ -515,7 +515,7 @@ class TestSlackCheck:
         assert "test-team" not in result.message
 
     async def test_auth_test_fail(self, check: SlackCheck) -> None:
-        config = SummonConfig.for_test()
+        config = SummonConfig()
         mock_client = MagicMock()
         mock_client.auth_test.return_value = {
             "ok": False,
@@ -531,7 +531,7 @@ class TestSlackCheck:
     async def test_slack_api_error(self, check: SlackCheck) -> None:
         from slack_sdk.errors import SlackApiError
 
-        config = SummonConfig.for_test()
+        config = SummonConfig()
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.get.return_value = "invalid_auth"
@@ -544,7 +544,7 @@ class TestSlackCheck:
         assert "slack api error" in result.message.lower()
 
     async def test_slack_timeout(self, check: SlackCheck) -> None:
-        config = SummonConfig.for_test()
+        config = SummonConfig()
         mock_client = MagicMock()
         mock_client.auth_test.side_effect = TimeoutError
         with patch("slack_sdk.WebClient", return_value=mock_client):
@@ -553,7 +553,7 @@ class TestSlackCheck:
         assert "timed out" in result.message.lower()
 
     async def test_slack_generic_exception(self, check: SlackCheck) -> None:
-        config = SummonConfig.for_test()
+        config = SummonConfig()
         mock_client = MagicMock()
         mock_client.auth_test.side_effect = ConnectionError("network down")
         with patch("slack_sdk.WebClient", return_value=mock_client):
@@ -631,12 +631,12 @@ class TestWorkspaceMcpCheck:
         assert result.status == "skip"
 
     async def test_skip_scribe_disabled(self, check: WorkspaceMcpCheck) -> None:
-        config = SummonConfig.for_test(scribe_enabled=False)
+        config = SummonConfig(scribe_enabled=False)
         result = await check.run(config)
         assert result.status == "skip"
 
     async def test_binary_not_found(self, check: WorkspaceMcpCheck) -> None:
-        config = SummonConfig.for_test(scribe_enabled=True)
+        config = SummonConfig(scribe_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = False
         with (
@@ -651,7 +651,7 @@ class TestWorkspaceMcpCheck:
         assert "not found" in result.message.lower()
 
     async def test_binary_found_no_creds(self, check: WorkspaceMcpCheck, tmp_path: Path) -> None:
-        config = SummonConfig.for_test(scribe_enabled=True)
+        config = SummonConfig(scribe_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = True
         creds_dir = tmp_path / "nonexistent_creds"
@@ -665,7 +665,7 @@ class TestWorkspaceMcpCheck:
     async def test_binary_found_import_error(
         self, check: WorkspaceMcpCheck, tmp_path: Path
     ) -> None:
-        config = SummonConfig.for_test(scribe_enabled=True)
+        config = SummonConfig(scribe_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = True
         creds_dir = tmp_path / "creds"
@@ -904,8 +904,11 @@ class TestDoctorCli:
         body = _build_submit_body(results)
         assert "```" in body
 
-    def test_from_file_sanitizes_pydantic_missing(self) -> None:
+    def test_from_file_sanitizes_pydantic_missing(self, monkeypatch) -> None:
         """from_file should raise ValueError with clean message, not Pydantic's input_value dump."""
+        monkeypatch.delenv("SUMMON_SLACK_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("SUMMON_SLACK_APP_TOKEN", raising=False)
+        monkeypatch.delenv("SUMMON_SLACK_SIGNING_SECRET", raising=False)
         with pytest.raises(ValueError, match=r"required field.*missing") as exc_info:
             SummonConfig.from_file("/dev/null")
         msg = str(exc_info.value)

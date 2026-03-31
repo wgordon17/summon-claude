@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-pytestmark = [pytest.mark.docs, pytest.mark.slow]
+pytestmark = [pytest.mark.docs]
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DOCS_DIR = _REPO_ROOT / "docs"

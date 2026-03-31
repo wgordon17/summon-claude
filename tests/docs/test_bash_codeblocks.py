@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.docs, pytest.mark.xdist_group("docs_bash")]
+pytestmark = [pytest.mark.docs]
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DOCS_DIR = _REPO_ROOT / "docs"
@@ -76,7 +76,17 @@ def _is_tier1(cmd: str) -> bool:
 
 
 def _should_skip(cmd: str) -> bool:
-    """Check if command should be skipped."""
+    """Check if command should be skipped.
+
+    Handles global flags before the subcommand (e.g. ``summon -v start``
+    matches ``summon start``).
+    """
+    # Strip global flags between "summon" and the subcommand
+    parts = cmd.split()
+    if parts and parts[0] == "summon":
+        non_flag = [parts[0]] + [p for p in parts[1:] if not p.startswith("-")]
+        normalized = " ".join(non_flag)
+        return any(normalized.startswith(s) for s in SKIP_COMMANDS)
     return any(cmd.startswith(s) for s in SKIP_COMMANDS)
 
 
