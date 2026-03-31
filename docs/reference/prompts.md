@@ -47,11 +47,11 @@ Canvas:
 Project directory: {cwd}
 Working directory constraint: all sub-sessions MUST use directories within this project directory. Do NOT spawn sessions outside this path.
 
-Worktree naming: when assigning isolated tasks, you choose the worktree name (a short descriptive slug) and instruct the child to use EnterWorktree. Child worktrees live under `.claude/worktrees/`. Track name-to-task mapping in your canvas.
+{{worktree_constraint}}
 
 ## Periodic Scan Awareness
 
-You receive periodic scan triggers every {scan_interval}. Each trigger instructs you to check session health, review pull requests, clean up worktrees, and update your canvas. Follow the scan instructions when they arrive.
+You receive periodic scan triggers every {scan_interval}. Each trigger instructs you to check session health, review tasks, and update your canvas. Follow the scan instructions when they arrive.
 
 ## Instruction Priority
 
