@@ -523,6 +523,59 @@ class TestScribeSystemPrompt:
         )
         assert "skip emails from Jira notification" not in prompt["append"]
 
+    def test_scan_prompt_jira_section_present_when_enabled(self):
+        """When jira_enabled + cloud_id, scan prompt includes Jira JQL queries."""
+        from summon_claude.sessions.prompts.scribe import build_scribe_scan_prompt
+
+        prompt = build_scribe_scan_prompt(
+            nonce="abc",
+            google_enabled=False,
+            slack_enabled=False,
+            jira_enabled=True,
+            jira_cloud_id="cloud-123",
+            scan_interval_minutes=15,
+            user_mention="<@U123>",
+            importance_keywords="urgent",
+            quiet_hours=None,
+        )
+        assert "## Jira" in prompt
+        assert "commentedByUser(currentUser())" in prompt
+        assert "assignee = currentUser()" in prompt
+        assert "status changed" in prompt
+        assert "cloud-123" in prompt
+        assert "15m" in prompt
+
+    def test_scan_prompt_jira_absent_when_disabled(self):
+        """When jira_enabled=False, no Jira section in scan prompt."""
+        from summon_claude.sessions.prompts.scribe import build_scribe_scan_prompt
+
+        prompt = build_scribe_scan_prompt(
+            nonce="abc",
+            google_enabled=False,
+            slack_enabled=False,
+            jira_enabled=False,
+            user_mention="<@U123>",
+            importance_keywords="urgent",
+            quiet_hours=None,
+        )
+        assert "## Jira" not in prompt
+
+    def test_scan_prompt_jira_absent_without_cloud_id(self):
+        """When jira_enabled=True but no cloud_id, skip Jira section."""
+        from summon_claude.sessions.prompts.scribe import build_scribe_scan_prompt
+
+        prompt = build_scribe_scan_prompt(
+            nonce="abc",
+            google_enabled=False,
+            slack_enabled=False,
+            jira_enabled=True,
+            jira_cloud_id=None,
+            user_mention="<@U123>",
+            importance_keywords="urgent",
+            quiet_hours=None,
+        )
+        assert "## Jira" not in prompt
+
     def test_prompt_jira_accepted_as_sole_data_source(self):
         """jira_enabled=True alone satisfies the data source requirement."""
         from summon_claude.sessions.prompts import build_scribe_system_prompt

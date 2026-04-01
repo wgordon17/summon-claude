@@ -146,13 +146,14 @@ async def async_reset_data(ctx: click.Context, *, force: bool = False) -> None:
 
 
 async def async_reset_config(ctx: click.Context, *, force: bool = False) -> None:
-    """Delete all configuration (Slack tokens, Google OAuth credentials) after confirmation."""
+    """Delete all configuration (Slack tokens, Google/Jira OAuth credentials) after confirmation."""
     await _reset_directory(
         ctx,
         get_config_dir,
         "config",
         "This will delete all configuration at {path} including "
-        "Slack tokens, Google OAuth credentials, and external Slack auth state.",
+        "Slack tokens, Google OAuth credentials, Jira OAuth credentials, "
+        "and external Slack auth state.",
         "Configuration cleared. Run 'summon hooks uninstall' to remove the Claude Code"
         " hook bridge, then 'summon init' to reconfigure.",
         force=force,
