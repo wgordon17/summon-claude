@@ -469,6 +469,12 @@ class TestBuildPmSystemPromptWorkflow:
         result = build_pm_system_prompt(cwd="/tmp", scan_interval_s=900, is_git_repo=False)
         assert "git worktree" not in result["append"]
 
+    def test_system_prompt_no_jira_triage(self):
+        """Guard: Jira triage belongs in scan prompt, not system prompt."""
+        result = build_pm_system_prompt(cwd="/tmp", scan_interval_s=900)
+        assert "Jira Triage" not in result["append"]
+        assert "searchJiraIssuesUsingJql" not in result["append"]
+
     def test_system_prompt_no_leftover_placeholder(self):
         """Guard: {{worktree_constraint}} must be replaced, never appear in output."""
         for git in (True, False):

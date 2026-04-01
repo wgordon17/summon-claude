@@ -57,8 +57,8 @@ def _resolve_directory(directory: str) -> str:
 async def async_project_add(name: str, directory: str, *, jira_jql: str | None = None) -> str:
     """Register a new project and return the project_id.
 
-    When *jira_jql* is provided, stores it in the same registry connection
-    used for project creation (single transaction).
+    When *jira_jql* is provided, stores it via ``update_project`` within the
+    same registry connection (two commits, not a single transaction).
     """
     resolved = _resolve_directory(directory)
     project_id: str = ""
