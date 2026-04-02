@@ -417,6 +417,84 @@ class TestRefreshJiraTokenIfNeeded:
         assert on_disk is not None
         assert on_disk["access_token"] == "other-process-token"
 
+    @pytest.mark.asyncio
+    async def test_refresh_force_skips_freshness_check(self):
+        """force=True bypasses the pre-lock freshness check for a still-fresh token.
+
+        The key assertion is that _do_refresh IS called even though the token is fresh.
+        Without force=True, _do_refresh would NOT be called.
+
+        Note: the post-HTTP conflict check is NOT skipped by force=True — if the on-disk
+        token remains fresh after the HTTP call, the write is intentionally skipped to
+        prevent overwriting a concurrently-refreshed token (the disk-fresh token "wins").
+        """
+        fresh_token = _make_token(expires_at=time.time() + 3600)
+        jira_auth.save_jira_token(fresh_token)
+
+        refreshed = {
+            **fresh_token,
+            "access_token": "force-refreshed-token",
+            "expires_at": time.time() + 7200,
+        }
+        with patch.object(jira_auth, "_do_refresh", return_value=refreshed) as mock_refresh:
+            await jira_auth.refresh_jira_token_if_needed(force=True)
+
+        # Key assertion: _do_refresh IS called even on a fresh token when force=True
+        mock_refresh.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# try_refresh_only
+# ---------------------------------------------------------------------------
+
+
+class TestTryRefreshOnly:
+    @pytest.mark.asyncio
+    async def test_try_refresh_only_success(self):
+        """Refresh succeeds and valid token on disk → returns True."""
+        fresh_token = _make_token(expires_at=time.time() + 3600)
+
+        with (
+            patch.object(
+                jira_auth,
+                "refresh_jira_token_if_needed",
+                new_callable=AsyncMock,
+            ) as mock_refresh,
+            patch.object(jira_auth, "load_jira_token", return_value=fresh_token),
+        ):
+            result = await jira_auth.try_refresh_only()
+
+        assert result is True
+        mock_refresh.assert_called_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_try_refresh_only_expired_refresh(self):
+        """Refresh raises (e.g. expired refresh token) → returns False."""
+        with patch.object(
+            jira_auth,
+            "refresh_jira_token_if_needed",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("invalid_grant"),
+        ):
+            result = await jira_auth.try_refresh_only()
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_try_refresh_only_no_credentials(self):
+        """Refresh succeeds but load_jira_token returns None → returns False."""
+        with (
+            patch.object(
+                jira_auth,
+                "refresh_jira_token_if_needed",
+                new_callable=AsyncMock,
+            ),
+            patch.object(jira_auth, "load_jira_token", return_value=None),
+        ):
+            result = await jira_auth.try_refresh_only()
+
+        assert result is False
+
 
 # ---------------------------------------------------------------------------
 # Cloud site discovery
@@ -569,6 +647,26 @@ class TestCheckJiraStatus:
         result = jira_auth.check_jira_status()
         assert result is not None
         assert "access_token" in result
+
+    def test_check_status_expired_with_refresh(self):
+        """Fully expired token with refresh_token → returns None (proxy will refresh)."""
+        token = _make_token(expires_at=time.time() - 10)  # past all buffers
+        # Ensure refresh_token is present (it is in _make_token by default)
+        jira_auth.save_jira_token(token)
+
+        result = jira_auth.check_jira_status()
+        assert result is None, "Expired token with refresh_token should return None"
+
+    def test_check_status_expired_no_refresh(self):
+        """Fully expired token without refresh_token → returns error string."""
+        token = _make_token(expires_at=time.time() - 10)
+        del token["refresh_token"]
+        jira_auth.save_jira_token(token)
+
+        result = jira_auth.check_jira_status()
+        assert result is not None
+        assert "expired" in result.lower()
+        assert "refresh_token" in result.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -274,15 +274,33 @@ def auth_jira() -> None:
     help="Atlassian site (e.g. 'myorg' or 'myorg.atlassian.net'). "
     "Resolves to a cloud UUID via API discovery when possible.",
 )
-def auth_jira_login(site: str | None) -> None:
+def auth_jira_login(site: str | None) -> None:  # noqa: PLR0912, PLR0915
     """Authenticate with Jira via OAuth 2.1."""
     import sys  # noqa: PLC0415
 
     from summon_claude.jira_auth import (  # noqa: PLC0415
         discover_cloud_sites,
+        load_jira_token,
         save_jira_token,
         start_auth_flow,
+        try_refresh_only,
     )
+
+    # Try refresh first — skip browser if refresh token is still valid
+    # Idempotent: fresh DCR + PKCE flow, overwrites existing token.json
+    if asyncio.run(try_refresh_only()):
+        token = load_jira_token()
+        if token:
+            site_name = token.get("cloud_name", "Unknown")
+            site_url = token.get("cloud_url", "")
+            if site_url:
+                click.echo(
+                    f"Jira credentials refreshed successfully. "
+                    f"Connected to {site_name} ({site_url})"
+                )
+            else:
+                click.echo(f"Jira credentials refreshed successfully. Connected to {site_name}")
+            return
 
     click.echo("Starting Jira OAuth flow — a browser window will open.")
     try:

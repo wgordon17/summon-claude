@@ -459,7 +459,7 @@ def _get_token_if_fresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-async def refresh_jira_token_if_needed() -> None:  # noqa: PLR0911, PLR0912, PLR0915
+async def refresh_jira_token_if_needed(*, force: bool = False) -> None:  # noqa: PLR0911, PLR0912, PLR0915
     """Async entry point: refresh the Jira token on disk if it is near expiry.
 
     SC-07: Uses fcntl.flock (non-blocking, with retry) on the token file to
@@ -470,6 +470,12 @@ async def refresh_jira_token_if_needed() -> None:  # noqa: PLR0911, PLR0912, PLR
     This should be called once at session startup (in _run_session_tasks) before
     building the MCP config. After it returns, load_jira_token() will succeed.
     Failures are logged but not raised — sessions proceed without Jira MCP.
+
+    Args:
+        force: If True, skip the pre-lock and under-lock freshness checks and
+               unconditionally attempt a refresh. Used by try_refresh_only()
+               for CLI re-auth. The post-HTTP conflict check is still applied
+               to prevent overwriting a concurrently-refreshed token.
     """
     token_path = get_jira_token_path()
     if not token_path.exists():
@@ -482,7 +488,7 @@ async def refresh_jira_token_if_needed() -> None:  # noqa: PLR0911, PLR0912, PLR
         return
 
     expires_at = token_data.get("expires_at", 0)
-    if time.time() < (expires_at - _REFRESH_BUFFER_SECONDS):
+    if not force and time.time() < (expires_at - _REFRESH_BUFFER_SECONDS):
         # Token is still fresh — nothing to do
         return
 
@@ -503,11 +509,12 @@ async def refresh_jira_token_if_needed() -> None:  # noqa: PLR0911, PLR0912, PLR
             logger.warning("Jira token lock contended — using existing token without refresh")
             return
 
-        # Re-read under lock — another process may have already refreshed
+        # Re-read under lock — another process may have already refreshed.
+        # When force=True, skip this check and proceed unconditionally.
         try:
             fresh_data = json.loads(token_path.read_text())
             fresh_expires_at = fresh_data.get("expires_at", 0)
-            if time.time() < (fresh_expires_at - _REFRESH_BUFFER_SECONDS):
+            if not force and time.time() < (fresh_expires_at - _REFRESH_BUFFER_SECONDS):
                 logger.debug("Jira token refreshed by another process, using updated token")
                 return
             token_data = fresh_data
@@ -558,6 +565,27 @@ async def refresh_jira_token_if_needed() -> None:  # noqa: PLR0911, PLR0912, PLR
     finally:
         if lock_fd is not None:
             os.close(lock_fd)
+
+
+async def try_refresh_only() -> bool:
+    """Attempt to refresh the existing Jira token without browser flow.
+
+    Returns True if refresh succeeded and a valid token is on disk.
+    Returns False if refresh failed (expired refresh token, network error, no creds).
+
+    CLI-only: called from summon auth jira login, not from concurrent session code.
+    """
+    try:
+        await refresh_jira_token_if_needed(force=True)
+    except Exception:
+        logger.info("Jira token refresh failed — browser flow required")
+        return False
+    token = load_jira_token()
+    if token is not None:
+        logger.info("Jira token refreshed successfully")
+        return True
+    logger.info("Jira token refresh produced no valid token — browser flow required")
+    return False
 
 
 async def _do_refresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
@@ -684,13 +712,17 @@ async def discover_cloud_sites(access_token: str) -> list[dict[str, Any]]:
         return []
 
 
-def check_jira_status() -> str | None:
+def check_jira_status() -> str | None:  # noqa: PLR0911
     """Check Jira integration status.
 
     Reads the token file directly (bypassing the expiry check in
     ``load_jira_token``) so that near-expiry tokens don't produce
-    misleading errors — the daemon refreshes tokens asynchronously
-    at session startup.
+    misleading errors — the proxy/daemon refreshes tokens asynchronously
+    at session startup via ``refresh_jira_token_if_needed()``.
+
+    Fully expired tokens (past all buffers) with a refresh_token are
+    reported as None (OK) — the proxy will refresh them. Fully expired
+    tokens without a refresh_token are reported as an error.
 
     Returns:
         None if Jira credentials are present and structurally valid.
@@ -720,6 +752,18 @@ def check_jira_status() -> str | None:
     if not cloud_id:
         return (
             "Jira credentials found but no cloud_id is configured. "
+            "Re-authenticate: summon auth jira login"
+        )
+
+    # Check expiry: near-expiry is fine (daemon handles it), but fully expired
+    # tokens without a refresh_token cannot be renewed.
+    expires_at = token_data.get("expires_at", 0)
+    if time.time() >= expires_at:
+        if token_data.get("refresh_token"):
+            # Proxy will refresh at next session startup — report as OK
+            return None
+        return (
+            "Jira token is expired and has no refresh_token. "
             "Re-authenticate: summon auth jira login"
         )
 

@@ -31,6 +31,11 @@ class TestJiraLogin:
         # jira_login imports lazily — patch at source module so all importers see the mock
         with (
             patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
                 "summon_claude.jira_auth.start_auth_flow",
                 new_callable=AsyncMock,
                 return_value=token_data,
@@ -57,6 +62,11 @@ class TestJiraLogin:
         token_data = {"access_token": "atoken"}
 
         with (
+            patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
             patch(
                 "summon_claude.jira_auth.start_auth_flow",
                 new_callable=AsyncMock,
@@ -92,6 +102,11 @@ class TestJiraLogin:
 
         with (
             patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
                 "summon_claude.jira_auth.start_auth_flow",
                 new_callable=AsyncMock,
                 return_value=token_data,
@@ -126,6 +141,11 @@ class TestJiraLogin:
 
         with (
             patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
                 "summon_claude.jira_auth.start_auth_flow",
                 new_callable=AsyncMock,
                 return_value=token_data,
@@ -155,6 +175,11 @@ class TestJiraLogin:
 
         with (
             patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
                 "summon_claude.jira_auth.start_auth_flow",
                 new_callable=AsyncMock,
                 return_value=token_data,
@@ -177,10 +202,17 @@ class TestJiraLogin:
 
     def test_jira_login_timeout_exits_nonzero(self):
         """If start_auth_flow raises TimeoutError, CLI exits with code 1."""
-        with patch(
-            "summon_claude.jira_auth.start_auth_flow",
-            new_callable=AsyncMock,
-            side_effect=TimeoutError("flow timed out"),
+        with (
+            patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "summon_claude.jira_auth.start_auth_flow",
+                new_callable=AsyncMock,
+                side_effect=TimeoutError("flow timed out"),
+            ),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "jira", "login"])
@@ -190,10 +222,17 @@ class TestJiraLogin:
 
     def test_jira_login_runtime_error_exits_nonzero(self):
         """If start_auth_flow raises RuntimeError, CLI exits with code 1."""
-        with patch(
-            "summon_claude.jira_auth.start_auth_flow",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("authorization denied"),
+        with (
+            patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "summon_claude.jira_auth.start_auth_flow",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("authorization denied"),
+            ),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "jira", "login"])
@@ -218,9 +257,73 @@ class TestJiraLogin:
                 return_value=sites,
             ),
             patch("summon_claude.jira_auth.save_jira_token"),
+            patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
         ):
             # Should not raise
             auth_jira_login.callback(site=None)
+
+    def test_login_refresh_shortcut(self):
+        """When try_refresh_only returns True, browser flow is not called."""
+        fresh_token = {
+            "access_token": "refreshed-token",
+            "cloud_name": "MyOrg",
+            "cloud_url": "https://myorg.atlassian.net",
+        }
+
+        with (
+            patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "summon_claude.jira_auth.load_jira_token",
+                return_value=fresh_token,
+            ),
+            patch(
+                "summon_claude.jira_auth.start_auth_flow",
+                new_callable=AsyncMock,
+            ) as mock_browser,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "jira", "login"])
+
+        assert result.exit_code == 0
+        mock_browser.assert_not_called()
+        assert "refreshed" in result.output.lower()
+
+    def test_login_refresh_fails_falls_through(self):
+        """When try_refresh_only returns False, browser flow is called."""
+        token_data = {"access_token": "atoken", "refresh_token": "rtoken"}
+        sites = [{"id": "cloud-abc", "name": "My Jira", "url": "https://myjira.atlassian.net"}]
+
+        with (
+            patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "summon_claude.jira_auth.start_auth_flow",
+                new_callable=AsyncMock,
+                return_value=token_data,
+            ) as mock_browser,
+            patch(
+                "summon_claude.jira_auth.discover_cloud_sites",
+                new_callable=AsyncMock,
+                return_value=sites,
+            ),
+            patch("summon_claude.jira_auth.save_jira_token"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "jira", "login"])
+
+        assert result.exit_code == 0
+        mock_browser.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +529,11 @@ class TestJiraLoginMultiSite:
 
         with (
             patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
                 "summon_claude.jira_auth.start_auth_flow",
                 new_callable=AsyncMock,
                 return_value=token_data,
@@ -456,6 +564,11 @@ class TestJiraLoginMultiSite:
         ]
 
         with (
+            patch(
+                "summon_claude.jira_auth.try_refresh_only",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
             patch(
                 "summon_claude.jira_auth.start_auth_flow",
                 new_callable=AsyncMock,
