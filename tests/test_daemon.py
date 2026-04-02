@@ -1108,6 +1108,8 @@ class TestJiraProxyLifecycle:
         assert len(session_manager_calls) == 1
         assert session_manager_calls[0]["jira_proxy_port"] is None
         assert session_manager_calls[0]["jira_proxy_token"] is None
+        # stop() should NOT be called on a proxy that failed to start
+        mock_proxy.stop.assert_not_awaited()
 
     async def test_jira_proxy_warmup_failure_still_starts(self, tmp_path):
         """When warmup() returns False, proxy is still started and port is passed."""

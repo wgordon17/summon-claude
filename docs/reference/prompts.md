@@ -174,8 +174,8 @@ Check for worktrees that are no longer needed:
 
 Triage open Jira issues assigned to this project:
 
-  JQL filter: `{jirajql}`
-  Cloud ID: `{cloudid}`
+  JQL filter: `project = EXAMPLE AND status != Done`
+  Cloud ID: `example-cloud-id-abc123`
 
 Triage protocol:
 1. Call `searchJiraIssuesUsingJql` with the JQL filter and Cloud ID above to fetch open issues.
@@ -407,7 +407,7 @@ Shown with all data sources enabled (Google Workspace and external Slack section
 
 Check for Jira activity involving you:
 
-- Mentions in comments: `searchJiraIssuesUsingJql` with `cloudId: "{cloud_id}"`, `jql: "issue in commentedByUser(currentUser()) AND updated >= -15m"`
+- Mentions in comments: `searchJiraIssuesUsingJql` with `cloudId: "example-cloud-id-abc123"`, `jql: "issue in commentedByUser(currentUser()) AND updated >= -15m"`
 - Newly assigned issues: `jql: "assignee = currentUser() AND assignee CHANGED DURING (-15m, now())"`
 - Status changes on watched issues: `jql: "status changed DURING (-15m, now()) AND watcher = currentUser()"`
 

@@ -1404,11 +1404,11 @@ class TestStreamerHealthTrackerIntegration:
         callback = AsyncMock()
         tracker = McpHealthTracker(on_degraded=callback)
         original_record = tracker.record_tool_result
-        recorded_lengths: list[int] = []
+        recorded_contents: list[str] = []
 
         async def _spy(tool_name, *, is_error=None, error_content=None):
             if error_content is not None:
-                recorded_lengths.append(len(error_content))
+                recorded_contents.append(error_content)
             await original_record(tool_name, is_error=is_error, error_content=error_content)
 
         tracker.record_tool_result = _spy  # type: ignore[assignment]
@@ -1420,7 +1420,9 @@ class TestStreamerHealthTrackerIntegration:
         streamer._turn.tool_names["tu_1"] = "mcp__jira__getIssue"
         block = ToolResultBlock(tool_use_id="tu_1", content=long_content, is_error=True)
         await streamer._handle_tool_result_block(block, parent_id=None)
-        assert recorded_lengths == [500]
+        assert len(recorded_contents) == 1
+        assert len(recorded_contents[0]) == 500
+        assert recorded_contents[0].startswith("HTTP 401")
 
     async def test_no_tracker_means_no_tracking(self):
         """When mcp_health is None, no tracking occurs."""

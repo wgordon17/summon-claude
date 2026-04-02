@@ -1659,6 +1659,8 @@ class TestMCPRegistration:
         assert jira_cfg["headers"]["X-Summon-Proxy-Token"] == "proxy-tok"
         # Proxy path must NOT include Authorization header
         assert "Authorization" not in jira_cfg["headers"]
+        # SC-03: no access token secrets in proxy-backed config
+        assert "Bearer" not in str(jira_cfg)
 
     async def test_jira_mcp_not_wired_when_no_credentials(self):
         with patch(

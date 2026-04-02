@@ -314,13 +314,16 @@ async def start_auth_flow() -> dict[str, Any]:
     authorization_endpoint = metadata["authorization_endpoint"]
     token_endpoint = metadata["token_endpoint"]
 
-    # SEC-P4-006: validate authorization_endpoint is HTTPS on a trusted host
-    parsed_authz = urlparse(authorization_endpoint)
-    if parsed_authz.scheme != "https" or parsed_authz.netloc not in _TRUSTED_ATLASSIAN_HOSTS:
-        raise RuntimeError(
-            f"Untrusted authorization_endpoint: {parsed_authz.netloc!r} — "
-            "expected an Atlassian host"
-        )
+    # SEC-P4-006: validate both endpoints are HTTPS on trusted Atlassian hosts
+    for label, endpoint in [
+        ("authorization_endpoint", authorization_endpoint),
+        ("token_endpoint", token_endpoint),
+    ]:
+        parsed_ep = urlparse(endpoint)
+        if parsed_ep.scheme != "https" or parsed_ep.netloc not in _TRUSTED_ATLASSIAN_HOSTS:
+            raise RuntimeError(
+                f"Untrusted {label}: {parsed_ep.netloc!r} — expected an Atlassian host"
+            )
 
     code_verifier, code_challenge = _pkce_pair()
 
@@ -634,6 +637,17 @@ async def _do_refresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
         try:
             metadata = await discover_oauth_metadata("https://mcp.atlassian.com")
             token_endpoint = metadata["token_endpoint"]
+            # SEC-P4-005: validate rediscovered token_endpoint
+            parsed_rediscovered = urlparse(token_endpoint)
+            if (
+                parsed_rediscovered.scheme != "https"
+                or parsed_rediscovered.netloc not in _TRUSTED_ATLASSIAN_HOSTS
+            ):
+                logger.warning(
+                    "Rediscovered token_endpoint %r not on trusted host",
+                    parsed_rediscovered.netloc,
+                )
+                return None
         except Exception as e:
             logger.warning("Cannot discover OAuth metadata for token refresh: %s", e)
             return None
