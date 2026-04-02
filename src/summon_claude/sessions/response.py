@@ -29,6 +29,7 @@ from claude_agent_sdk import (
 )
 
 from summon_claude.sessions.context import ContextUsage
+from summon_claude.sessions.mcp_health import McpHealthTracker
 from summon_claude.sessions.types import ChangeType, FileChange
 from summon_claude.slack.client import redact_secrets
 from summon_claude.slack.formatting import snippet_type_for_extension
@@ -159,6 +160,8 @@ class _TurnState:
     md_rendered_paths: set[str] = field(default_factory=set)
     # Track EnterWorktree tool_use_ids → worktree name for callback
     pending_worktree_names: dict[str, str] = field(default_factory=dict)
+    # Track tool_use_id → tool name for health tracker
+    tool_names: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -191,6 +194,7 @@ class ResponseStreamer:
         max_inline_chars: int = 2500,
         on_file_change: Callable[[FileChange], Awaitable[None]] | None = None,
         on_worktree_entered: Callable[[str], None] | None = None,
+        mcp_health: McpHealthTracker | None = None,
     ) -> None:
         self._router = router
         self._user_id = user_id
@@ -198,6 +202,7 @@ class ResponseStreamer:
         self._max_inline_chars = max_inline_chars
         self._on_file_change = on_file_change
         self._on_worktree_entered = on_worktree_entered
+        self._mcp_health = mcp_health
 
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
@@ -362,6 +367,7 @@ class ResponseStreamer:
             await self._flush_buffer()
 
         self._turn.has_seen_tool_use = True
+        self._turn.tool_names[block.id] = block.name
         self.record_tool_call(block.input or {})
 
         if block.name == "Task":
@@ -384,6 +390,13 @@ class ResponseStreamer:
         wt_name = self._turn.pending_worktree_names.pop(block.tool_use_id, None)
         if wt_name is not None and not block.is_error and self._on_worktree_entered is not None:
             self._on_worktree_entered(wt_name)
+        if self._mcp_health is not None:
+            tool_name = self._turn.tool_names.get(block.tool_use_id)
+            if tool_name:
+                error_text = str(block.content)[:500] if block.is_error else None
+                await self._mcp_health.record_tool_result(
+                    tool_name, is_error=block.is_error, error_content=error_text
+                )
         await self._post_tool_result(block, parent_id)
         # No _set_status — thread post auto-clears "Running {tool}...",
         # and the next block (tool use or text) arrives quickly.

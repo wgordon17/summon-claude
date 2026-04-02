@@ -2005,6 +2005,20 @@ class SummonSession:
 
         setting_sources = ["user"] if (is_pm or is_scribe) else ["user", "project"]
 
+        # MCP health tracker — detects auth failures and notifies via inject_message
+        _bg_tasks: set[asyncio.Task[None]] = set()
+
+        async def _on_mcp_degraded(prefix: str, message: str) -> None:
+            await self.inject_message(message, sender_info="McpHealthTracker")
+            if rt and rt.client:
+                task = asyncio.create_task(rt.client.post(message))
+                _bg_tasks.add(task)
+                task.add_done_callback(_bg_tasks.discard)
+
+        from summon_claude.sessions.mcp_health import McpHealthTracker  # noqa: PLC0415
+
+        mcp_health_tracker = McpHealthTracker(on_degraded=_on_mcp_degraded)
+
         streamer = ResponseStreamer(
             router=router,
             user_id=self._authenticated_user_id,
@@ -2012,6 +2026,7 @@ class SummonSession:
             max_inline_chars=self._config.max_inline_chars,
             on_file_change=self._on_file_change,
             on_worktree_entered=rt.permission_handler.notify_entered_worktree,
+            mcp_health=mcp_health_tracker,
         )
 
         # Disable auto-compaction — we handle compaction via !compact
