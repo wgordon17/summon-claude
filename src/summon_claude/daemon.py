@@ -272,7 +272,7 @@ async def _run_startup_probe(bolt_router: BoltRouter) -> None:
         raise SystemExit(1)
 
 
-async def daemon_main(config: SummonConfig) -> None:
+async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0915
     """Async daemon entry point.
 
     Creates BoltRouter, EventDispatcher, and SessionManager, wires them
@@ -306,12 +306,36 @@ async def daemon_main(config: SummonConfig) -> None:
 
     if bolt_router.bot_user_id is None:  # pragma: no cover — start() always sets this
         raise RuntimeError("BoltRouter.start() did not set bot_user_id")
+
+    # Start Jira auth proxy if credentials exist
+    jira_proxy = None
+    jira_proxy_port = None
+    jira_proxy_token = None
+    from summon_claude.jira_auth import jira_credentials_exist  # noqa: PLC0415
+
+    if jira_credentials_exist():
+        from summon_claude.jira_proxy import JiraAuthProxy  # noqa: PLC0415
+
+        jira_proxy = JiraAuthProxy()
+        jira_proxy_port = await jira_proxy.start()
+        jira_proxy_token = jira_proxy.access_token
+        logger.info("Jira auth proxy started on port %d", jira_proxy_port)
+        # Proactive token check at startup
+        token = await jira_proxy._get_fresh_token()  # noqa: SLF001
+        if token is None:
+            logger.warning(
+                "Jira proxy started but token refresh failed — "
+                "Jira tools will return 502 until re-auth"
+            )
+
     session_manager = SessionManager(
         config=config,
         web_client=bolt_router.web_client,
         bot_user_id=bolt_router.bot_user_id,
         dispatcher=dispatcher,
         event_probe=bolt_router.event_probe,
+        jira_proxy_port=jira_proxy_port,
+        jira_proxy_token=jira_proxy_token,
     )
     dispatcher.set_command_handler(session_manager.handle_summon_command)
     dispatcher.set_resume_handler(session_manager.resume_from_channel)
@@ -376,6 +400,14 @@ async def daemon_main(config: SummonConfig) -> None:
         logger.debug("Control server close timed out")
 
     await session_manager.shutdown()
+
+    # Stop Jira proxy after sessions drain (sessions may still be making Jira calls)
+    if jira_proxy is not None:
+        try:
+            await jira_proxy.stop()
+        except Exception:
+            logger.warning("Jira proxy stop failed", exc_info=True)
+
     await bolt_router.stop()
 
     # Disarm SIGALRM so we don't get killed during clean exit

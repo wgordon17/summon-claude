@@ -56,6 +56,8 @@ def make_manager(*, scribe_enabled: bool = False, **config_overrides):
     manager.create_session_with_spawn_token = AsyncMock()
     manager._grace_timer = None
     manager._resuming_channels = set()
+    manager._jira_proxy_port = None
+    manager._jira_proxy_token = None
     return manager
 
 

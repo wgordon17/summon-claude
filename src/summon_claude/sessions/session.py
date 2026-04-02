@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import contextvars
 import dataclasses
+import json
 import logging
 import logging.handlers
 import os
@@ -488,6 +489,8 @@ class SessionOptions:
     system_prompt_append: str | None = None
     resume_from_session_id: str | None = None
     initial_prompt: str | None = None
+    jira_proxy_port: int | None = None
+    jira_proxy_token: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,6 +631,8 @@ class SummonSession:
         self._resume = options.resume
         self._resume_from_session_id = options.resume_from_session_id
         self._channel_id_option = options.channel_id
+        self._jira_proxy_port = options.jira_proxy_port
+        self._jira_proxy_token = options.jira_proxy_token
 
         self._auth: SessionAuth | None = auth
         self._claude: ClaudeSDKClient | None = None
@@ -1832,39 +1837,48 @@ class SummonSession:
                 mcp_servers["github"] = gh_mcp
 
         # Add Jira remote MCP if credentials are configured.
-        # Same lazy-connection resilience as GitHub: failures surface as individual
-        # tool errors, not session startup failures.
-        # SC-03: only the access_token is embedded here — refresh_token and
-        # client_secret stay in the token file on disk.
-        #
-        # CR-002/PERF-001: refresh must happen in the async context — never via
-        # asyncio.run() inside a running loop. After refresh, load_jira_token()
-        # is a cheap sync read of the fresh file.
-        # PERF-002: single token load extracts both access_token and cloud_id.
+        # Two paths: (A) proxy-backed — proxy handles token refresh transparently,
+        # (B) direct — session refreshes token itself (fallback when proxy unavailable).
         jira_mcp: dict | None = None
         _jira_cloud_id: str | None = None
         if self._config.jira_enabled:
             from summon_claude.jira_auth import (  # noqa: PLC0415
+                get_jira_token_path,
                 load_jira_token,
                 refresh_jira_token_if_needed,
             )
 
-            try:
-                await asyncio.wait_for(refresh_jira_token_if_needed(), timeout=35)
-            except TimeoutError:
-                logger.warning("Jira token refresh timed out — proceeding without Jira")
-            _jira_token = load_jira_token()
-            if _jira_token is not None:
-                _access_token = _jira_token.get("access_token")
-                _jira_cloud_id = _jira_token.get("cloud_id")
-                if _access_token:
-                    jira_mcp = {
-                        "type": "http",
-                        "url": "https://mcp.atlassian.com/v1/mcp",
-                        "headers": {
-                            "Authorization": f"Bearer {_access_token}",
-                        },
-                    }
+            if self._jira_proxy_port is not None:
+                # Path A: proxy-backed — proxy handles token refresh
+                jira_mcp = {
+                    "type": "http",
+                    "url": f"http://127.0.0.1:{self._jira_proxy_port}/v1/mcp",
+                    "headers": {"X-Summon-Proxy-Token": self._jira_proxy_token},
+                }
+                # Extract cloud_id without refresh (proxy handles expiry)
+                try:
+                    raw = json.loads(get_jira_token_path().read_text())
+                    _jira_cloud_id = raw.get("cloud_id")
+                except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    pass
+            else:
+                # Path B: direct token — session refreshes itself
+                try:
+                    await asyncio.wait_for(refresh_jira_token_if_needed(), timeout=35)
+                except TimeoutError:
+                    logger.warning("Jira token refresh timed out — proceeding without Jira")
+                _jira_token = load_jira_token()
+                if _jira_token is not None:
+                    _access_token = _jira_token.get("access_token")
+                    _jira_cloud_id = _jira_token.get("cloud_id")
+                    if _access_token:
+                        jira_mcp = {
+                            "type": "http",
+                            "url": "https://mcp.atlassian.com/v1/mcp",
+                            "headers": {
+                                "Authorization": f"Bearer {_access_token}",
+                            },
+                        }
         if jira_mcp:
             mcp_servers["jira"] = jira_mcp
 
@@ -2144,6 +2158,26 @@ class SummonSession:
                     "preset": "claude_code",
                     "append": effective_append,
                 }
+            # Compaction-loop Jira token refresh (non-proxy path only).
+            # Proxy-backed sessions don't need this — the proxy handles refresh.
+            if self._jira_proxy_port is None and self._config.jira_enabled:
+                try:
+                    await asyncio.wait_for(
+                        refresh_jira_token_if_needed(),
+                        timeout=35,  # already imported above
+                    )
+                except TimeoutError:
+                    logger.warning("Jira compaction-loop refresh timed out")
+                _jira_tok = load_jira_token()  # already imported above
+                if _jira_tok:
+                    mcp_servers["jira"] = {
+                        "type": "http",
+                        "url": "https://mcp.atlassian.com/v1/mcp",
+                        "headers": {
+                            "Authorization": f"Bearer {_jira_tok['access_token']}",
+                        },
+                    }
+
             options = ClaudeAgentOptions(
                 cwd=self._cwd,
                 resume=self._resume,
