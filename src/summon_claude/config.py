@@ -478,8 +478,9 @@ def google_mcp_env_for_account(account: GoogleAccount) -> dict[str, str]:
     if not account.creds_dir.resolve().is_relative_to(google_dir.resolve()):
         raise ValueError(f"Account credential dir {account.creds_dir} is outside {google_dir}")
 
-    env: dict[str, str] = {"WORKSPACE_MCP_CREDENTIALS_DIR": str(account.creds_dir)}
-    json_path = account.creds_dir / "client_secret.json"
+    resolved = account.creds_dir.resolve()
+    env: dict[str, str] = {"WORKSPACE_MCP_CREDENTIALS_DIR": str(resolved)}
+    json_path = resolved / "client_secret.json"
     if json_path.exists():
         env["GOOGLE_CLIENT_SECRETS_PATH"] = str(json_path)
     return env
@@ -537,7 +538,7 @@ def detect_account_services(account: GoogleAccount) -> str | None:
         users = store.list_users()
         if not users:
             return None
-        cred = store.load(users[0])
+        cred = store.get_credential(users[0])
         if not cred or not cred.scopes:
             return None
         services = _scopes_to_services(set(cred.scopes))
