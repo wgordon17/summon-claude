@@ -116,7 +116,7 @@ class TestTokenStorage:
 
 MOCK_METADATA = {
     "issuer": "https://cf.mcp.atlassian.com",
-    "authorization_endpoint": "https://mcp.atlassian.com/v1/authorize",
+    "authorization_endpoint": "https://auth.atlassian.com/authorize",
     "token_endpoint": "https://cf.mcp.atlassian.com/v1/token",
     "registration_endpoint": "https://cf.mcp.atlassian.com/v1/register",
     "token_endpoint_auth_methods_supported": [

@@ -1840,7 +1840,7 @@ class SummonSession:
         # Two paths: (A) proxy-backed — proxy handles token refresh transparently,
         # (B) direct — session refreshes token itself (fallback when proxy unavailable).
         jira_mcp: dict | None = None
-        _jira_cloud_id: str | None = None
+        jira_cloud_id: str | None = None
         if self._config.jira_enabled:
             from summon_claude.jira_auth import (  # noqa: PLC0415
                 get_jira_token_path,
@@ -1858,7 +1858,7 @@ class SummonSession:
                 # Extract cloud_id without refresh (proxy handles expiry)
                 try:
                     raw = json.loads(get_jira_token_path().read_text())
-                    _jira_cloud_id = raw.get("cloud_id")
+                    jira_cloud_id = raw.get("cloud_id")
                 except (FileNotFoundError, json.JSONDecodeError, OSError):
                     pass
             else:
@@ -1867,16 +1867,16 @@ class SummonSession:
                     await asyncio.wait_for(refresh_jira_token_if_needed(), timeout=35)
                 except TimeoutError:
                     logger.warning("Jira token refresh timed out — proceeding without Jira")
-                _jira_token = load_jira_token()
-                if _jira_token is not None:
-                    _access_token = _jira_token.get("access_token")
-                    _jira_cloud_id = _jira_token.get("cloud_id")
-                    if _access_token:
+                jira_tok = load_jira_token()
+                if jira_tok is not None:
+                    jira_at = jira_tok.get("access_token")
+                    jira_cloud_id = jira_tok.get("cloud_id")
+                    if jira_at:
                         jira_mcp = {
                             "type": "http",
                             "url": "https://mcp.atlassian.com/v1/mcp",
                             "headers": {
-                                "Authorization": f"Bearer {_access_token}",
+                                "Authorization": f"Bearer {jira_at}",
                             },
                         }
         if jira_mcp:
@@ -2061,10 +2061,10 @@ class SummonSession:
 
         # Fetch Jira params once for PM sessions (survives compaction restarts)
         # jira_mcp is already computed above — use it as the enabled signal.
-        # PERF-002: _jira_cloud_id is extracted from the same token load above.
+        # PERF-002: jira_cloud_id is extracted from the same token load above.
         pm_jira_enabled = bool(jira_mcp) and is_pm
         pm_jira_jql: str | None = None
-        pm_jira_cloud_id: str | None = _jira_cloud_id if pm_jira_enabled else None
+        pmjira_cloud_id: str | None = jira_cloud_id if pm_jira_enabled else None
         if pm_jira_enabled and self._project_id:
             try:
                 project_row = await rt.registry.get_project(self._project_id)
@@ -2074,10 +2074,10 @@ class SummonSession:
                 logger.warning("Failed to fetch project Jira config: %s", e)
 
         # Scribe Jira guard: disable if cloud_id is missing (plan T9 S4)
-        _scribe_jira_enabled = bool(jira_mcp) and is_scribe
-        if _scribe_jira_enabled and not _jira_cloud_id:
+        scribe_jira_enabled = bool(jira_mcp) and is_scribe
+        if scribe_jira_enabled and not jira_cloud_id:
             logger.warning("Jira enabled but no cloud_id — disabling Jira for scribe")
-            _scribe_jira_enabled = False
+            scribe_jira_enabled = False
 
         while True:
             # Cancel any orphaned scheduler tasks from prior iteration and re-register
@@ -2097,7 +2097,7 @@ class SummonSession:
                         is_git_repo=is_git_repo,
                         jira_enabled=pm_jira_enabled,
                         jira_jql=pm_jira_jql,
-                        jira_cloud_id=pm_jira_cloud_id,
+                        jira_cloud_id=pmjira_cloud_id,
                     ),
                     internal=True,
                     max_lifetime_s=0,
@@ -2115,8 +2115,8 @@ class SummonSession:
                         google_enabled=google_mcp_wired,
                         google_accounts=google_accounts or None,
                         slack_enabled=bool(self._slack_monitors),
-                        jira_enabled=_scribe_jira_enabled,
-                        jira_cloud_id=_jira_cloud_id,
+                        jira_enabled=scribe_jira_enabled,
+                        jira_cloud_id=jira_cloud_id,
                         scan_interval_minutes=max(1, self._scan_interval_s // 60),
                         user_mention=scribe_user_mention,
                         importance_keywords=self._config.scribe_importance_keywords,
@@ -2160,7 +2160,7 @@ class SummonSession:
                     google_enabled=google_mcp_wired,
                     google_accounts=google_accounts or None,
                     slack_enabled=bool(self._slack_monitors),
-                    jira_enabled=_scribe_jira_enabled,
+                    jira_enabled=scribe_jira_enabled,
                 )
                 if self._system_prompt_append:
                     system_prompt["append"] += "\n\n" + self._system_prompt_append

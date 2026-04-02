@@ -180,6 +180,32 @@ class TestTokenCache:
 
         assert result == "fresh-token"
 
+    async def test_failed_load_updates_mtime_for_backoff(self, proxy: JiraAuthProxy):
+        """After failed token load, mtime is updated so backoff timer holds.
+
+        Without the mtime update, the next call would see mtime != cached_mtime,
+        reset _token_expires_at to 0, and re-enter the cold path — defeating backoff.
+        """
+        proxy._token_expires_at = 0  # expired
+        proxy._token_file_mtime = 0.0  # initial state
+        mock_path = _make_mock_path(mtime=1234.0)
+        proxy._token_path = mock_path
+
+        with (
+            patch(
+                "summon_claude.jira_proxy.refresh_jira_token_if_needed",
+                new_callable=AsyncMock,
+            ),
+            patch("summon_claude.jira_proxy.load_jira_token", return_value=None),
+        ):
+            result = await proxy._get_fresh_token()
+
+        assert result is None
+        # mtime must be updated so next call doesn't re-trigger via mismatch
+        assert proxy._token_file_mtime == 1234.0
+        # backoff timer must be set (expires_at > now)
+        assert proxy._token_expires_at > time.time()
+
     async def test_token_file_not_found_returns_none(self, proxy: JiraAuthProxy):
         """Missing token file returns None immediately."""
         proxy._token_path = _make_missing_path()
