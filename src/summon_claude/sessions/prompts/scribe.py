@@ -198,7 +198,9 @@ def build_scribe_scan_prompt(  # noqa: PLR0913
     if jira_enabled and jira_cloud_id:
         interval_text = f"{scan_interval_minutes}m" if scan_interval_minutes else "15m"
         # SEC: sanitize cloud_id (operator-supplied via token file)
-        safe_cloud = jira_cloud_id.replace("\n", " ").replace("\r", " ").replace("`", "'")
+        from summon_claude.sessions.prompts.pm import _sanitize_jql  # noqa: PLC0415
+
+        safe_cloud = _sanitize_jql(jira_cloud_id)
         parts.append(
             "## Jira\n\n"
             "Check for Jira activity involving you:\n\n"

@@ -85,20 +85,24 @@ class JiraAuthProxy:
         """Start the proxy on an ephemeral localhost port. Returns the bound port."""
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        # SEC-PROXY-01: bind to 127.0.0.1 only — never 0.0.0.0
-        self._site = web.TCPSite(self._runner, "127.0.0.1", 0)
-        await self._site.start()
-        # Extract bound port from runner addresses (private API — aiohttp doesn't
-        # expose the bound port via a public API as of 3.x)
-        addrs = self._runner.addresses
-        if not addrs:
-            raise RuntimeError("JiraAuthProxy: could not determine bound port")
-        self._port = addrs[0][1]  # (host, port) tuple
-        # SEC-DR-001: limit concurrent upstream connections
-        self._http_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60),
-            connector=aiohttp.TCPConnector(limit=20),
-        )
+        try:
+            # SEC-PROXY-01: bind to 127.0.0.1 only — never 0.0.0.0
+            self._site = web.TCPSite(self._runner, "127.0.0.1", 0)
+            await self._site.start()
+            # Extract bound port from runner addresses (private API — aiohttp doesn't
+            # expose the bound port via a public API as of 3.x)
+            addrs = self._runner.addresses
+            if not addrs:
+                raise RuntimeError("JiraAuthProxy: could not determine bound port")
+            self._port = addrs[0][1]  # (host, port) tuple
+            # SEC-DR-001: limit concurrent upstream connections
+            self._http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=60),
+                connector=aiohttp.TCPConnector(limit=20),
+            )
+        except Exception:
+            await self.stop()  # clean up runner/site on partial startup
+            raise
         return self._port
 
     async def stop(self) -> None:

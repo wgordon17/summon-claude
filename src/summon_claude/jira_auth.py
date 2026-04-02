@@ -53,9 +53,9 @@ _HTTP_CONNECT_TIMEOUT = aiohttp.ClientTimeout(connect=10, total=30)
 # Auth flow browser wait timeout
 _AUTH_FLOW_TIMEOUT = 120
 
-# SEC-P4-005: Trusted Atlassian hosts for cached token_endpoint validation.
-# If the on-disk token_endpoint is not on one of these hosts, rediscovery is
-# triggered to prevent redirect-based exfiltration via local file tampering.
+# SEC-P4-005/006: Trusted Atlassian hosts for endpoint validation.
+# Used to validate authorization_endpoint, token_endpoint, and rediscovered
+# endpoints. Untrusted hosts trigger rediscovery or abort.
 _TRUSTED_ATLASSIAN_HOSTS = frozenset({"cf.mcp.atlassian.com", "auth.atlassian.com"})
 
 # Fields from the original token that the OAuth server never returns on refresh
