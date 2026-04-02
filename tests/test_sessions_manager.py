@@ -1065,6 +1065,47 @@ class TestDispatchSpawnToken:
         assert "initial_prompt" in response["message"]
 
 
+class TestDispatchStripsProxyFields:
+    """IPC boundary safety: CLI must not inject jira_proxy_port/token."""
+
+    async def test_create_session_strips_jira_proxy_port(self):
+        manager, _, _ = _make_manager()
+        manager.create_session = AsyncMock(return_value="abc123")
+        await manager._dispatch_control(
+            {
+                "type": "create_session",
+                "options": {
+                    "cwd": "/tmp",
+                    "name": "t",
+                    "jira_proxy_port": 9999,
+                    "jira_proxy_token": "evil",
+                },
+            }
+        )
+        opts = manager.create_session.call_args[0][0]
+        assert opts.jira_proxy_port is None
+        assert opts.jira_proxy_token is None
+
+    async def test_spawn_token_strips_jira_proxy_fields(self):
+        manager, _, _ = _make_manager()
+        manager.create_session_with_spawn_token = AsyncMock(return_value="abc123")
+        await manager._dispatch_control(
+            {
+                "type": "create_session_with_spawn_token",
+                "options": {
+                    "cwd": "/tmp",
+                    "name": "t",
+                    "jira_proxy_port": 9999,
+                    "jira_proxy_token": "evil",
+                },
+                "spawn_token": "tok",
+            }
+        )
+        opts = manager.create_session_with_spawn_token.call_args[0][0]
+        assert opts.jira_proxy_port is None
+        assert opts.jira_proxy_token is None
+
+
 # ---------------------------------------------------------------------------
 # Helpers: project up
 # ---------------------------------------------------------------------------

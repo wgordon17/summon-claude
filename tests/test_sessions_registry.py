@@ -958,7 +958,7 @@ class TestMigration15To16:
         from summon_claude.sessions.migrations import _migrate_15_to_16
 
         # Build a minimal projects table without jira_jql (simulating v12 schema)
-        db_path = tmp_path / "migrate_12_to_13.db"
+        db_path = tmp_path / "migrate_15_to_16.db"
         async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
             await raw_db.execute(
                 """
@@ -986,12 +986,12 @@ class TestMigration15To16:
             assert "jira_jql" in cols_after
 
     async def test_migrate_15_to_16_idempotent(self, tmp_path):
-        """Running migration 12→13 twice must not raise."""
+        """Running migration 15→16 twice must not raise."""
         import aiosqlite
 
         from summon_claude.sessions.migrations import _migrate_15_to_16
 
-        db_path = tmp_path / "idempotent_12_to_13.db"
+        db_path = tmp_path / "idempotent_15_to_16.db"
         async with SessionRegistry(db_path=db_path):
             pass
 
@@ -1011,7 +1011,7 @@ class TestMigration15To16:
 
         from summon_claude.sessions.migrations import _migrate_15_to_16
 
-        db_path = tmp_path / "default_null_12_to_13.db"
+        db_path = tmp_path / "default_null_15_to_16.db"
         async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
             await raw_db.execute(
                 """

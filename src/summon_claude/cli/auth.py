@@ -292,14 +292,7 @@ def auth_jira_login(site: str | None) -> None:  # noqa: PLR0912, PLR0915
         token = load_jira_token()
         if token:
             site_name = token.get("cloud_name", "Unknown")
-            site_url = token.get("cloud_url", "")
-            if site_url:
-                click.echo(
-                    f"Jira credentials refreshed successfully. "
-                    f"Connected to {site_name} ({site_url})"
-                )
-            else:
-                click.echo(f"Jira credentials refreshed successfully. Connected to {site_name}")
+            click.echo(f"Jira credentials refreshed successfully. Connected to {site_name}")
             return
 
     click.echo("Starting Jira OAuth flow — a browser window will open.")

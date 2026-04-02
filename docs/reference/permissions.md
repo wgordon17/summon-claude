@@ -249,9 +249,10 @@ The full permission evaluation order in `handle()`:
 | 3 | SDK deny suggestions | Deny |
 | 4 | Static auto-approve (`_AUTO_APPROVE_TOOLS`) | Allow |
 | 5 | GitHub deny-list (`_GITHUB_MCP_REQUIRE_APPROVAL`) | Always HITL |
-| 5a | Jira hard-deny (`_JIRA_MCP_HARD_DENY`) | Always Deny |
 | 6 | GitHub auto-approve (prefix matching) | Allow |
-| 6a | Jira auto-approve (prefix + exact matching) | Allow |
+| 6a | Google MCP auto-approve (prefix matching) | Allow |
+| 6b | Jira hard-deny (`_JIRA_MCP_HARD_DENY`) | Always Deny |
+| 6c | Jira auto-approve (prefix + exact matching) | Allow |
 | 7 | Summon MCP auto-approve (prefix matching) | Allow |
 | 8 | Session-lifetime cached approvals | Allow (GitHub deny-list excluded) |
 | 9 | Per-argument cache (exact match on primary arg) | Allow if arg matches (GitHub deny-list excluded) |

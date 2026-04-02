@@ -1547,12 +1547,14 @@ class TestMCPRegistration:
         opts = SessionOptions(cwd="/tmp", name="test", pm_profile=True)
         assert opts.pm_profile is True
 
-    async def _capture_mcp_servers_with_config(self, **config_overrides) -> dict:
-        """Like _capture_mcp_servers but with custom config overrides."""
+    async def _capture_mcp_servers_with_config(
+        self, *, option_overrides: dict | None = None, **config_overrides
+    ) -> dict:
+        """Like _capture_mcp_servers but with custom config/option overrides."""
         cfg = make_config(**config_overrides)
         session = SummonSession(
             config=cfg,
-            options=make_options(),
+            options=make_options(**(option_overrides or {})),
             auth=make_auth(),
             session_id="test-session",
         )
@@ -1614,6 +1616,49 @@ class TestMCPRegistration:
             result = await self._capture_mcp_servers_with_config()
         assert "jira" in result["mcp_servers"]
         assert result["mcp_servers"]["jira"]["type"] == "http"
+
+    async def test_jira_mcp_sc03_no_refresh_token_in_mcp_config(self):
+        """SC-03: refresh_token and client_secret must never leak into MCP config."""
+        _jira_token = {
+            "access_token": "test-jira-token",
+            "refresh_token": "secret-refresh-token",
+            "client_id": "secret-client-id",
+            "client_secret": "secret-client-secret",
+            "cloud_id": "abc-123",
+            "expires_at": 9999999999,
+        }
+        with (
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch("summon_claude.jira_auth.refresh_jira_token_if_needed", new_callable=AsyncMock),
+            patch("summon_claude.jira_auth.load_jira_token", return_value=_jira_token),
+        ):
+            result = await self._capture_mcp_servers_with_config()
+        jira_cfg = result["mcp_servers"]["jira"]
+        jira_str = str(jira_cfg)
+        assert "secret-refresh-token" not in jira_str
+        assert "secret-client-secret" not in jira_str
+        assert "secret-client-id" not in jira_str
+
+    async def test_jira_mcp_proxy_backed_path(self):
+        """When jira_proxy_port is set, MCP config uses localhost proxy URL."""
+        with (
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch("summon_claude.jira_auth.get_jira_token_path") as mock_path,
+        ):
+            mock_path.return_value.read_text.return_value = (
+                '{"access_token": "tok", "cloud_id": "abc-123"}'
+            )
+            result = await self._capture_mcp_servers_with_config(
+                option_overrides={
+                    "jira_proxy_port": 8888,
+                    "jira_proxy_token": "proxy-tok",
+                },
+            )
+        jira_cfg = result["mcp_servers"]["jira"]
+        assert jira_cfg["url"] == "http://127.0.0.1:8888/v1/mcp"
+        assert jira_cfg["headers"]["X-Summon-Proxy-Token"] == "proxy-tok"
+        # Proxy path must NOT include Authorization header
+        assert "Authorization" not in jira_cfg["headers"]
 
     async def test_jira_mcp_not_wired_when_no_credentials(self):
         with patch(

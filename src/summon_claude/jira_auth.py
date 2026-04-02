@@ -45,7 +45,7 @@ _JIRA_SCOPES = ["read:jira-work", "offline_access"]
 _CALLBACK_PATH = "/oauth/callback"
 
 # Token refresh 5-minute expiry buffer
-_REFRESH_BUFFER_SECONDS = 300
+REFRESH_BUFFER_SECONDS = 300
 
 # HTTP timeouts
 _HTTP_CONNECT_TIMEOUT = aiohttp.ClientTimeout(connect=10, total=30)
@@ -56,7 +56,7 @@ _AUTH_FLOW_TIMEOUT = 120
 # SEC-P4-005: Trusted Atlassian hosts for cached token_endpoint validation.
 # If the on-disk token_endpoint is not on one of these hosts, rediscovery is
 # triggered to prevent redirect-based exfiltration via local file tampering.
-_TRUSTED_TOKEN_HOSTS = frozenset({"cf.mcp.atlassian.com", "auth.atlassian.com"})
+_TRUSTED_ATLASSIAN_HOSTS = frozenset({"cf.mcp.atlassian.com", "auth.atlassian.com"})
 
 # Fields from the original token that the OAuth server never returns on refresh
 # but must be preserved across refreshes (e.g. cloud_id set during login).
@@ -115,7 +115,7 @@ def load_jira_token() -> dict[str, Any] | None:
         return None
 
     expires_at = token_data.get("expires_at", 0)
-    if time.time() >= (expires_at - _REFRESH_BUFFER_SECONDS):
+    if time.time() >= (expires_at - REFRESH_BUFFER_SECONDS):
         # Token is expired (or has no expiry) — caller should have refreshed
         logger.debug("Jira token is expired; call refresh_jira_token_if_needed() first")
         return None
@@ -314,6 +314,14 @@ async def start_auth_flow() -> dict[str, Any]:
     authorization_endpoint = metadata["authorization_endpoint"]
     token_endpoint = metadata["token_endpoint"]
 
+    # SEC-P4-006: validate authorization_endpoint is HTTPS on a trusted host
+    parsed_authz = urlparse(authorization_endpoint)
+    if parsed_authz.scheme != "https" or parsed_authz.netloc not in _TRUSTED_ATLASSIAN_HOSTS:
+        raise RuntimeError(
+            f"Untrusted authorization_endpoint: {parsed_authz.netloc!r} — "
+            "expected an Atlassian host"
+        )
+
     code_verifier, code_challenge = _pkce_pair()
 
     # SC-01: cryptographically secure state parameter for CSRF protection
@@ -463,7 +471,7 @@ def _get_token_if_fresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
         The same token dict if still fresh, or None if expired.
     """
     expires_at = token_data.get("expires_at", 0)
-    if time.time() < (expires_at - _REFRESH_BUFFER_SECONDS):
+    if time.time() < (expires_at - REFRESH_BUFFER_SECONDS):
         return token_data
     return None
 
@@ -497,7 +505,7 @@ async def refresh_jira_token_if_needed(*, force: bool = False) -> None:  # noqa:
         return
 
     expires_at = token_data.get("expires_at", 0)
-    if not force and time.time() < (expires_at - _REFRESH_BUFFER_SECONDS):
+    if not force and time.time() < (expires_at - REFRESH_BUFFER_SECONDS):
         # Token is still fresh — nothing to do
         return
 
@@ -523,7 +531,7 @@ async def refresh_jira_token_if_needed(*, force: bool = False) -> None:  # noqa:
         try:
             fresh_data = json.loads(token_path.read_text())
             fresh_expires_at = fresh_data.get("expires_at", 0)
-            if not force and time.time() < (fresh_expires_at - _REFRESH_BUFFER_SECONDS):
+            if not force and time.time() < (fresh_expires_at - REFRESH_BUFFER_SECONDS):
                 logger.debug("Jira token refreshed by another process, using updated token")
                 return
             token_data = fresh_data
@@ -558,7 +566,7 @@ async def refresh_jira_token_if_needed(*, force: bool = False) -> None:  # noqa:
             try:
                 on_disk = json.loads(token_path.read_text())
                 disk_expires = on_disk.get("expires_at", 0)
-                if time.time() < (disk_expires - _REFRESH_BUFFER_SECONDS):
+                if time.time() < (disk_expires - REFRESH_BUFFER_SECONDS):
                     logger.debug("Another process refreshed during our HTTP call — using theirs")
                     return
             except (json.JSONDecodeError, OSError):
@@ -616,7 +624,7 @@ async def _do_refresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
     token_endpoint = token_data.get("token_endpoint")
     if token_endpoint:
         parsed = urlparse(token_endpoint)
-        if parsed.scheme != "https" or parsed.netloc not in _TRUSTED_TOKEN_HOSTS:
+        if parsed.scheme != "https" or parsed.netloc not in _TRUSTED_ATLASSIAN_HOSTS:
             logger.warning(
                 "Cached token_endpoint %r is not on a trusted Atlassian host — rediscovering",
                 parsed.netloc,
@@ -741,7 +749,7 @@ def check_jira_status() -> str | None:  # noqa: PLR0911
         return "No Jira credentials found. Run: summon auth jira login"
 
     # Read raw token file — don't use load_jira_token() which returns None
-    # for near-expiry tokens (within _REFRESH_BUFFER_SECONDS).
+    # for near-expiry tokens (within REFRESH_BUFFER_SECONDS).
     token_path = get_jira_token_path()
     try:
         token_data = json.loads(token_path.read_text())

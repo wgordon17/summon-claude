@@ -2006,14 +2006,14 @@ class SummonSession:
         setting_sources = ["user"] if (is_pm or is_scribe) else ["user", "project"]
 
         # MCP health tracker — detects auth failures and notifies via inject_message
-        _bg_tasks: set[asyncio.Task[None]] = set()
+        bg_tasks: set[asyncio.Task[None]] = set()
 
         async def _on_mcp_degraded(prefix: str, message: str) -> None:
             await self.inject_message(message, sender_info="McpHealthTracker")
             if rt and rt.client:
                 task = asyncio.create_task(rt.client.post(message))
-                _bg_tasks.add(task)
-                task.add_done_callback(_bg_tasks.discard)
+                bg_tasks.add(task)
+                task.add_done_callback(bg_tasks.discard)
 
         from summon_claude.sessions.mcp_health import McpHealthTracker  # noqa: PLC0415
 
@@ -2182,14 +2182,14 @@ class SummonSession:
                     await asyncio.wait_for(_ja.refresh_jira_token_if_needed(), timeout=35)
                 except TimeoutError:
                     logger.warning("Jira compaction-loop refresh timed out")
-                _jira_tok = _ja.load_jira_token()
-                _jira_at = _jira_tok.get("access_token") if _jira_tok else None
-                if _jira_at:
+                jira_token = _ja.load_jira_token()
+                access_token = jira_token.get("access_token") if jira_token else None
+                if access_token:
                     mcp_servers["jira"] = {
                         "type": "http",
                         "url": "https://mcp.atlassian.com/v1/mcp",
                         "headers": {
-                            "Authorization": f"Bearer {_jira_at}",
+                            "Authorization": f"Bearer {access_token}",
                         },
                     }
 

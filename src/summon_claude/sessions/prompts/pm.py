@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
+import re
+
 from summon_claude.sessions.prompts.shared import _HEADLESS_BOILERPLATE
+
+# Characters allowed in JQL values embedded in prompts.  Rejects markdown
+# structural characters (# * _ [ ] `) that could alter prompt rendering.
+# Note: ! is preserved (JQL uses != operator).
+_JQL_UNSAFE_RE = re.compile(r"[^\x20-\x7E]|[#*_\[\]`]")
+
+
+def _sanitize_jql(value: str) -> str:
+    """Sanitize an operator-supplied JQL string for safe prompt embedding."""
+    s = value.replace("\n", " ").replace("\r", " ")
+    return _JQL_UNSAFE_RE.sub("", s).strip()
+
 
 _REVIEWER_SYSTEM_PROMPT_TEMPLATE = """\
 Review PR #{number} on {owner}/{repo}. The branch is checked out \
@@ -288,17 +302,11 @@ def build_pm_scan_prompt(
             "3. Do NOT remove worktrees for open PRs.\n"
         )
     if jira_enabled:
-        # SEC: strip newlines and backticks from operator-supplied JQL to prevent
-        # prompt injection via crafted JQL strings that break out of the
-        # backtick-delimited code span context.
-        safe_jql = (
-            jira_jql.replace("\n", " ").replace("\r", " ").replace("`", "'") if jira_jql else None
-        )
-        safe_cloud = (
-            jira_cloud_id.replace("\n", " ").replace("\r", " ").replace("`", "'")
-            if jira_cloud_id
-            else None
-        )
+        # SEC: sanitize operator-supplied JQL to prevent prompt injection.
+        # Strip newlines, backticks, and markdown structural characters that
+        # could alter prompt rendering (headings, bold, italic, links).
+        safe_jql = _sanitize_jql(jira_jql) if jira_jql else None
+        safe_cloud = _sanitize_jql(jira_cloud_id) if jira_cloud_id else None
         jql_line = (
             f"  JQL filter: `{safe_jql}`\n" if safe_jql else "  JQL filter: none (all issues)\n"
         )

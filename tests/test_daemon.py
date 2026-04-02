@@ -914,7 +914,7 @@ class TestJiraProxyLifecycle:
         mock_proxy = AsyncMock()
         mock_proxy.start = AsyncMock(return_value=12345)
         mock_proxy.access_token = "proxy-secret-token"
-        mock_proxy._get_fresh_token = AsyncMock(return_value="fresh-token")
+        mock_proxy.warmup = AsyncMock(return_value=True)
         mock_proxy.stop = AsyncMock()
 
         session_manager_calls = []
@@ -1034,7 +1034,7 @@ class TestJiraProxyLifecycle:
         mock_proxy = AsyncMock()
         mock_proxy.start = AsyncMock(return_value=9999)
         mock_proxy.access_token = "token"
-        mock_proxy._get_fresh_token = AsyncMock(return_value="fresh")
+        mock_proxy.warmup = AsyncMock(return_value=True)
 
         async def _proxy_stop():
             call_order.append("proxy")
@@ -1056,6 +1056,113 @@ class TestJiraProxyLifecycle:
 
         # Sessions must drain before proxy stops
         assert call_order.index("sessions") < call_order.index("proxy")
+
+    async def test_jira_proxy_startup_failure_falls_back(self, tmp_path):
+        """When proxy start() raises, daemon continues with proxy=None."""
+        from summon_claude.daemon import daemon_main
+
+        async def _noop():
+            await asyncio.sleep(0)
+
+        mock_bolt = AsyncMock()
+        mock_bolt.start = AsyncMock()
+        mock_bolt.stop = AsyncMock()
+        mock_bolt.shutdown_callback = None
+        mock_bolt.event_failure_callback = None
+        mock_bolt.event_probe = None
+        _mock_health_task = asyncio.get_event_loop().create_task(_noop())
+        _mock_health_task.cancel()
+        mock_bolt.start_health_monitor = MagicMock(return_value=_mock_health_task)
+
+        mock_session_manager = AsyncMock()
+        shutdown_event = asyncio.Event()
+        mock_session_manager.shutdown_event = shutdown_event
+        mock_session_manager.handle_client = AsyncMock()
+        mock_server = AsyncMock()
+        mock_server.close = MagicMock()
+
+        session_manager_calls = []
+
+        def _capture_session_manager(**kwargs):
+            session_manager_calls.append(kwargs)
+            return mock_session_manager
+
+        mock_proxy = AsyncMock()
+        mock_proxy.start = AsyncMock(side_effect=RuntimeError("bind failed"))
+        mock_proxy.stop = AsyncMock()
+
+        with (
+            _patch_data_dir(tmp_path),
+            patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
+            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch("summon_claude.daemon.SessionManager", side_effect=_capture_session_manager),
+            patch("asyncio.start_unix_server", return_value=mock_server),
+            patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch("summon_claude.jira_proxy.JiraAuthProxy", return_value=mock_proxy),
+        ):
+            shutdown_event.set()
+            await daemon_main(MagicMock())
+
+        # SessionManager gets None for proxy fields on startup failure
+        assert len(session_manager_calls) == 1
+        assert session_manager_calls[0]["jira_proxy_port"] is None
+        assert session_manager_calls[0]["jira_proxy_token"] is None
+
+    async def test_jira_proxy_warmup_failure_still_starts(self, tmp_path):
+        """When warmup() returns False, proxy is still started and port is passed."""
+        from summon_claude.daemon import daemon_main
+
+        async def _noop():
+            await asyncio.sleep(0)
+
+        mock_bolt = AsyncMock()
+        mock_bolt.start = AsyncMock()
+        mock_bolt.stop = AsyncMock()
+        mock_bolt.shutdown_callback = None
+        mock_bolt.event_failure_callback = None
+        mock_bolt.event_probe = None
+        _mock_health_task = asyncio.get_event_loop().create_task(_noop())
+        _mock_health_task.cancel()
+        mock_bolt.start_health_monitor = MagicMock(return_value=_mock_health_task)
+
+        mock_session_manager = AsyncMock()
+        shutdown_event = asyncio.Event()
+        mock_session_manager.shutdown_event = shutdown_event
+        mock_session_manager.handle_client = AsyncMock()
+        mock_server = AsyncMock()
+        mock_server.close = MagicMock()
+
+        session_manager_calls = []
+
+        def _capture_session_manager(**kwargs):
+            session_manager_calls.append(kwargs)
+            return mock_session_manager
+
+        mock_proxy = AsyncMock()
+        mock_proxy.start = AsyncMock(return_value=12345)
+        mock_proxy.access_token = "proxy-secret-token"
+        mock_proxy.warmup = AsyncMock(return_value=False)
+        mock_proxy.stop = AsyncMock()
+
+        with (
+            _patch_data_dir(tmp_path),
+            patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
+            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch("summon_claude.daemon.SessionManager", side_effect=_capture_session_manager),
+            patch("asyncio.start_unix_server", return_value=mock_server),
+            patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch("summon_claude.jira_proxy.JiraAuthProxy", return_value=mock_proxy),
+        ):
+            shutdown_event.set()
+            await daemon_main(MagicMock())
+
+        # Proxy is still started and port is passed despite warmup failure
+        mock_proxy.start.assert_awaited_once()
+        assert len(session_manager_calls) == 1
+        assert session_manager_calls[0]["jira_proxy_port"] == 12345
+        assert session_manager_calls[0]["jira_proxy_token"] == "proxy-secret-token"
 
 
 # ---------------------------------------------------------------------------

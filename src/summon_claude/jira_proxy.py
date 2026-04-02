@@ -13,7 +13,7 @@ import aiohttp
 from aiohttp import web
 
 from summon_claude.jira_auth import (
-    _REFRESH_BUFFER_SECONDS,
+    REFRESH_BUFFER_SECONDS,
     get_jira_token_path,
     load_jira_token,
     refresh_jira_token_if_needed,
@@ -126,6 +126,7 @@ class JiraAuthProxy:
         SEC-PROXY-02: token is only held in memory, never logged.
         """
         # Check token file mtime — invalidate cache if file changed on disk
+        # (e.g., external re-auth via `summon auth jira login`)
         try:
             current_mtime = self._token_path.stat().st_mtime
         except FileNotFoundError:
@@ -135,13 +136,13 @@ class JiraAuthProxy:
             self._token_expires_at = 0  # Force re-read
 
         # Hot path: cache is still fresh
-        if time.time() < self._token_expires_at - _REFRESH_BUFFER_SECONDS:
+        if time.time() < self._token_expires_at - REFRESH_BUFFER_SECONDS:
             return self._cached_token
 
         # Cold path: need refresh — serialize concurrent attempts
         async with self._refresh_lock:
             # Double-check after acquiring lock (another caller may have refreshed)
-            if time.time() < self._token_expires_at - _REFRESH_BUFFER_SECONDS:
+            if time.time() < self._token_expires_at - REFRESH_BUFFER_SECONDS:
                 return self._cached_token
 
             # SEC-PROXY-03: reuse existing flock-based refresh
@@ -153,10 +154,13 @@ class JiraAuthProxy:
             token_data = load_jira_token()
             if token_data is None:
                 # Backoff: avoid hammering the OAuth server on repeated failures.
-                # The hot-path check uses (expires_at - _REFRESH_BUFFER_SECONDS),
+                # The hot-path check uses (expires_at - REFRESH_BUFFER_SECONDS),
                 # so set expires_at far enough ahead to cover the buffer.
                 self._cached_token = None
-                self._token_expires_at = time.time() + _REFRESH_BUFFER_SECONDS + 60
+                self._token_expires_at = time.time() + REFRESH_BUFFER_SECONDS + 60
+                # Update mtime so the next call doesn't re-trigger via mtime mismatch
+                with contextlib.suppress(FileNotFoundError):
+                    self._token_file_mtime = self._token_path.stat().st_mtime
                 return None
 
             self._cached_token = token_data.get("access_token")

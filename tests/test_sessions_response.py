@@ -1397,6 +1397,31 @@ class TestStreamerHealthTrackerIntegration:
         assert tracker._failures.get("mcp__jira__") == 0
         callback.assert_not_called()
 
+    async def test_error_content_truncated_to_500_for_health_tracker(self):
+        """Health tracker receives at most 500 chars of error content."""
+        from summon_claude.sessions.mcp_health import McpHealthTracker
+
+        callback = AsyncMock()
+        tracker = McpHealthTracker(on_degraded=callback)
+        original_record = tracker.record_tool_result
+        recorded_lengths: list[int] = []
+
+        async def _spy(tool_name, *, is_error=None, error_content=None):
+            if error_content is not None:
+                recorded_lengths.append(len(error_content))
+            await original_record(tool_name, is_error=is_error, error_content=error_content)
+
+        tracker.record_tool_result = _spy  # type: ignore[assignment]
+
+        router = MagicMock()
+        router.post_to_active_thread = AsyncMock()
+        streamer = ResponseStreamer(router=router, mcp_health=tracker)
+        long_content = "HTTP 401 " + "x" * 600
+        streamer._turn.tool_names["tu_1"] = "mcp__jira__getIssue"
+        block = ToolResultBlock(tool_use_id="tu_1", content=long_content, is_error=True)
+        await streamer._handle_tool_result_block(block, parent_id=None)
+        assert recorded_lengths == [500]
+
     async def test_no_tracker_means_no_tracking(self):
         """When mcp_health is None, no tracking occurs."""
         router = MagicMock()

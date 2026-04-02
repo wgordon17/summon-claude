@@ -758,7 +758,7 @@ class TestModuleConstants:
     def test_trusted_token_hosts_pinned(self):
         assert (
             frozenset({"cf.mcp.atlassian.com", "auth.atlassian.com"})
-            == jira_auth._TRUSTED_TOKEN_HOSTS
+            == jira_auth._TRUSTED_ATLASSIAN_HOSTS
         )
 
     def test_token_preserve_fields_pinned(self):

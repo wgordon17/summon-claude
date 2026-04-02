@@ -174,8 +174,8 @@ Check for worktrees that are no longer needed:
 
 Triage open Jira issues assigned to this project:
 
-  JQL filter: `{jira_jql}`
-  Cloud ID: `{cloud_id}`
+  JQL filter: `{jirajql}`
+  Cloud ID: `{cloudid}`
 
 Triage protocol:
 1. Call `searchJiraIssuesUsingJql` with the JQL filter and Cloud ID above to fetch open issues.

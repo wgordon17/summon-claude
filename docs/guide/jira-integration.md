@@ -69,13 +69,12 @@ When Jira credentials are configured, summon adds the Atlassian Rovo MCP server 
 
 ### Token refresh
 
-Access tokens are short-lived (typically 1 hour). summon automatically refreshes tokens at session startup using the stored refresh token:
+Access tokens are short-lived (typically 1 hour). summon handles refresh automatically via two mechanisms:
 
-- Refresh happens before building the MCP config — Claude always gets a fresh token.
-- Concurrent sessions use file-based locking (`fcntl.flock`) to prevent races.
-- If refresh fails, the session proceeds without Jira tools (logged as a warning, not fatal).
+- **Daemon proxy (primary):** When the daemon is running, a localhost reverse proxy transparently refreshes tokens per-request. Sessions never see expired tokens.
+- **Session startup (fallback):** When no proxy is available, each session refreshes the token before building the MCP config. Concurrent sessions use file-based locking (`fcntl.flock`) to prevent races.
 
-You should not need to re-authenticate unless you revoke access in your Atlassian account settings.
+If refresh fails, the session proceeds without Jira tools (logged as a warning, not fatal). You should not need to re-authenticate unless you revoke access in your Atlassian account settings.
 
 ---
 

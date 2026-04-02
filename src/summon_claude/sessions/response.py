@@ -808,14 +808,17 @@ def _format_tool_result(block: ToolResultBlock) -> tuple[str, list[dict[str, Any
         return "", []
     if block.is_error:
         if isinstance(content, str):
-            redacted = redact_secrets(content)
-            preview = redacted[:200] + ("..." if len(redacted) > 200 else "")
+            # Slice first, then redact — avoids full-content regex for large results
+            preview = redact_secrets(content[:200])
+            if len(content) > 200:
+                preview += "..."
             text = f":x: Tool error: {preview}"
         else:
             text = ":x: Tool error"
     elif isinstance(content, str):
-        redacted_ok = redact_secrets(content)
-        preview = redacted_ok[:200] + ("..." if len(redacted_ok) > 200 else "")
+        preview = redact_secrets(content[:200])
+        if len(content) > 200:
+            preview += "..."
         text = f":white_check_mark: {preview}"
     else:
         text = ":white_check_mark: Tool completed"

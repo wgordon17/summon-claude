@@ -271,7 +271,6 @@ class TestJiraLogin:
         fresh_token = {
             "access_token": "refreshed-token",
             "cloud_name": "MyOrg",
-            "cloud_url": "https://myorg.atlassian.net",
         }
 
         with (
