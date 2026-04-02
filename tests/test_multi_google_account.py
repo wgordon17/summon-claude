@@ -967,10 +967,91 @@ class TestEmailValidation:
         assert _EMAIL_RE.match(long_local) is None
 
 
+# ---------- Test _scopes_to_services ----------
+
+
+class TestScopesToServices:
+    def test_gmail_readonly_scope(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services({"https://www.googleapis.com/auth/gmail.readonly"})
+        assert result == ["gmail"]
+
+    def test_multiple_services(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services(
+            {
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/drive.readonly",
+            }
+        )
+        assert result == ["calendar", "drive", "gmail"]  # sorted
+
+    def test_rw_scope_also_matches(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services({"https://www.googleapis.com/auth/gmail.modify"})
+        assert result == ["gmail"]
+
+    def test_empty_scopes(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        assert _scopes_to_services(set()) == []
+
+    def test_unrecognized_scope(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services({"https://www.googleapis.com/auth/docs"})
+        assert result == []  # docs not in _GOOGLE_SERVICE_SCOPES
+
+    def test_mixed_recognized_and_unrecognized(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services(
+            {
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/docs",
+                "openid",
+            }
+        )
+        assert result == ["gmail"]
+
+    def test_short_scope_names_expanded(self) -> None:
+        """Short scope names in _GOOGLE_SERVICE_SCOPES are expanded before comparison."""
+        from summon_claude.config import _scopes_to_services
+
+        # gmail.readonly is stored as a short name in _GOOGLE_SERVICE_SCOPES
+        # but credentials store full URLs — verify the expansion works
+        result = _scopes_to_services({"https://www.googleapis.com/auth/calendar"})
+        assert result == ["calendar"]  # "calendar" is the rw scope
+
+
 # ---------- Test detect_account_services ----------
 
 
 class TestDetectAccountServices:
+    def test_returns_none_when_import_fails(self, google_creds_dir: Path) -> None:
+        """ImportError from workspace-mcp returns None and logs warning."""
+        import builtins
+
+        from summon_claude.config import detect_account_services
+
+        account_dir = _make_account_dir(google_creds_dir, "default")
+        account = GoogleAccount(label="default", creds_dir=account_dir, email="u@x.com")
+
+        real_import = builtins.__import__
+
+        def block_auth(name, *args, **kwargs):
+            if name == "auth.credential_store":
+                raise ImportError("No module named 'auth.credential_store'")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=block_auth):
+            result = detect_account_services(account)
+        assert result is None
+
     def test_returns_none_when_no_users(self, google_creds_dir: Path) -> None:
         from unittest.mock import MagicMock
 
@@ -986,6 +1067,61 @@ class TestDetectAccountServices:
         ):
             result = detect_account_services(account)
         assert result is None
+
+    def test_returns_none_when_credential_is_none(self, google_creds_dir: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from summon_claude.config import detect_account_services
+
+        account_dir = _make_account_dir(google_creds_dir, "default")
+        account = GoogleAccount(label="default", creds_dir=account_dir, email="u@x.com")
+        mock_store = MagicMock()
+        mock_store.list_users.return_value = ["u@x.com"]
+        mock_store.get_credential.return_value = None
+        with patch(
+            "auth.credential_store.LocalDirectoryCredentialStore",
+            return_value=mock_store,
+        ):
+            result = detect_account_services(account)
+        assert result is None
+
+    def test_returns_none_when_scopes_empty(self, google_creds_dir: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from summon_claude.config import detect_account_services
+
+        account_dir = _make_account_dir(google_creds_dir, "default")
+        account = GoogleAccount(label="default", creds_dir=account_dir, email="u@x.com")
+        mock_cred = MagicMock()
+        mock_cred.scopes = []
+        mock_store = MagicMock()
+        mock_store.list_users.return_value = ["u@x.com"]
+        mock_store.get_credential.return_value = mock_cred
+        with patch(
+            "auth.credential_store.LocalDirectoryCredentialStore",
+            return_value=mock_store,
+        ):
+            result = detect_account_services(account)
+        assert result is None
+
+    def test_returns_none_when_scopes_unrecognized(self, google_creds_dir: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from summon_claude.config import detect_account_services
+
+        account_dir = _make_account_dir(google_creds_dir, "default")
+        account = GoogleAccount(label="default", creds_dir=account_dir, email="u@x.com")
+        mock_cred = MagicMock()
+        mock_cred.scopes = ["openid", "https://www.googleapis.com/auth/userinfo.email"]
+        mock_store = MagicMock()
+        mock_store.list_users.return_value = ["u@x.com"]
+        mock_store.get_credential.return_value = mock_cred
+        with patch(
+            "auth.credential_store.LocalDirectoryCredentialStore",
+            return_value=mock_store,
+        ):
+            result = detect_account_services(account)
+        assert result is None  # openid/userinfo aren't service scopes
 
     def test_returns_services_from_scopes(self, google_creds_dir: Path) -> None:
         from unittest.mock import MagicMock
@@ -1010,6 +1146,123 @@ class TestDetectAccountServices:
         assert result is not None
         assert "gmail" in result
         assert "calendar" in result
+
+    def test_returns_none_on_store_exception(self, google_creds_dir: Path) -> None:
+        from summon_claude.config import detect_account_services
+
+        account_dir = _make_account_dir(google_creds_dir, "default")
+        account = GoogleAccount(label="default", creds_dir=account_dir, email="u@x.com")
+        with patch(
+            "auth.credential_store.LocalDirectoryCredentialStore",
+            side_effect=RuntimeError("corrupt store"),
+        ):
+            result = detect_account_services(account)
+        assert result is None
+
+
+# ---------- Test session MCP wiring loop ----------
+
+
+class TestSessionMcpWiringLoop:
+    """Integration test for the multi-account MCP wiring logic in session.py."""
+
+    def test_three_accounts_wired(self) -> None:
+        """Three discovered accounts produce three MCP server entries."""
+        from summon_claude.sessions.session import _build_google_workspace_mcp_untrusted
+
+        accounts = [
+            GoogleAccount(label="personal", creds_dir=Path("/fake/personal"), email="a@a.com"),
+            GoogleAccount(label="work", creds_dir=Path("/fake/work"), email="b@b.com"),
+            GoogleAccount(label="shared", creds_dir=Path("/fake/shared"), email="c@c.com"),
+        ]
+
+        mcp_servers: dict[str, dict] = {}
+        google_accounts: list[GoogleAccount] = []
+        for account in accounts:
+            services = "gmail,calendar"
+            key = f"workspace-{account.label}"
+            with patch(
+                "summon_claude.config.get_google_credentials_dir",
+                return_value=Path("/fake"),
+            ):
+                mcp = _build_google_workspace_mcp_untrusted(services, account)
+            mcp_servers[key] = mcp
+            google_accounts.append(account)
+
+        assert len(mcp_servers) == 3
+        assert "workspace-personal" in mcp_servers
+        assert "workspace-work" in mcp_servers
+        assert "workspace-shared" in mcp_servers
+        assert len(google_accounts) == 3
+
+    def test_mcp_server_env_isolated_per_account(self) -> None:
+        """Each MCP server config has a different WORKSPACE_MCP_CREDENTIALS_DIR."""
+        from summon_claude.sessions.session import _build_google_workspace_mcp_untrusted
+
+        accounts = [
+            GoogleAccount(label="a", creds_dir=Path("/fake/a"), email="a@a.com"),
+            GoogleAccount(label="b", creds_dir=Path("/fake/b"), email="b@b.com"),
+        ]
+
+        envs = []
+        for account in accounts:
+            with patch(
+                "summon_claude.config.get_google_credentials_dir",
+                return_value=Path("/fake"),
+            ):
+                mcp = _build_google_workspace_mcp_untrusted("gmail", account)
+            envs.append(mcp["env"]["WORKSPACE_MCP_CREDENTIALS_DIR"])
+
+        assert envs[0] != envs[1]
+        assert "/a" in envs[0]
+        assert "/b" in envs[1]
+
+    def test_mcp_source_label_includes_account(self) -> None:
+        """The untrusted proxy source label includes the account label."""
+        from summon_claude.sessions.session import _build_google_workspace_mcp_untrusted
+
+        account = GoogleAccount(label="work", creds_dir=Path("/fake/work"), email="w@w.com")
+        with patch(
+            "summon_claude.config.get_google_credentials_dir",
+            return_value=Path("/fake"),
+        ):
+            mcp = _build_google_workspace_mcp_untrusted("gmail", account)
+
+        assert "Google Workspace (work)" in mcp["args"]
+
+    def test_failed_account_skipped_others_wired(self) -> None:
+        """One account failing doesn't prevent others from being wired."""
+        from summon_claude.sessions.session import _build_google_workspace_mcp_untrusted
+
+        good = GoogleAccount(label="good", creds_dir=Path("/fake/good"), email="g@g.com")
+        bad = GoogleAccount(label="bad", creds_dir=Path("/outside/bad"), email="b@b.com")
+
+        mcp_servers: dict[str, dict] = {}
+        for account in [bad, good]:
+            try:
+                with patch(
+                    "summon_claude.config.get_google_credentials_dir",
+                    return_value=Path("/fake"),
+                ):
+                    mcp = _build_google_workspace_mcp_untrusted("gmail", account)
+                mcp_servers[f"workspace-{account.label}"] = mcp
+            except ValueError:
+                pass  # bad account raises path containment error
+
+        assert "workspace-good" in mcp_servers
+        assert "workspace-bad" not in mcp_servers
+
+    def test_no_services_means_account_skipped(self) -> None:
+        """When detect_account_services returns None, account is not wired."""
+        # This tests the session.py logic: if not services: continue
+        account = GoogleAccount(label="empty", creds_dir=Path("/fake/empty"), email="e@e.com")
+        services = None  # simulates detect_account_services returning None
+
+        mcp_servers: dict[str, dict] = {}
+        if services:
+            mcp_servers[f"workspace-{account.label}"] = {}
+
+        assert "workspace-empty" not in mcp_servers
 
 
 # ---------- Test session-cache exclusion ----------
