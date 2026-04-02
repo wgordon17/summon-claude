@@ -2183,12 +2183,13 @@ class SummonSession:
                 except TimeoutError:
                     logger.warning("Jira compaction-loop refresh timed out")
                 _jira_tok = _ja.load_jira_token()
-                if _jira_tok:
+                _jira_at = _jira_tok.get("access_token") if _jira_tok else None
+                if _jira_at:
                     mcp_servers["jira"] = {
                         "type": "http",
                         "url": "https://mcp.atlassian.com/v1/mcp",
                         "headers": {
-                            "Authorization": f"Bearer {_jira_tok['access_token']}",
+                            "Authorization": f"Bearer {_jira_at}",
                         },
                     }
 

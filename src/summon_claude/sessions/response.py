@@ -814,7 +814,8 @@ def _format_tool_result(block: ToolResultBlock) -> tuple[str, list[dict[str, Any
         else:
             text = ":x: Tool error"
     elif isinstance(content, str):
-        preview = content[:200] + ("..." if len(content) > 200 else "")
+        redacted_ok = redact_secrets(content)
+        preview = redacted_ok[:200] + ("..." if len(redacted_ok) > 200 else "")
         text = f":white_check_mark: {preview}"
     else:
         text = ":white_check_mark: Tool completed"
