@@ -17,6 +17,9 @@ pytestmark = pytest.mark.docs
 
 _SUMMON_TEST_PREFIX = "SUMMON_TEST_"
 
+# Files that legitimately reference removed/historical env vars
+_EXCLUDED_FILES = {"changelog.md"}
+
 
 def _is_non_config(var: str) -> bool:
     """Filter out SUMMON_TEST_* vars (test fixtures, not real config)."""
@@ -35,6 +38,8 @@ def test_documented_env_vars_exist_in_config(
     """All SUMMON_* vars mentioned in docs must be real SummonConfig fields."""
     all_documented: dict[str, list[Path]] = {}
     for md_path in all_md_files:
+        if md_path.name in _EXCLUDED_FILES:
+            continue
         content = md_path.read_text(encoding="utf-8")
         for var in parse_env_var_refs(content):
             all_documented.setdefault(var, []).append(md_path)

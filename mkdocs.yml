@@ -87,6 +87,8 @@ plugins:
           - concepts/*.md
         Troubleshooting:
           - troubleshooting.md
+        Changelog:
+          - changelog.md
         Development:
           - development/*.md
 
@@ -137,6 +139,7 @@ nav:
     - Context Management: concepts/context.md
     - Security: concepts/security.md
   - Troubleshooting: troubleshooting.md
+  - Changelog: changelog.md
   - Development:
     - development/index.md
     - Contributing: development/contributing.md
