@@ -2176,14 +2176,13 @@ class SummonSession:
             # Compaction-loop Jira token refresh (non-proxy path only).
             # Proxy-backed sessions don't need this — the proxy handles refresh.
             if self._jira_proxy_port is None and self._config.jira_enabled:
+                from summon_claude import jira_auth as _ja  # noqa: PLC0415
+
                 try:
-                    await asyncio.wait_for(
-                        refresh_jira_token_if_needed(),
-                        timeout=35,  # already imported above
-                    )
+                    await asyncio.wait_for(_ja.refresh_jira_token_if_needed(), timeout=35)
                 except TimeoutError:
                     logger.warning("Jira compaction-loop refresh timed out")
-                _jira_tok = load_jira_token()  # already imported above
+                _jira_tok = _ja.load_jira_token()
                 if _jira_tok:
                     mcp_servers["jira"] = {
                         "type": "http",

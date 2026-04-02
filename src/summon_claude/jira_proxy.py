@@ -122,6 +122,11 @@ class JiraAuthProxy:
 
             token_data = load_jira_token()
             if token_data is None:
+                # Backoff: avoid hammering the OAuth server on repeated failures.
+                # The hot-path check uses (expires_at - _REFRESH_BUFFER_SECONDS),
+                # so set expires_at far enough ahead to cover the buffer.
+                self._cached_token = None
+                self._token_expires_at = time.time() + _REFRESH_BUFFER_SECONDS + 60
                 return None
 
             self._cached_token = token_data.get("access_token")
