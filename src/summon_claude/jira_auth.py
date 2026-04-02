@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -216,8 +217,16 @@ async def register_client(metadata: dict[str, Any], redirect_uri: str) -> tuple[
         ) as resp,
     ):
         if resp.status not in (200, 201):
-            body = await resp.text()
-            raise RuntimeError(f"DCR failed with HTTP {resp.status}: {body[:200]}")
+            # SEC-P4-004: field-filter error response, don't reflect raw body
+            try:
+                err_json = await resp.json()
+                err = err_json.get("error", "unknown")
+                desc = err_json.get("error_description", "")
+            except Exception:
+                err, desc = "parse_error", ""
+            raise RuntimeError(
+                f"DCR failed (HTTP {resp.status}): {err}" + (f" — {desc}" if desc else "")
+            )
         data = await resp.json()
 
     client_id = data.get("client_id")
@@ -361,8 +370,8 @@ async def start_auth_flow() -> dict[str, Any]:
     received_state = result["state"]
     received_code = result["code"]
 
-    # Validate state to prevent CSRF (SC-01)
-    if received_state != state:
+    # Validate state to prevent CSRF (SC-01) — constant-time comparison
+    if not hmac.compare_digest(received_state or "", state):
         raise RuntimeError("OAuth state mismatch — possible CSRF attack. Aborting token exchange.")
 
     if not received_code:

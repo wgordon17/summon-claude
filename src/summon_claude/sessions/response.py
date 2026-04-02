@@ -393,7 +393,7 @@ class ResponseStreamer:
         if self._mcp_health is not None:
             tool_name = self._turn.tool_names.get(block.tool_use_id)
             if tool_name:
-                error_text = str(block.content)[:500] if block.is_error else None
+                error_text = redact_secrets(str(block.content))[:500] if block.is_error else None
                 await self._mcp_health.record_tool_result(
                     tool_name, is_error=block.is_error, error_content=error_text
                 )

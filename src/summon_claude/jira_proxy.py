@@ -25,13 +25,38 @@ logger = logging.getLogger(__name__)
 
 _TARGET_URL = "https://mcp.atlassian.com"
 
+# SEC-DR-003: forward only MCP-relevant request headers (allowlist)
+_ALLOWED_REQUEST_HEADERS = frozenset(
+    {
+        "content-type",
+        "accept",
+        "content-length",
+        "mcp-session-id",
+        "last-event-id",
+    }
+)
+
+# Strip transport + cookie/security response headers
+_STRIP_RESPONSE_HEADERS = frozenset(
+    {
+        "transfer-encoding",
+        "content-length",
+        "set-cookie",
+        "set-cookie2",
+        "strict-transport-security",
+    }
+)
+
 
 class JiraAuthProxy:
     """Reverse proxy for Jira MCP that transparently refreshes OAuth tokens."""
 
     def __init__(self) -> None:
-        self._app = web.Application()
+        # SEC-PROXY-BODY-01: explicit body size limit (4 MB)
+        self._app = web.Application(client_max_size=4 * 1024 * 1024)
         self._app.router.add_route("*", "/{path_info:.*}", self._handle_request)
+        # SEC-DR-005: disable aiohttp access logging to prevent header leakage
+        logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._port: int = 0
@@ -66,8 +91,9 @@ class JiraAuthProxy:
         # Extract bound port from runner addresses (private API — aiohttp doesn't
         # expose the bound port via a public API as of 3.x)
         addrs = self._runner.addresses
-        if addrs:
-            self._port = addrs[0][1]  # (host, port) tuple
+        if not addrs:
+            raise RuntimeError("JiraAuthProxy: could not determine bound port")
+        self._port = addrs[0][1]  # (host, port) tuple
         # SEC-DR-001: limit concurrent upstream connections
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=60),
@@ -154,14 +180,15 @@ class JiraAuthProxy:
         # Build upstream URL
         url = f"{_TARGET_URL}{request.path_qs}"
 
-        # Build forwarded headers
-        headers: dict[str, str] = {}
-        for key, value in request.headers.items():
-            if key.lower() not in ("host", "x-summon-proxy-token"):
-                headers[key] = value
-        headers["Host"] = "mcp.atlassian.com"
-        headers["Authorization"] = f"Bearer {token}"
+        # SEC-DR-003: forward only MCP-relevant headers (allowlist, not denylist)
+        headers: dict[str, str] = {
+            "Host": "mcp.atlassian.com",
+            "Authorization": f"Bearer {token}",
+        }
         # SEC-PROXY-02: do NOT log headers dict (contains Bearer token)
+        for key, value in request.headers.items():
+            if key.lower() in _ALLOWED_REQUEST_HEADERS:
+                headers[key] = value
 
         # Read request body
         body = await request.read()
@@ -177,10 +204,8 @@ class JiraAuthProxy:
             ) as upstream:
                 # Stream response back — handles both HTTP and SSE transparently
                 response = web.StreamResponse(status=upstream.status)
-                # Copy headers except Transfer-Encoding and Content-Length
-                # (aiohttp manages these for chunked streaming)
                 for key, value in upstream.headers.items():
-                    if key.lower() not in ("transfer-encoding", "content-length"):
+                    if key.lower() not in _STRIP_RESPONSE_HEADERS:
                         response.headers[key] = value
                 await response.prepare(request)
                 async for chunk in upstream.content.iter_any():
