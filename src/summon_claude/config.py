@@ -526,6 +526,7 @@ def detect_account_services(account: GoogleAccount) -> str | None:
     try:
         from auth.credential_store import LocalDirectoryCredentialStore  # noqa: PLC0415
     except ImportError:
+        logger.warning("workspace-mcp auth module not importable — cannot detect services")
         return None
 
     try:

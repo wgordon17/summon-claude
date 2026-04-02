@@ -1914,15 +1914,18 @@ class SummonSession:
             accounts = discover_google_accounts()
             for account in accounts:
                 try:
-                    services = (
-                        detect_account_services(account) or self._config.scribe_google_services
-                    )
-                    if services:
-                        key = f"workspace-{account.label}"
-                        mcp = _build_google_workspace_mcp_untrusted(services, account)
-                        mcp_servers[key] = mcp
-                        google_mcp_wired = True
-                        google_accounts.append(account)
+                    services = detect_account_services(account)
+                    if not services:
+                        logger.warning(
+                            "Scribe: could not detect services for account %s, skipping",
+                            account.label,
+                        )
+                        continue
+                    key = f"workspace-{account.label}"
+                    mcp = _build_google_workspace_mcp_untrusted(services, account)
+                    mcp_servers[key] = mcp
+                    google_mcp_wired = True
+                    google_accounts.append(account)
                 except Exception:
                     logger.warning(
                         "Scribe: failed to wire Google account %s, skipping",

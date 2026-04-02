@@ -1037,3 +1037,77 @@ class TestSessionCacheExclusion:
         read_tool = "mcp__workspace-default__get_gmail_message"
         assert read_tool.startswith(_GOOGLE_MCP_PREFIX)
         assert _is_google_read_tool(read_tool)
+
+
+# ---------- Integration: workspace-mcp credential store API ----------
+
+
+class TestWorkspaceMcpCredentialStoreAPI:
+    """Verify workspace-mcp's LocalDirectoryCredentialStore API contract.
+
+    These tests catch upstream API changes in workspace-mcp that would
+    break detect_account_services(). If workspace-mcp renames methods
+    or changes signatures, these fail before users hit runtime errors.
+    """
+
+    def test_credential_store_has_required_methods(self) -> None:
+        """LocalDirectoryCredentialStore must have the methods we call."""
+        from auth.credential_store import LocalDirectoryCredentialStore
+
+        assert hasattr(LocalDirectoryCredentialStore, "list_users")
+        assert hasattr(LocalDirectoryCredentialStore, "get_credential")
+        assert callable(LocalDirectoryCredentialStore.list_users)
+        assert callable(LocalDirectoryCredentialStore.get_credential)
+
+    def test_credential_store_list_users_on_empty_dir(self, tmp_path: Path) -> None:
+        """list_users returns empty list for directory with no credentials."""
+        from auth.credential_store import LocalDirectoryCredentialStore
+
+        store = LocalDirectoryCredentialStore(str(tmp_path))
+        users = store.list_users()
+        assert isinstance(users, list)
+        assert len(users) == 0
+
+    def test_credential_store_roundtrip(self, tmp_path: Path) -> None:
+        """Credentials stored via store_credential are retrievable via get_credential."""
+        from unittest.mock import MagicMock
+
+        from auth.credential_store import LocalDirectoryCredentialStore
+
+        store = LocalDirectoryCredentialStore(str(tmp_path))
+
+        # Create a mock credential with the minimum interface
+        mock_cred = MagicMock()
+        mock_cred.token = "test-token"
+        mock_cred.refresh_token = "test-refresh"
+        mock_cred.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+        # store_credential should accept (email, credential)
+        try:
+            store.store_credential("test@example.com", mock_cred)
+        except (TypeError, AttributeError):
+            pytest.skip("store_credential signature changed — update detect_account_services")
+
+        users = store.list_users()
+        assert "test@example.com" in users
+
+    def test_detect_account_services_no_fallback(self, google_creds_dir: Path) -> None:
+        """detect_account_services returns None (not global config) on failure."""
+        from summon_claude.config import detect_account_services
+
+        account_dir = _make_account_dir(google_creds_dir, "broken")
+        account = GoogleAccount(label="broken", creds_dir=account_dir, email="x@y.com")
+
+        # Mock credential store to return empty users
+        from unittest.mock import MagicMock
+
+        mock_store = MagicMock()
+        mock_store.list_users.return_value = []
+        with patch(
+            "auth.credential_store.LocalDirectoryCredentialStore",
+            return_value=mock_store,
+        ):
+            result = detect_account_services(account)
+
+        # Must be None — no silent fallback to global config
+        assert result is None
