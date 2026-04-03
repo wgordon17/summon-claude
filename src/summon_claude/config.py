@@ -390,19 +390,21 @@ def _migrate_flat_credentials() -> None:
         if "@" in f.stem and f.parent == creds_dir:
             files_to_move.append(f)
 
+    moved_count = 0
     for src in files_to_move:
         dest = default_dir / src.name
         try:
             src.rename(dest)
             dest.chmod(0o600)
+            moved_count += 1
         except FileNotFoundError:
             pass  # Concurrent migration — file already moved
 
-    if files_to_move:
+    if moved_count:
         logger.info(
             "Migrated %d Google credential files to default/ subdirectory. "
             "MCP tool names changed from mcp__workspace__* to mcp__workspace-default__*.",
-            len(files_to_move),
+            moved_count,
         )
 
 
@@ -1216,7 +1218,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS",
         group="Scribe Slack",
         label="Monitored Slack Channels",
-        help_text="Comma-separated Slack channel names for the scribe collector",
+        help_text="Comma-separated Slack channel IDs for the scribe collector",
         input_type="text",
         visible=_scribe_slack_enabled,
     ),

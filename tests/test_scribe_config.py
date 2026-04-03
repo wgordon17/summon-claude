@@ -14,11 +14,6 @@ from summon_claude.config import SummonConfig
 _GA = "summon_claude.cli.google_auth"
 
 
-def _no_auto_detect():
-    """Context manager that disables all scribe auto-detection primitives."""
-    return _with_auto_detect()
-
-
 def _with_auto_detect(
     *,
     google_mcp: bool = False,
@@ -46,7 +41,7 @@ def _make_config(**overrides) -> SummonConfig:
 
 class TestScribeConfigDefaults:
     def test_scribe_disabled_by_default(self):
-        with _no_auto_detect():
+        with _with_auto_detect():
             cfg = _make_config()
         assert cfg.scribe_enabled is False
 
@@ -71,7 +66,7 @@ class TestScribeConfigDefaults:
         assert cfg.scribe_quiet_hours == ""
 
     def test_google_enabled_default_false(self):
-        with _no_auto_detect():
+        with _with_auto_detect():
             cfg = _make_config()
         assert cfg.scribe_google_enabled is False
 
@@ -94,7 +89,7 @@ class TestScribeConfigDefaults:
         assert cfg.scribe_google_enabled is False
 
     def test_slack_disabled_by_default(self):
-        with _no_auto_detect():
+        with _with_auto_detect():
             cfg = _make_config()
         assert cfg.scribe_slack_enabled is False
 

@@ -141,6 +141,19 @@ class TestMigrateFlatCredentials:
         assert not (default_dir / "config.json").exists()
         assert (google_creds_dir / "config.json").exists()
 
+    def test_credential_json_only_triggers_migration(self, google_creds_dir: Path) -> None:
+        """Migration triggers when only credential JSON exists (no client_env)."""
+        (google_creds_dir / "user@gmail.com.json").write_text('{"token":"abc"}')
+        with patch(
+            "summon_claude.config.get_google_credentials_dir", return_value=google_creds_dir
+        ):
+            _migrate_flat_credentials()
+        default_dir = google_creds_dir / "default"
+        assert default_dir.exists()
+        assert (default_dir / "user@gmail.com.json").exists()
+        # Original should be moved
+        assert not (google_creds_dir / "user@gmail.com.json").exists()
+
 
 # ---------- Test discover_google_accounts ----------
 
@@ -253,6 +266,20 @@ class TestDiscoverGoogleAccounts:
         # Account still discovered but email is None (invalid format)
         assert len(accounts) == 1
         assert accounts[0].email is None
+
+    def test_multi_credential_picks_alphabetical_first(self, google_creds_dir: Path) -> None:
+        """When multiple credential JSONs exist, alphabetically first email wins."""
+        acct_dir = google_creds_dir / "personal"
+        acct_dir.mkdir()
+        (acct_dir / "client_env").write_text("CLIENT_ID=xxx\nCLIENT_SECRET=yyy")
+        (acct_dir / "alice@example.com.json").write_text('{"token":"a"}')
+        (acct_dir / "zara@example.com.json").write_text('{"token":"z"}')
+        with patch(
+            "summon_claude.config.get_google_credentials_dir", return_value=google_creds_dir
+        ):
+            accounts = discover_google_accounts()
+        assert len(accounts) == 1
+        assert accounts[0].email == "alice@example.com"
 
     def test_all_reserved_labels_excluded(self, google_creds_dir: Path) -> None:
         """Every label in RESERVED_ACCOUNT_LABELS is individually excluded."""
@@ -626,6 +653,7 @@ class TestScribePrompt:
         )
         assert "mcp__workspace-personal__search_gmail_messages" in result
         assert "mcp__workspace-work__get_events" in result
+        assert "mcp__workspace-personal__search_drive_files" in result
 
     def test_scan_prompt_backward_compat(self) -> None:
         from summon_claude.sessions.prompts.scribe import build_scribe_scan_prompt
@@ -1259,8 +1287,8 @@ class TestSessionMcpWiringLoop:
             envs.append(mcp["env"]["WORKSPACE_MCP_CREDENTIALS_DIR"])
 
         assert envs[0] != envs[1]
-        assert "/a" in envs[0]
-        assert "/b" in envs[1]
+        assert envs[0] == str(Path("/fake/a").resolve())
+        assert envs[1] == str(Path("/fake/b").resolve())
 
     def test_mcp_source_label_includes_account(self) -> None:
         """The untrusted proxy source label includes the account label."""
@@ -1592,3 +1620,22 @@ class TestConfigCheckMultiAccountDisplay:
         label, installed = self._build_label(accounts, bin_exists=False)
         assert "1 account" in label
         assert installed is False
+
+
+# ---------- Test _check_google_status internal validation ----------
+
+
+class TestCheckGoogleStatusInternalValidation:
+    """_check_google_status does not validate account labels itself — callers must."""
+
+    def test_nonexistent_account_returns_none(self, google_creds_dir: Path) -> None:
+        """An account label that doesn't match a directory returns None (not an error)."""
+        from summon_claude.cli.google_auth import _check_google_status
+
+        _make_account_dir(google_creds_dir, "default")
+        with patch(
+            "summon_claude.cli.google_auth.get_google_credentials_dir",
+            return_value=google_creds_dir,
+        ):
+            result = _check_google_status(account="does-not-exist", quiet=True)
+        assert result is None

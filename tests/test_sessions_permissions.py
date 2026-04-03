@@ -1062,6 +1062,30 @@ class TestGoogleWriteToolNeverSessionCached:
         assert provider.post_interactive.call_count == 2
 
 
+class TestGoogleWriteToolCacheExclusion:
+    """Defense-in-depth: _cache_session_approvals never caches Google write tools."""
+
+    def test_cache_session_approvals_excludes_google_write_tools(self):
+        """approve_session for a Google write tool must NOT populate either cache."""
+        handler, _, _ = make_handler()
+        batch_id = "test-batch"
+        handler._batch.tool_names[batch_id] = ["mcp__workspace-default__send_gmail_message"]
+        handler._batch.tool_inputs[batch_id] = [{"to": "user@example.com", "subject": "hi"}]
+        handler._cache_session_approvals(batch_id)
+        tool = "mcp__workspace-default__send_gmail_message"
+        assert tool not in handler._session_approved_tools
+        assert tool not in handler._session_approved_tool_args
+
+    def test_cache_session_approvals_allows_google_read_tools(self):
+        """approve_session for a Google read tool SHOULD populate bare-name cache."""
+        handler, _, _ = make_handler()
+        batch_id = "test-batch"
+        handler._batch.tool_names[batch_id] = ["mcp__workspace-default__get_gmail_message"]
+        handler._batch.tool_inputs[batch_id] = [{}]
+        handler._cache_session_approvals(batch_id)
+        assert "mcp__workspace-default__get_gmail_message" in handler._session_approved_tools
+
+
 class TestIdentityVerificationFailClosed:
     """Guard tests: identity checks are fail-closed (no truthy bypass)."""
 

@@ -8,10 +8,11 @@ Permission check flow (handle() steps):
   2.  Static allowlist → _AUTO_APPROVE_TOOLS (Read, Grep, Glob, …)
   2b. GitHub deny-list → _GITHUB_MCP_REQUIRE_APPROVAL always sent to Slack
   2c. GitHub allowlist → exact names and get_/list_/search_ prefixes
-  2d. Summon MCP       → summon-cli/summon-slack/summon-canvas tools
-  2e. Session cache    → tools approved for the session lifetime
-  2f. Arg cache        → per-argument exact-match (Bash cmd, file path, etc.)
-  2g. Auto-classifier  → Sonnet classifier (only active after worktree entry)
+  2d. Google MCP       → workspace-{label}__* read tools auto-approved
+  2e. Summon MCP       → summon-cli/summon-slack/summon-canvas tools
+  2f. Session cache    → tools approved for the session lifetime
+  2g. Arg cache        → per-argument exact-match (Bash cmd, file path, etc.)
+  2h. Auto-classifier  → Sonnet classifier (only active after worktree entry)
   3.  SDK allow        → secondary, after static lists
   4.  Slack HITL       → interactive approve/deny/approve-for-session buttons
 """
@@ -130,6 +131,11 @@ def _is_google_read_tool(tool_name: str) -> bool:
         return False  # malformed — fail closed
     suffix = parts[2]
     return suffix.startswith(_GOOGLE_READ_TOOL_PREFIXES)
+
+
+def _is_google_write_tool(tool_name: str) -> bool:
+    """True if tool is a Google Workspace MCP tool that is NOT read-only."""
+    return tool_name.startswith(_GOOGLE_MCP_PREFIX) and not _is_google_read_tool(tool_name)
 
 
 _PERMISSION_TIMEOUT_S = 600  # 10 minutes
@@ -394,9 +400,7 @@ class PermissionHandler:
         if (
             tool_name in self._session_approved_tools
             and tool_name not in _GITHUB_MCP_REQUIRE_APPROVAL
-            and not (
-                tool_name.startswith(_GOOGLE_MCP_PREFIX) and not _is_google_read_tool(tool_name)
-            )
+            and not _is_google_write_tool(tool_name)
         ):
             logger.debug("Session-approved tool: %s", tool_name)
             return PermissionResultAllow()
@@ -409,9 +413,7 @@ class PermissionHandler:
         if (
             cacheable_arg
             and tool_name not in _GITHUB_MCP_REQUIRE_APPROVAL
-            and not (
-                tool_name.startswith(_GOOGLE_MCP_PREFIX) and not _is_google_read_tool(tool_name)
-            )
+            and not _is_google_write_tool(tool_name)
             and cacheable_arg in self._session_approved_tool_args.get(tool_name, set())
         ):
             logger.debug("Session-approved %s arg: %s", tool_name, cacheable_arg)
@@ -819,7 +821,7 @@ class PermissionHandler:
             if name in _GITHUB_MCP_REQUIRE_APPROVAL:
                 continue
             # Google Workspace write tools — never session-cached
-            if name.startswith(_GOOGLE_MCP_PREFIX) and not _is_google_read_tool(name):
+            if _is_google_write_tool(name):
                 continue
             if name in _WRITE_GATED_TOOLS:
                 inp = tool_inputs_list[i] if i < len(tool_inputs_list) else {}

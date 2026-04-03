@@ -52,20 +52,31 @@ _SETUP_STEPS = [
 ]
 
 
+def _roadmap_rows(step: int, completed: dict[int, str]) -> list[tuple[str, dict[str, Any]]]:
+    """Return step rows as (text, click_style_kwargs) tuples.
+
+    Shared by _setup_roadmap (plain text) and _setup_header (styled terminal).
+    """
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for i, title in enumerate(_SETUP_STEPS, 1):
+        if i in completed:
+            detail = f" [{completed[i]}]" if completed[i] else ""
+            rows.append((f"  ✓ {i}. {title}{detail}", {"fg": "green"}))
+        elif i == step:
+            rows.append((f"  ◉ {i}. {title}", {"bold": True}))
+        else:
+            rows.append((f"    {i}. {title}", {"dim": True}))
+    return rows
+
+
 def _setup_roadmap(step: int, completed: dict[int, str]) -> str:
     """Return the step roadmap as a plain-text string (for pick titles)."""
     lines = [
         f"Google OAuth Setup                            Step {step} of {len(_SETUP_STEPS)}",
         "-" * 60,
     ]
-    for i, title in enumerate(_SETUP_STEPS, 1):
-        if i in completed:
-            detail = f" [{completed[i]}]" if completed[i] else ""
-            lines.append(f"  ✓ {i}. {title}{detail}")
-        elif i == step:
-            lines.append(f"  ◉ {i}. {title}")
-        else:
-            lines.append(f"    {i}. {title}")
+    for text, _style in _roadmap_rows(step, completed):
+        lines.append(text)
     lines.append("")
     lines.append("-" * 60)
     lines.append("")
@@ -81,14 +92,8 @@ def _setup_header(step: int, completed: dict[int, str], *, skip_clear: bool = Fa
         bold=True,
     )
     click.echo(click.style("-" * 60, dim=True))
-    for i, title in enumerate(_SETUP_STEPS, 1):
-        if i in completed:
-            detail = f" [{completed[i]}]" if completed[i] else ""
-            click.secho(f"  ✓ {i}. {title}{detail}", fg="green")
-        elif i == step:
-            click.secho(f"  ◉ {i}. {title}", bold=True)
-        else:
-            click.secho(f"    {i}. {title}", dim=True)
+    for text, style in _roadmap_rows(step, completed):
+        click.secho(text, **style)
     click.echo()
 
 
