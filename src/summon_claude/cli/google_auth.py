@@ -14,10 +14,10 @@ from typing import Any
 import click
 
 from summon_claude.config import (
-    _ACCOUNT_LABEL_RE,
-    _GOOGLE_SCOPE_PREFIX,
-    _GOOGLE_SERVICE_SCOPES,
-    _RESERVED_ACCOUNT_LABELS,
+    ACCOUNT_LABEL_RE,
+    GOOGLE_SCOPE_PREFIX,
+    GOOGLE_SERVICE_SCOPES,
+    RESERVED_ACCOUNT_LABELS,
     get_config_file,
     get_google_credentials_dir,
 )
@@ -27,12 +27,12 @@ logger = logging.getLogger(__name__)
 
 def _validate_account_label(label: str) -> str:
     """Validate and return an account label for Google credential directories."""
-    if not _ACCOUNT_LABEL_RE.match(label):
+    if not ACCOUNT_LABEL_RE.match(label):
         raise click.BadParameter(
             f"Account label must be 1-20 lowercase alphanumeric characters or hyphens, "
             f"starting with a letter. Got: {label!r}"
         )
-    if label in _RESERVED_ACCOUNT_LABELS:
+    if label in RESERVED_ACCOUNT_LABELS:
         raise click.BadParameter(
             f"Account label {label!r} is reserved (conflicts with summon MCP server names)"
         )
@@ -696,8 +696,8 @@ def google_setup(account: str | None = None) -> None:
 
 _GOOGLE_BASE_SCOPES = [
     "openid",
-    f"{_GOOGLE_SCOPE_PREFIX}userinfo.email",
-    f"{_GOOGLE_SCOPE_PREFIX}userinfo.profile",
+    f"{GOOGLE_SCOPE_PREFIX}userinfo.email",
+    f"{GOOGLE_SCOPE_PREFIX}userinfo.profile",
 ]
 
 
@@ -711,10 +711,10 @@ def _google_scopes_for_services(services: list[str]) -> list[str]:
     for spec in services:
         name, _, mode = spec.partition(":")
         tier = "rw" if mode == "rw" else "ro"
-        entry = _GOOGLE_SERVICE_SCOPES.get(name)
+        entry = GOOGLE_SERVICE_SCOPES.get(name)
         if entry:
             for s in entry[tier]:
-                full = s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}"
+                full = s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}"
                 if full not in scopes:
                     scopes.append(full)
     return scopes
@@ -723,12 +723,12 @@ def _google_scopes_for_services(services: list[str]) -> list[str]:
 def _describe_granted_scopes(granted: set[str]) -> str:
     """Return a short human summary of granted Google scopes."""
     parts: list[str] = []
-    for svc, tiers in _GOOGLE_SERVICE_SCOPES.items():
+    for svc, tiers in GOOGLE_SERVICE_SCOPES.items():
         rw_scopes = {
-            s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
         }
         ro_scopes = {
-            s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["ro"]
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["ro"]
         }
         if rw_scopes & granted:
             parts.append(f"{svc} (read-write)")
@@ -869,9 +869,9 @@ def google_auth(account: str | None = None) -> None:
     # Detect which services already have write access.
     granted = set(existing_cred.scopes or []) if existing_cred else set()
     existing_rw: set[str] = set()
-    for svc, tiers in _GOOGLE_SERVICE_SCOPES.items():
+    for svc, tiers in GOOGLE_SERVICE_SCOPES.items():
         rw_scopes = {
-            s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
         }
         if rw_scopes & granted:
             existing_rw.add(svc)

@@ -428,11 +428,11 @@ def discover_google_accounts() -> list[GoogleAccount]:
             continue
 
         # Validate label
-        if not _ACCOUNT_LABEL_RE.match(item.name):
+        if not ACCOUNT_LABEL_RE.match(item.name):
             logger.warning("Skipping Google account directory with invalid label: %s", item.name)
             continue
 
-        if item.name in _RESERVED_ACCOUNT_LABELS:
+        if item.name in RESERVED_ACCOUNT_LABELS:
             logger.warning("Skipping Google account with reserved label: %s", item.name)
             continue
 
@@ -447,7 +447,7 @@ def discover_google_accounts() -> list[GoogleAccount]:
 
         # Extract and validate email from first credential file
         raw_email = cred_files[0].stem
-        email: str | None = raw_email if _EMAIL_RE.match(raw_email) else None
+        email: str | None = raw_email if EMAIL_RE.match(raw_email) else None
         if email is None and raw_email:
             logger.warning(
                 "Google account %s has credential file with invalid email format: %s",
@@ -484,30 +484,66 @@ def google_mcp_env_for_account(account: GoogleAccount) -> dict[str, str]:
 # Read-only by default.  Append `:rw` to a service name to opt into write
 # scopes (e.g. "calendar:rw").  This keeps the consent screen minimal while
 # still being compatible with workspace-mcp's has_required_scopes() hierarchy.
-_GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
-_GOOGLE_SERVICE_SCOPES: dict[str, dict[str, list[str]]] = {
+GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
+GOOGLE_SERVICE_SCOPES: dict[str, dict[str, list[str]]] = {
     "gmail": {
         "ro": ["gmail.readonly"],
         "rw": ["gmail.modify", "gmail.settings.basic"],
     },
     "drive": {
         "ro": ["drive.readonly"],
-        "rw": ["drive"],
+        "rw": ["drive", "drive.file"],
     },
     "calendar": {
         "ro": ["calendar.readonly"],
-        "rw": ["calendar"],
+        "rw": ["calendar", "calendar.events"],
+    },
+    "docs": {
+        "ro": ["documents.readonly"],
+        "rw": ["documents"],
+    },
+    "sheets": {
+        "ro": ["spreadsheets.readonly"],
+        "rw": ["spreadsheets"],
+    },
+    "chat": {
+        "ro": ["chat.messages.readonly", "chat.spaces.readonly"],
+        "rw": ["chat.messages", "chat.spaces"],
+    },
+    "forms": {
+        "ro": ["forms.body.readonly", "forms.responses.readonly"],
+        "rw": ["forms.body"],
+    },
+    "slides": {
+        "ro": ["presentations.readonly"],
+        "rw": ["presentations"],
+    },
+    "tasks": {
+        "ro": ["tasks.readonly"],
+        "rw": ["tasks"],
+    },
+    "contacts": {
+        "ro": ["contacts.readonly"],
+        "rw": ["contacts"],
+    },
+    "search": {
+        "ro": ["cse"],
+        "rw": ["cse"],
+    },
+    "appscript": {
+        "ro": ["script.projects.readonly", "script.deployments.readonly"],
+        "rw": ["script.projects", "script.deployments"],
     },
 }
 
 
 def _scopes_to_services(granted: set[str]) -> list[str]:
-    """Invert _GOOGLE_SERVICE_SCOPES: granted scopes -> list of service names."""
+    """Invert GOOGLE_SERVICE_SCOPES: granted scopes -> list of service names."""
     services = []
-    for service, scope_sets in _GOOGLE_SERVICE_SCOPES.items():
+    for service, scope_sets in GOOGLE_SERVICE_SCOPES.items():
         all_scopes = scope_sets.get("ro", []) + scope_sets.get("rw", [])
         full_scopes = {
-            s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}" for s in all_scopes
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in all_scopes
         }
         if granted & full_scopes:
             services.append(service)
@@ -544,28 +580,13 @@ def detect_account_services(account: GoogleAccount) -> str | None:
         return None
 
 
-VALID_GOOGLE_SERVICES = frozenset(
-    {
-        "gmail",
-        "drive",
-        "calendar",
-        "docs",
-        "sheets",
-        "chat",
-        "forms",
-        "slides",
-        "tasks",
-        "contacts",
-        "search",
-        "appscript",
-    }
-)
+VALID_GOOGLE_SERVICES: frozenset[str] = frozenset(GOOGLE_SERVICE_SCOPES.keys())
 
-_ACCOUNT_LABEL_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
-_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]{1,253}\.[a-zA-Z]{2,}$")
+ACCOUNT_LABEL_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
+EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]{1,253}\.[a-zA-Z]{2,}$")
 
 # Reserved labels that could create confusing MCP tool namespaces
-_RESERVED_ACCOUNT_LABELS = frozenset({"cli", "slack", "canvas"})
+RESERVED_ACCOUNT_LABELS = frozenset({"cli", "slack", "canvas"})
 
 
 @dataclass(frozen=True)
@@ -959,8 +980,8 @@ def _google_credentials_exist() -> bool:
         if (
             item.is_dir()
             and not item.name.startswith(".")
-            and _ACCOUNT_LABEL_RE.match(item.name)
-            and item.name not in _RESERVED_ACCOUNT_LABELS
+            and ACCOUNT_LABEL_RE.match(item.name)
+            and item.name not in RESERVED_ACCOUNT_LABELS
             and (item / "client_env").exists()
             and any(f.suffix == ".json" and "@" in f.stem for f in item.glob("*.json"))
         ):

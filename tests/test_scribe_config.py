@@ -842,13 +842,13 @@ class TestGoogleScopeHelpers:
     def test_describe_granted_scopes(self):
         """_describe_granted_scopes produces human-readable summaries."""
         from summon_claude.cli.google_auth import (
-            _GOOGLE_SCOPE_PREFIX,
+            GOOGLE_SCOPE_PREFIX,
             _describe_granted_scopes,
         )
 
         granted = {
-            f"{_GOOGLE_SCOPE_PREFIX}gmail.readonly",
-            f"{_GOOGLE_SCOPE_PREFIX}calendar",
+            f"{GOOGLE_SCOPE_PREFIX}gmail.readonly",
+            f"{GOOGLE_SCOPE_PREFIX}calendar",
         }
         desc = _describe_granted_scopes(granted)
         assert "gmail (read-only)" in desc

@@ -8,9 +8,9 @@ from unittest.mock import patch
 import pytest
 
 from summon_claude.config import (
-    _ACCOUNT_LABEL_RE,
-    _EMAIL_RE,
-    _RESERVED_ACCOUNT_LABELS,
+    ACCOUNT_LABEL_RE,
+    EMAIL_RE,
+    RESERVED_ACCOUNT_LABELS,
     GoogleAccount,
     _google_credentials_exist,
     _migrate_flat_credentials,
@@ -255,8 +255,8 @@ class TestDiscoverGoogleAccounts:
         assert accounts[0].email is None
 
     def test_all_reserved_labels_excluded(self, google_creds_dir: Path) -> None:
-        """Every label in _RESERVED_ACCOUNT_LABELS is individually excluded."""
-        for label in _RESERVED_ACCOUNT_LABELS:
+        """Every label in RESERVED_ACCOUNT_LABELS is individually excluded."""
+        for label in RESERVED_ACCOUNT_LABELS:
             _make_account_dir(google_creds_dir, label, f"{label}@example.com")
         with patch(
             "summon_claude.config.get_google_credentials_dir", return_value=google_creds_dir
@@ -828,13 +828,13 @@ class TestScribePrompt:
 
 class TestGuardTests:
     def test_account_label_re_pinned(self) -> None:
-        assert _ACCOUNT_LABEL_RE.pattern == r"^[a-z][a-z0-9-]{0,19}$"
+        assert ACCOUNT_LABEL_RE.pattern == r"^[a-z][a-z0-9-]{0,19}$"
 
     def test_email_re_pinned(self) -> None:
-        assert _EMAIL_RE.pattern == r"^[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]{1,253}\.[a-zA-Z]{2,}$"
+        assert EMAIL_RE.pattern == r"^[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]{1,253}\.[a-zA-Z]{2,}$"
 
     def test_reserved_labels_pinned(self) -> None:
-        assert frozenset({"cli", "slack", "canvas"}) == _RESERVED_ACCOUNT_LABELS
+        assert frozenset({"cli", "slack", "canvas"}) == RESERVED_ACCOUNT_LABELS
 
     def test_google_mcp_prefix_pinned(self) -> None:
         from summon_claude.sessions.permissions import _GOOGLE_MCP_PREFIX
@@ -873,25 +873,25 @@ class TestGuardTests:
             acct.label = "mutated"  # type: ignore[misc]
 
     def test_reserved_labels_are_lowercase(self) -> None:
-        """All reserved labels are lowercase — consistent with _ACCOUNT_LABEL_RE."""
-        for label in _RESERVED_ACCOUNT_LABELS:
+        """All reserved labels are lowercase — consistent with ACCOUNT_LABEL_RE."""
+        for label in RESERVED_ACCOUNT_LABELS:
             assert label == label.lower(), f"Reserved label {label!r} is not lowercase"
 
     def test_reserved_labels_match_label_re(self) -> None:
-        """Reserved labels are syntactically valid account names per _ACCOUNT_LABEL_RE."""
-        for label in _RESERVED_ACCOUNT_LABELS:
-            assert _ACCOUNT_LABEL_RE.match(label), (
-                f"Reserved label {label!r} does not match _ACCOUNT_LABEL_RE"
+        """Reserved labels are syntactically valid account names per ACCOUNT_LABEL_RE."""
+        for label in RESERVED_ACCOUNT_LABELS:
+            assert ACCOUNT_LABEL_RE.match(label), (
+                f"Reserved label {label!r} does not match ACCOUNT_LABEL_RE"
             )
 
     def test_account_label_re_valid_examples(self) -> None:
-        """Sample valid labels match _ACCOUNT_LABEL_RE."""
+        """Sample valid labels match ACCOUNT_LABEL_RE."""
         valid = ["a", "default", "personal", "work", "my-account", "z9", "abc123"]
         for label in valid:
-            assert _ACCOUNT_LABEL_RE.match(label), f"{label!r} should be valid"
+            assert ACCOUNT_LABEL_RE.match(label), f"{label!r} should be valid"
 
     def test_account_label_re_invalid_examples(self) -> None:
-        """Sample invalid labels do not match _ACCOUNT_LABEL_RE."""
+        """Sample invalid labels do not match ACCOUNT_LABEL_RE."""
         invalid = [
             "123",  # starts with digit
             "MyAccount",  # uppercase
@@ -901,7 +901,7 @@ class TestGuardTests:
             "has space",  # space
         ]
         for label in invalid:
-            assert not _ACCOUNT_LABEL_RE.match(label), f"{label!r} should be invalid"
+            assert not ACCOUNT_LABEL_RE.match(label), f"{label!r} should be invalid"
 
 
 # ---------- Email validation ----------
@@ -909,19 +909,19 @@ class TestGuardTests:
 
 class TestEmailValidation:
     def test_valid_email(self) -> None:
-        assert _EMAIL_RE.match("user@gmail.com") is not None
+        assert EMAIL_RE.match("user@gmail.com") is not None
 
     def test_malformed_email(self) -> None:
-        assert _EMAIL_RE.match("bad\nname@x") is None
+        assert EMAIL_RE.match("bad\nname@x") is None
 
     def test_injection_attempt(self) -> None:
-        assert _EMAIL_RE.match("## Injected@evil") is None
+        assert EMAIL_RE.match("## Injected@evil") is None
 
     def test_no_at_sign(self) -> None:
-        assert _EMAIL_RE.match("noatsign.json") is None
+        assert EMAIL_RE.match("noatsign.json") is None
 
     def test_valid_email_with_dots_and_plus(self) -> None:
-        assert _EMAIL_RE.match("first.last+tag@sub.domain.com") is not None
+        assert EMAIL_RE.match("first.last+tag@sub.domain.com") is not None
 
     @pytest.mark.parametrize(
         "email",
@@ -934,7 +934,7 @@ class TestEmailValidation:
         ],
     )
     def test_valid_emails_parametrized(self, email: str) -> None:
-        assert _EMAIL_RE.match(email), f"Expected valid: {email}"
+        assert EMAIL_RE.match(email), f"Expected valid: {email}"
 
     @pytest.mark.parametrize(
         "email",
@@ -950,7 +950,7 @@ class TestEmailValidation:
         ],
     )
     def test_invalid_emails_parametrized(self, email: str) -> None:
-        assert not _EMAIL_RE.match(email), f"Expected invalid: {email!r}"
+        assert not EMAIL_RE.match(email), f"Expected invalid: {email!r}"
 
     @pytest.mark.parametrize(
         "injection",
@@ -962,13 +962,13 @@ class TestEmailValidation:
         ],
     )
     def test_control_character_injection_rejected(self, injection: str) -> None:
-        """Emails containing control characters do not match _EMAIL_RE."""
-        assert not _EMAIL_RE.match(injection), f"Expected invalid: {injection!r}"
+        """Emails containing control characters do not match EMAIL_RE."""
+        assert not EMAIL_RE.match(injection), f"Expected invalid: {injection!r}"
 
     def test_email_tld_must_be_at_least_two_chars(self) -> None:
         """TLD of 1 character is rejected; 2 characters is accepted."""
-        assert not _EMAIL_RE.match("user@example.c")  # 1-char TLD
-        assert _EMAIL_RE.match("user@example.co")  # 2-char TLD
+        assert not EMAIL_RE.match("user@example.c")  # 1-char TLD
+        assert EMAIL_RE.match("user@example.co")  # 2-char TLD
 
     def test_valid_email_used_as_json_filename_stem(self) -> None:
         """Valid emails round-trip correctly as JSON filename stems."""
@@ -976,12 +976,12 @@ class TestEmailValidation:
         for email in valid_emails:
             stem = Path(f"{email}.json").stem
             assert stem == email
-            assert _EMAIL_RE.match(stem), f"{stem!r} should match _EMAIL_RE"
+            assert EMAIL_RE.match(stem), f"{stem!r} should match EMAIL_RE"
 
     def test_email_re_length_bounded(self) -> None:
-        """_EMAIL_RE rejects emails with local part > 64 chars."""
+        """EMAIL_RE rejects emails with local part > 64 chars."""
         long_local = "a" * 65 + "@example.com"
-        assert _EMAIL_RE.match(long_local) is None
+        assert EMAIL_RE.match(long_local) is None
 
 
 # ---------- Test _scopes_to_services ----------
@@ -1021,7 +1021,7 @@ class TestScopesToServices:
         from summon_claude.config import _scopes_to_services
 
         result = _scopes_to_services({"https://www.googleapis.com/auth/docs"})
-        assert result == []  # docs not in _GOOGLE_SERVICE_SCOPES
+        assert result == []  # "docs" is not a valid scope name (correct scope is "documents")
 
     def test_mixed_recognized_and_unrecognized(self) -> None:
         from summon_claude.config import _scopes_to_services
@@ -1036,13 +1036,41 @@ class TestScopesToServices:
         assert result == ["gmail"]
 
     def test_short_scope_names_expanded(self) -> None:
-        """Short scope names in _GOOGLE_SERVICE_SCOPES are expanded before comparison."""
+        """Short scope names in GOOGLE_SERVICE_SCOPES are expanded before comparison."""
         from summon_claude.config import _scopes_to_services
 
-        # gmail.readonly is stored as a short name in _GOOGLE_SERVICE_SCOPES
+        # gmail.readonly is stored as a short name in GOOGLE_SERVICE_SCOPES
         # but credentials store full URLs — verify the expansion works
         result = _scopes_to_services({"https://www.googleapis.com/auth/calendar"})
         assert result == ["calendar"]  # "calendar" is the rw scope
+
+    def test_docs_scope_detected(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services({"https://www.googleapis.com/auth/documents.readonly"})
+        assert result == ["docs"]
+
+    def test_sheets_scope_detected(self) -> None:
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services({"https://www.googleapis.com/auth/spreadsheets.readonly"})
+        assert result == ["sheets"]
+
+    def test_all_twelve_services_detectable(self) -> None:
+        """Every service in GOOGLE_SERVICE_SCOPES can be detected from at least one scope."""
+        from summon_claude.config import (
+            GOOGLE_SCOPE_PREFIX,
+            GOOGLE_SERVICE_SCOPES,
+            _scopes_to_services,
+        )
+
+        for service, scope_sets in GOOGLE_SERVICE_SCOPES.items():
+            all_scopes = scope_sets.get("ro", []) + scope_sets.get("rw", [])
+            full = {
+                s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in all_scopes
+            }
+            result = _scopes_to_services(full)
+            assert service in result, f"Service {service!r} not detected from scopes {full}"
 
 
 # ---------- Test detect_account_services ----------
