@@ -138,6 +138,7 @@ def _is_google_write_tool(tool_name: str) -> bool:
     """True if tool is a Google Workspace MCP tool that is NOT read-only."""
     return tool_name.startswith(_GOOGLE_MCP_PREFIX) and not _is_google_read_tool(tool_name)
 
+
 _JIRA_MCP_PREFIX = "mcp__jira__"
 
 # Hard deny: write tools + fetchAtlassian. Checked BEFORE auto-approve (SC-04, SEC-017).
