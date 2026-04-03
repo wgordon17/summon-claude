@@ -461,24 +461,6 @@ async def _exchange_code(  # noqa: PLR0913
         return body
 
 
-def _get_token_if_fresh(token_data: dict[str, Any]) -> dict[str, Any] | None:
-    """Return token if still fresh (within expiry buffer), otherwise None.
-
-    This is a sync, no-I/O check. For async token refresh, call
-    ``refresh_jira_token_if_needed()`` before calling this.
-
-    Args:
-        token_data: Token dict loaded from disk.
-
-    Returns:
-        The same token dict if still fresh, or None if expired.
-    """
-    expires_at = token_data.get("expires_at", 0)
-    if time.time() < (expires_at - REFRESH_BUFFER_SECONDS):
-        return token_data
-    return None
-
-
 async def refresh_jira_token_if_needed(*, force: bool = False) -> None:  # noqa: PLR0911, PLR0912, PLR0915
     """Async entry point: refresh the Jira token on disk if it is near expiry.
 

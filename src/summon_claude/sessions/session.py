@@ -2063,8 +2063,11 @@ class SummonSession:
         # jira_mcp is already computed above — use it as the enabled signal.
         # PERF-002: jira_cloud_id is extracted from the same token load above.
         pm_jira_enabled = bool(jira_mcp) and is_pm
+        if pm_jira_enabled and not jira_cloud_id:
+            logger.warning("Jira enabled but no cloud_id — disabling Jira triage for PM")
+            pm_jira_enabled = False
         pm_jira_jql: str | None = None
-        pmjira_cloud_id: str | None = jira_cloud_id if pm_jira_enabled else None
+        pm_jira_cloud_id: str | None = jira_cloud_id if pm_jira_enabled else None
         if pm_jira_enabled and self._project_id:
             try:
                 project_row = await rt.registry.get_project(self._project_id)
@@ -2097,7 +2100,7 @@ class SummonSession:
                         is_git_repo=is_git_repo,
                         jira_enabled=pm_jira_enabled,
                         jira_jql=pm_jira_jql,
-                        jira_cloud_id=pmjira_cloud_id,
+                        jira_cloud_id=pm_jira_cloud_id,
                     ),
                     internal=True,
                     max_lifetime_s=0,

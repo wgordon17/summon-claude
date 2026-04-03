@@ -87,7 +87,7 @@ class McpHealthTracker:
         # Check for auth-specific errors
         is_auth_error = False
         if error_content:
-            lower = error_content.lower()
+            lower = error_content[:500].lower()
             is_auth_error = any(pat in lower for pat in _AUTH_ERROR_PATTERNS_STRICT)
 
         # Determine threshold

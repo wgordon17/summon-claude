@@ -9,13 +9,13 @@ from summon_claude.sessions.prompts.shared import _HEADLESS_BOILERPLATE
 # Rejects markdown structural characters (# * [ ] ` { } < >) that could alter
 # prompt rendering. Note: _ is preserved (valid in JQL custom field names, and
 # backtick fence neutralizes italic). ! is preserved (JQL uses != operator).
-_JQL_UNSAFE_RE = re.compile(r"[^\x20-\x7E]|[#*\[\]`{}<>]")
+_PROMPT_UNSAFE_RE = re.compile(r"[^\x20-\x7E]|[#*\[\]`{}<>\\]")
 
 
 def sanitize_prompt_value(value: str) -> str:
-    """Sanitize an operator-supplied JQL string for safe prompt embedding."""
+    """Sanitize an operator-supplied value for safe prompt embedding."""
     s = value.replace("\n", " ").replace("\r", " ")
-    return _JQL_UNSAFE_RE.sub("", s).strip()
+    return _PROMPT_UNSAFE_RE.sub("", s).strip()
 
 
 _REVIEWER_SYSTEM_PROMPT_TEMPLATE = """\

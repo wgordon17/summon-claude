@@ -272,7 +272,7 @@ async def _run_startup_probe(bolt_router: BoltRouter) -> None:
         raise SystemExit(1)
 
 
-async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0915
+async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
     """Async daemon entry point.
 
     Creates BoltRouter, EventDispatcher, and SessionManager, wires them
@@ -321,12 +321,6 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0915
             jira_proxy_port = await jira_proxy.start()
             jira_proxy_token = jira_proxy.access_token
             logger.info("Jira auth proxy started on port %d", jira_proxy_port)
-            # Proactive token check at startup
-            if not await jira_proxy.warmup():
-                logger.warning(
-                    "Jira proxy started but token refresh failed — "
-                    "Jira tools will return 502 until re-auth"
-                )
         except Exception:
             logger.warning(
                 "Jira proxy startup failed — sessions use direct token",
@@ -385,6 +379,24 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0915
         # Layer 3: SIGALRM OS watchdog (last resort — only on Unix)
         _start_sigalrm_watchdog()
 
+        # Warm up Jira proxy token cache in background (non-blocking).
+        # The proxy is already functional — warmup avoids a 502 on the first
+        # tool call if the cached token is expired, but doesn't block startup.
+        warmup_task: asyncio.Task[None] | None = None
+        if jira_proxy is not None:
+
+            async def _jira_warmup() -> None:
+                try:
+                    if not await jira_proxy.warmup():
+                        logger.warning(
+                            "Jira proxy warmup: token refresh failed — "
+                            "Jira tools will return 502 until re-auth"
+                        )
+                except Exception:
+                    logger.warning("Jira proxy warmup failed", exc_info=True)
+
+            warmup_task = asyncio.create_task(_jira_warmup(), name="jira-proxy-warmup")
+
         logger.info("Daemon started (pid=%d, socket=%s)", os.getpid(), socket_path)
 
         # Wait until shutdown is requested (by signal, grace timer, or error)
@@ -392,14 +404,19 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0915
 
         logger.info("Daemon shutdown initiated")
 
-        # Cancel watchdog tasks before draining sessions
+        # Cancel background tasks before draining sessions
         health_task.cancel()
         watchdog_task.cancel()
-        for task in (health_task, watchdog_task):
+        if warmup_task is not None:
+            warmup_task.cancel()
+        cleanup_tasks = [health_task, watchdog_task]
+        if warmup_task is not None:
+            cleanup_tasks.append(warmup_task)
+        for task in cleanup_tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception) as e:
-                logger.debug("Watchdog task cleanup: %s", e)
+                logger.debug("Background task cleanup: %s", e)
 
         # Three-phase shutdown: stop accepting → drain sessions → stop Bolt
         control_server.close()

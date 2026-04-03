@@ -811,13 +811,13 @@ def _format_tool_result(block: ToolResultBlock) -> tuple[str, list[dict[str, Any
             # Redact a generous window (500 chars) to catch secrets near the
             # 200-char display boundary, then truncate for display.
             redacted = redact_secrets(content[:500])
-            preview = redacted[:200] + ("..." if len(content) > 200 else "")
+            preview = redacted[:200] + ("..." if len(redacted) > 200 else "")
             text = f":x: Tool error: {preview}"
         else:
             text = ":x: Tool error"
     elif isinstance(content, str):
         redacted = redact_secrets(content[:500])
-        preview = redacted[:200] + ("..." if len(content) > 200 else "")
+        preview = redacted[:200] + ("..." if len(redacted) > 200 else "")
         text = f":white_check_mark: {preview}"
     else:
         text = ":white_check_mark: Tool completed"
