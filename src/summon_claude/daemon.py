@@ -272,7 +272,7 @@ async def _run_startup_probe(bolt_router: BoltRouter) -> None:
         raise SystemExit(1)
 
 
-async def daemon_main(config: SummonConfig) -> None:
+async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
     """Async daemon entry point.
 
     Creates BoltRouter, EventDispatcher, and SessionManager, wires them
@@ -306,86 +306,144 @@ async def daemon_main(config: SummonConfig) -> None:
 
     if bolt_router.bot_user_id is None:  # pragma: no cover — start() always sets this
         raise RuntimeError("BoltRouter.start() did not set bot_user_id")
-    session_manager = SessionManager(
-        config=config,
-        web_client=bolt_router.web_client,
-        bot_user_id=bolt_router.bot_user_id,
-        dispatcher=dispatcher,
-        event_probe=bolt_router.event_probe,
-    )
-    dispatcher.set_command_handler(session_manager.handle_summon_command)
-    dispatcher.set_resume_handler(session_manager.resume_from_channel)
 
-    # Start Unix socket control server
-    control_server = await asyncio.start_unix_server(
-        session_manager.handle_client,
-        path=str(socket_path),
-        limit=MAX_MESSAGE_SIZE,
-    )
-    # Restrict socket to owner-only (mode 600) so other users cannot connect
-    try:
-        socket_path.chmod(0o600)
-    except FileNotFoundError:
-        logger.debug("daemon.sock not found for chmod (abstract socket or test mock)")
-    logger.info("Control socket listening at %s", socket_path)
+    # Start Jira auth proxy if credentials exist
+    jira_proxy = None
+    jira_proxy_port = None
+    jira_proxy_token = None
+    from summon_claude.jira_auth import jira_credentials_exist  # noqa: PLC0415
 
-    # Signal handling — SIGTERM/SIGINT trigger graceful shutdown
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, session_manager.shutdown_event.set)
+    if jira_credentials_exist():
+        from summon_claude.jira_proxy import JiraAuthProxy  # noqa: PLC0415
 
-    # Layer 1: Socket health monitor (BoltRouter-owned)
-    # Register shutdown callback so health monitor can trigger daemon shutdown on exhaustion
-    bolt_router.shutdown_callback = session_manager.shutdown_event.set
-
-    def _on_event_failure() -> None:
-        session_manager.set_suspend_on_shutdown()
-
-    bolt_router.event_failure_callback = _on_event_failure
-    health_task = bolt_router.start_health_monitor()
-
-    # Layer 2: Daemon-level event loop watchdog
-    watchdog_task = asyncio.create_task(
-        _watchdog_loop(session_manager.shutdown_event), name="daemon-watchdog"
-    )
-
-    # Layer 3: SIGALRM OS watchdog (last resort — only on Unix)
-    _start_sigalrm_watchdog()
-
-    logger.info("Daemon started (pid=%d, socket=%s)", os.getpid(), socket_path)
-
-    # Wait until shutdown is requested (by signal, grace timer, or error)
-    await session_manager.shutdown_event.wait()
-
-    logger.info("Daemon shutdown initiated")
-
-    # Cancel watchdog tasks before draining sessions
-    health_task.cancel()
-    watchdog_task.cancel()
-    for task in (health_task, watchdog_task):
         try:
-            await task
-        except (asyncio.CancelledError, Exception) as e:
-            logger.debug("Watchdog task cleanup: %s", e)
+            jira_proxy = JiraAuthProxy()
+            jira_proxy_port = await jira_proxy.start()
+            jira_proxy_token = jira_proxy.access_token
+            logger.info("Jira auth proxy started on port %d", jira_proxy_port)
+        except Exception:
+            logger.warning(
+                "Jira proxy startup failed — sessions use direct token",
+                exc_info=True,
+            )
+            jira_proxy = None
+            jira_proxy_port = None
+            jira_proxy_token = None
 
-    # Three-phase shutdown: stop accepting → drain sessions → stop Bolt
-    control_server.close()
-    try:
-        await asyncio.wait_for(control_server.wait_closed(), timeout=5.0)
-    except TimeoutError:
-        logger.debug("Control server close timed out")
+    try:  # try/finally ensures jira_proxy.stop() on any startup/runtime failure
+        session_manager = SessionManager(
+            config=config,
+            web_client=bolt_router.web_client,
+            bot_user_id=bolt_router.bot_user_id,
+            dispatcher=dispatcher,
+            event_probe=bolt_router.event_probe,
+            jira_proxy_port=jira_proxy_port,
+            jira_proxy_token=jira_proxy_token,
+        )
+        dispatcher.set_command_handler(session_manager.handle_summon_command)
+        dispatcher.set_resume_handler(session_manager.resume_from_channel)
 
-    await session_manager.shutdown()
-    await bolt_router.stop()
+        # Start Unix socket control server
+        control_server = await asyncio.start_unix_server(
+            session_manager.handle_client,
+            path=str(socket_path),
+            limit=MAX_MESSAGE_SIZE,
+        )
+        # Restrict socket to owner-only (mode 600) so other users cannot connect
+        try:
+            socket_path.chmod(0o600)
+        except FileNotFoundError:
+            logger.debug("daemon.sock not found for chmod (abstract socket or test mock)")
+        logger.info("Control socket listening at %s", socket_path)
 
-    # Disarm SIGALRM so we don't get killed during clean exit
-    _disarm_sigalrm_watchdog()
+        # Signal handling — SIGTERM/SIGINT trigger graceful shutdown
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, session_manager.shutdown_event.set)
 
-    # Cleanup filesystem artefacts
-    pid_path.unlink(missing_ok=True)
-    socket_path.unlink(missing_ok=True)
+        # Layer 1: Socket health monitor (BoltRouter-owned)
+        # Register shutdown callback so health monitor can trigger daemon shutdown on exhaustion
+        bolt_router.shutdown_callback = session_manager.shutdown_event.set
 
-    logger.info("Daemon stopped cleanly")
+        def _on_event_failure() -> None:
+            session_manager.set_suspend_on_shutdown()
+
+        bolt_router.event_failure_callback = _on_event_failure
+        health_task = bolt_router.start_health_monitor()
+
+        # Layer 2: Daemon-level event loop watchdog
+        watchdog_task = asyncio.create_task(
+            _watchdog_loop(session_manager.shutdown_event), name="daemon-watchdog"
+        )
+
+        # Layer 3: SIGALRM OS watchdog (last resort — only on Unix)
+        _start_sigalrm_watchdog()
+
+        # Warm up Jira proxy token cache in background (non-blocking).
+        # The proxy is already functional — warmup avoids a 502 on the first
+        # tool call if the cached token is expired, but doesn't block startup.
+        warmup_task: asyncio.Task[None] | None = None
+        if jira_proxy is not None:
+
+            async def _jira_warmup() -> None:
+                try:
+                    if not await jira_proxy.warmup():
+                        logger.warning(
+                            "Jira proxy warmup: token refresh failed — "
+                            "Jira tools will return 502 until re-auth"
+                        )
+                except Exception:
+                    logger.warning("Jira proxy warmup failed", exc_info=True)
+
+            warmup_task = asyncio.create_task(_jira_warmup(), name="jira-proxy-warmup")
+
+        logger.info("Daemon started (pid=%d, socket=%s)", os.getpid(), socket_path)
+
+        # Wait until shutdown is requested (by signal, grace timer, or error)
+        await session_manager.shutdown_event.wait()
+
+        logger.info("Daemon shutdown initiated")
+
+        # Cancel background tasks before draining sessions
+        health_task.cancel()
+        watchdog_task.cancel()
+        if warmup_task is not None:
+            warmup_task.cancel()
+        cleanup_tasks = [health_task, watchdog_task]
+        if warmup_task is not None:
+            cleanup_tasks.append(warmup_task)
+        for task in cleanup_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception) as e:
+                logger.debug("Background task cleanup: %s", e)
+
+        # Three-phase shutdown: stop accepting → drain sessions → stop Bolt
+        control_server.close()
+        try:
+            await asyncio.wait_for(control_server.wait_closed(), timeout=5.0)
+        except TimeoutError:
+            logger.debug("Control server close timed out")
+
+        await session_manager.shutdown()
+
+        await bolt_router.stop()
+
+        # Disarm SIGALRM so we don't get killed during clean exit
+        _disarm_sigalrm_watchdog()
+
+        # Cleanup filesystem artefacts
+        pid_path.unlink(missing_ok=True)
+        socket_path.unlink(missing_ok=True)
+
+        logger.info("Daemon stopped cleanly")
+    finally:
+        # Stop Jira proxy after sessions drain (sessions may still be making Jira calls)
+        if jira_proxy is not None:
+            try:
+                await jira_proxy.stop()
+            except Exception:
+                logger.warning("Jira proxy stop failed", exc_info=True)
 
 
 async def _watchdog_loop(shutdown_event: asyncio.Event) -> None:

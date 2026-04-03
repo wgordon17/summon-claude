@@ -1547,12 +1547,14 @@ class TestMCPRegistration:
         opts = SessionOptions(cwd="/tmp", name="test", pm_profile=True)
         assert opts.pm_profile is True
 
-    async def _capture_mcp_servers_with_config(self, **config_overrides) -> dict:
-        """Like _capture_mcp_servers but with custom config overrides."""
+    async def _capture_mcp_servers_with_config(
+        self, *, option_overrides: dict | None = None, **config_overrides
+    ) -> dict:
+        """Like _capture_mcp_servers but with custom config/option overrides."""
         cfg = make_config(**config_overrides)
         session = SummonSession(
             config=cfg,
-            options=make_options(),
+            options=make_options(**(option_overrides or {})),
             auth=make_auth(),
             session_id="test-session",
         )
@@ -1590,6 +1592,136 @@ class TestMCPRegistration:
     async def test_github_mcp_not_wired_when_not_configured(self):
         result = await self._capture_mcp_servers_with_config()
         assert "github" not in result["mcp_servers"]
+
+    async def test_jira_mcp_wired_when_credentials_configured(self):
+        _jira_token = {
+            "access_token": "test-jira-token",
+            "cloud_id": "abc-123",
+            "expires_at": 9999999999,
+        }
+        with (
+            patch(
+                "summon_claude.jira_auth.jira_credentials_exist",
+                return_value=True,
+            ),
+            patch(
+                "summon_claude.jira_auth.refresh_jira_token_if_needed",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "summon_claude.jira_auth.load_jira_token",
+                return_value=_jira_token,
+            ),
+        ):
+            result = await self._capture_mcp_servers_with_config()
+        assert "jira" in result["mcp_servers"]
+        assert result["mcp_servers"]["jira"]["type"] == "http"
+
+    async def test_jira_mcp_sc03_no_refresh_token_in_mcp_config(self):
+        """SC-03: refresh_token and client_secret must never leak into MCP config."""
+        _jira_token = {
+            "access_token": "test-jira-token",
+            "refresh_token": "secret-refresh-token",
+            "client_id": "secret-client-id",
+            "client_secret": "secret-client-secret",
+            "cloud_id": "abc-123",
+            "expires_at": 9999999999,
+        }
+        with (
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch("summon_claude.jira_auth.refresh_jira_token_if_needed", new_callable=AsyncMock),
+            patch("summon_claude.jira_auth.load_jira_token", return_value=_jira_token),
+        ):
+            result = await self._capture_mcp_servers_with_config()
+        jira_cfg = result["mcp_servers"]["jira"]
+        jira_str = str(jira_cfg)
+        assert "secret-refresh-token" not in jira_str
+        assert "secret-client-secret" not in jira_str
+        assert "secret-client-id" not in jira_str
+
+    async def test_jira_mcp_proxy_backed_path(self):
+        """When jira_proxy_port is set, MCP config uses localhost proxy URL."""
+        with (
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch("summon_claude.jira_auth.get_jira_token_path") as mock_path,
+        ):
+            mock_path.return_value.read_text.return_value = (
+                '{"access_token": "tok", "cloud_id": "abc-123"}'
+            )
+            result = await self._capture_mcp_servers_with_config(
+                option_overrides={
+                    "jira_proxy_port": 8888,
+                    "jira_proxy_token": "proxy-tok",
+                },
+            )
+        jira_cfg = result["mcp_servers"]["jira"]
+        assert jira_cfg["url"] == "http://127.0.0.1:8888/v1/mcp"
+        assert jira_cfg["headers"]["X-Summon-Proxy-Token"] == "proxy-tok"
+        # Proxy path must NOT include Authorization header
+        assert "Authorization" not in jira_cfg["headers"]
+        # SC-03: no access token secrets in proxy-backed config
+        assert "Bearer" not in str(jira_cfg)
+
+    async def test_jira_mcp_not_wired_when_no_credentials(self):
+        with patch(
+            "summon_claude.jira_auth.jira_credentials_exist",
+            return_value=False,
+        ):
+            result = await self._capture_mcp_servers_with_config()
+        assert "jira" not in result["mcp_servers"]
+
+    async def test_jira_mcp_not_wired_when_load_fails_after_refresh(self):
+        """Credentials exist but load_jira_token returns None → Jira MCP not wired."""
+        with (
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch("summon_claude.jira_auth.refresh_jira_token_if_needed", new_callable=AsyncMock),
+            patch("summon_claude.jira_auth.load_jira_token", return_value=None),
+        ):
+            result = await self._capture_mcp_servers_with_config()
+        assert "jira" not in result["mcp_servers"]
+
+    async def test_jira_mcp_not_wired_when_refresh_times_out(self):
+        """Token refresh timeout → session proceeds without Jira MCP.
+
+        Uses side_effect=TimeoutError to simulate the timeout instantly
+        (not a real 35-second wait via asyncio.wait_for).
+        """
+        with (
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=True),
+            patch(
+                "summon_claude.jira_auth.refresh_jira_token_if_needed",
+                side_effect=TimeoutError("timed out"),
+            ),
+            patch("summon_claude.jira_auth.load_jira_token", return_value=None),
+        ):
+            result = await self._capture_mcp_servers_with_config()
+        assert "jira" not in result["mcp_servers"]
+
+    async def test_jira_and_github_mcp_wired_independently(self):
+        """Both Jira and GitHub MCP can be wired in the same session."""
+        _jira_token = {
+            "access_token": "test-jira-token",
+            "cloud_id": "abc-123",
+            "expires_at": 9999999999,
+        }
+        with (
+            patch(
+                "summon_claude.jira_auth.jira_credentials_exist",
+                return_value=True,
+            ),
+            patch(
+                "summon_claude.jira_auth.refresh_jira_token_if_needed",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "summon_claude.jira_auth.load_jira_token",
+                return_value=_jira_token,
+            ),
+            patch("summon_claude.github_auth.load_token", return_value="gho_test123"),
+        ):
+            result = await self._capture_mcp_servers_with_config()
+        assert "github" in result["mcp_servers"]
+        assert "jira" in result["mcp_servers"]
 
     async def test_github_mcp_connection_failure_propagates(self):
         """SDK startup failure with GitHub MCP configured propagates cleanly.
@@ -4281,3 +4413,49 @@ class TestZzzShutdownOrder:
                 await session._shutdown(rt)
 
         assert call_order == ["rename", "message"]
+
+
+class TestPmJiraJqlIntegration:
+    """Verify that PM Jira JQL and cloud_id propagate into the PM scan prompt."""
+
+    def test_jql_appears_in_pm_scan_prompt(self):
+        from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt(
+            jira_enabled=True,
+            jira_jql="project = MYPROJECT AND status != Done",
+            jira_cloud_id="abc-123",
+        )
+        assert "project = MYPROJECT AND status != Done" in result
+        assert "abc-123" in result
+
+    def test_no_jql_shows_none_filter(self):
+        from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt(
+            jira_enabled=True,
+            jira_jql=None,
+            jira_cloud_id="def-456",
+        )
+        assert "none (all issues)" in result
+        assert "def-456" in result
+
+    def test_jira_disabled_excludes_jira_section(self):
+        from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt(
+            jira_enabled=False,
+        )
+        assert "Jira Triage" not in result
+
+    def test_jira_enabled_without_cloud_id_has_no_cloud_line(self):
+        """When cloud_id is None, scan prompt omits Cloud ID line."""
+        from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
+
+        result = build_pm_scan_prompt(
+            jira_enabled=True,
+            jira_jql="project = FOO",
+            jira_cloud_id=None,
+        )
+        assert "Jira Triage" in result
+        assert "Cloud ID:" not in result

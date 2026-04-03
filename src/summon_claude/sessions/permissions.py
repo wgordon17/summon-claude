@@ -9,10 +9,11 @@ Permission check flow (handle() steps):
   2b. GitHub deny-list → _GITHUB_MCP_REQUIRE_APPROVAL always sent to Slack
   2c. GitHub allowlist → exact names and get_/list_/search_ prefixes
   2d. Google MCP       → workspace-{label}__* read tools auto-approved
-  2e. Summon MCP       → summon-cli/summon-slack/summon-canvas tools
-  2f. Session cache    → tools approved for the session lifetime
-  2g. Arg cache        → per-argument exact-match (Bash cmd, file path, etc.)
-  2h. Auto-classifier  → Sonnet classifier (only active after worktree entry)
+  2e. Jira MCP         → read-only enforcement (fail-closed, deny-before-approve)
+  2f. Summon MCP       → summon-cli/summon-slack/summon-canvas tools
+  2g. Session cache    → tools approved for the session lifetime
+  2h. Arg cache        → per-argument exact-match (Bash cmd, file path, etc.)
+  2i. Auto-classifier  → Sonnet classifier (only active after worktree entry)
   3.  SDK allow        → secondary, after static lists
   4.  Slack HITL       → interactive approve/deny/approve-for-session buttons
 """
@@ -137,6 +138,45 @@ def _is_google_write_tool(tool_name: str) -> bool:
     """True if tool is a Google Workspace MCP tool that is NOT read-only."""
     return tool_name.startswith(_GOOGLE_MCP_PREFIX) and not _is_google_read_tool(tool_name)
 
+
+_JIRA_MCP_PREFIX = "mcp__jira__"
+
+# Hard deny: write tools + fetchAtlassian. Checked BEFORE auto-approve (SC-04, SEC-017).
+# Write tools denied because the OAuth scope is read-only (read:jira-work).
+# fetchAtlassian (SEC-008) is a generic Atlassian Resource Identifier (ARI) accessor
+# that can fetch arbitrary resources across projects and products, bypassing the
+# per-tool read-only gating. Must be blocked even though it appears "read-only".
+_JIRA_MCP_HARD_DENY = frozenset(
+    {
+        "mcp__jira__addCommentToJiraIssue",
+        "mcp__jira__addWorklogToJiraIssue",
+        "mcp__jira__createConfluenceFooterComment",
+        "mcp__jira__createConfluenceInlineComment",
+        "mcp__jira__createConfluencePage",
+        "mcp__jira__createIssueLink",
+        "mcp__jira__createJiraIssue",
+        "mcp__jira__editJiraIssue",
+        "mcp__jira__fetchAtlassian",
+        "mcp__jira__transitionJiraIssue",
+        "mcp__jira__updateConfluencePage",
+    }
+)
+
+# Auto-approve read-only tools by prefix match
+_JIRA_MCP_AUTO_APPROVE_PREFIXES = (
+    "mcp__jira__get",
+    "mcp__jira__search",
+    "mcp__jira__lookup",
+)
+
+# Auto-approve read-only tools by exact name. These are read-only tools whose
+# names don't match any auto-approve prefix (e.g. atlassianUserInfo starts with
+# a lowercase 'a', not 'get'/'search'/'lookup').
+_JIRA_MCP_AUTO_APPROVE_EXACT = frozenset(
+    {
+        "mcp__jira__atlassianUserInfo",
+    }
+)
 
 _PERMISSION_TIMEOUT_S = 600  # 10 minutes
 
@@ -386,7 +426,30 @@ class PermissionHandler:
             logger.info("Google Workspace write tool requires approval: %s", tool_name)
             return await self._request_approval(tool_name, input_data, context)
 
-        # 2e. Summon's own MCP tools — always auto-approved.
+        # 2e. Jira MCP — read-only enforcement (fail-closed).
+        # Ordering: deny MUST be checked before auto-approve (SC-04, SEC-017).
+        if tool_name.startswith(_JIRA_MCP_PREFIX):
+            # 2e-i: Hard deny write tools and fetchAtlassian (checked FIRST)
+            if tool_name in _JIRA_MCP_HARD_DENY:
+                logger.info("Jira MCP write tool hard-denied: %s", tool_name)
+                return PermissionResultDeny(
+                    message="Jira write operations are not permitted (read-only mode)"
+                )
+            # 2e-ii: Auto-approve read-only tools by prefix
+            if tool_name.startswith(_JIRA_MCP_AUTO_APPROVE_PREFIXES):
+                logger.debug("Auto-approving Jira MCP tool: %s", tool_name)
+                return PermissionResultAllow()
+            # 2e-iii: Auto-approve read-only tools by exact name
+            if tool_name in _JIRA_MCP_AUTO_APPROVE_EXACT:
+                logger.debug("Auto-approving Jira MCP tool (exact): %s", tool_name)
+                return PermissionResultAllow()
+            # 2e-iv: Unknown Jira tool — fail closed (hard deny)
+            logger.warning("Unknown Jira MCP tool denied (fail-closed): %s", tool_name)
+            return PermissionResultDeny(
+                message=f"Unknown Jira MCP tool '{tool_name}' denied (fail-closed)"
+            )
+
+        # 2f. Summon's own MCP tools — always auto-approved.
         # These are internal tools provided by the session's own MCP servers
         # (summon-cli, summon-slack, summon-canvas) and already scoped to
         # the session's permissions.
@@ -405,10 +468,10 @@ class PermissionHandler:
             logger.debug("Session-approved tool: %s", tool_name)
             return PermissionResultAllow()
 
-        # 2g. Per-argument cache — exact match on full arg (Bash command,
+        # 2h. Per-argument cache — exact match on full arg (Bash command,
         # file path outside CWD).  Uses _get_cacheable_arg (not
         # get_tool_primary_arg) to avoid truncation collisions.
-        # Defense-in-depth: GitHub require-approval tools excluded (same as 2f).
+        # Defense-in-depth: GitHub require-approval tools excluded (same as 2g).
         cacheable_arg = _get_cacheable_arg(tool_name, input_data)
         if (
             cacheable_arg
@@ -419,7 +482,7 @@ class PermissionHandler:
             logger.debug("Session-approved %s arg: %s", tool_name, cacheable_arg)
             return PermissionResultAllow()
 
-        # 2h. Auto-mode classifier (only active after worktree entry)
+        # 2i. Auto-mode classifier (only active after worktree entry)
         if self._classifier_enabled and self._classifier is not None and self._in_worktree:
             context_text = extract_classifier_context(self._context_history)
             classify_result = await self._classifier.classify(

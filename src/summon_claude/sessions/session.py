@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import contextvars
 import dataclasses
+import json
 import logging
 import logging.handlers
 import os
@@ -488,6 +489,8 @@ class SessionOptions:
     system_prompt_append: str | None = None
     resume_from_session_id: str | None = None
     initial_prompt: str | None = None
+    jira_proxy_port: int | None = None
+    jira_proxy_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,6 +631,8 @@ class SummonSession:
         self._resume = options.resume
         self._resume_from_session_id = options.resume_from_session_id
         self._channel_id_option = options.channel_id
+        self._jira_proxy_port = options.jira_proxy_port
+        self._jira_proxy_token = options.jira_proxy_token
 
         self._auth: SessionAuth | None = auth
         self._claude: ClaudeSDKClient | None = None
@@ -1704,7 +1709,7 @@ class SummonSession:
             profile = "scribe"
         else:
             profile = "agent"
-        template = get_canvas_template(profile)
+        template = get_canvas_template(profile, jira_enabled=self._config.jira_enabled)
         markdown = template.replace("{model}", self._model or "unknown").replace("{cwd}", self._cwd)
 
         canvas_id = await client.canvas_create(markdown, title=f"{self._name} — Session Canvas")
@@ -1831,6 +1836,52 @@ class SummonSession:
             if gh_mcp:
                 mcp_servers["github"] = gh_mcp
 
+        # Add Jira remote MCP if credentials are configured.
+        # Two paths: (A) proxy-backed — proxy handles token refresh transparently,
+        # (B) direct — session refreshes token itself (fallback when proxy unavailable).
+        jira_mcp: dict | None = None
+        jira_cloud_id: str | None = None
+        if self._config.jira_enabled:
+            from summon_claude.jira_auth import (  # noqa: PLC0415
+                get_jira_token_path,
+                load_jira_token,
+                refresh_jira_token_if_needed,
+            )
+
+            if self._jira_proxy_port is not None:
+                # Path A: proxy-backed — proxy handles token refresh
+                jira_mcp = {
+                    "type": "http",
+                    "url": f"http://127.0.0.1:{self._jira_proxy_port}/v1/mcp",
+                    "headers": {"X-Summon-Proxy-Token": self._jira_proxy_token},
+                }
+                # Extract cloud_id without refresh (proxy handles expiry)
+                try:
+                    raw = json.loads(get_jira_token_path().read_text())
+                    jira_cloud_id = raw.get("cloud_id")
+                except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    pass
+            else:
+                # Path B: direct token — session refreshes itself
+                try:
+                    await asyncio.wait_for(refresh_jira_token_if_needed(), timeout=35)
+                except TimeoutError:
+                    logger.warning("Jira token refresh timed out — proceeding without Jira")
+                jira_tok = load_jira_token()
+                if jira_tok is not None:
+                    jira_at = jira_tok.get("access_token")
+                    jira_cloud_id = jira_tok.get("cloud_id")
+                    if jira_at:
+                        jira_mcp = {
+                            "type": "http",
+                            "url": "https://mcp.atlassian.com/v1/mcp",
+                            "headers": {
+                                "Authorization": f"Bearer {jira_at}",
+                            },
+                        }
+        if jira_mcp:
+            mcp_servers["jira"] = jira_mcp
+
         if self._canvas_store is not None and self._authenticated_user_id is not None:
             canvas_mcp = create_canvas_mcp_server(
                 canvas_store=self._canvas_store,
@@ -1954,6 +2005,20 @@ class SummonSession:
 
         setting_sources = ["user"] if (is_pm or is_scribe) else ["user", "project"]
 
+        # MCP health tracker — detects auth failures and notifies via inject_message
+        bg_tasks: set[asyncio.Task[None]] = set()
+
+        async def _on_mcp_degraded(prefix: str, message: str) -> None:
+            await self.inject_message(message, sender_info="McpHealthTracker")
+            if rt and rt.client:
+                task = asyncio.create_task(rt.client.post(message))
+                bg_tasks.add(task)
+                task.add_done_callback(bg_tasks.discard)
+
+        from summon_claude.sessions.mcp_health import McpHealthTracker  # noqa: PLC0415
+
+        mcp_health_tracker = McpHealthTracker(on_degraded=_on_mcp_degraded)
+
         streamer = ResponseStreamer(
             router=router,
             user_id=self._authenticated_user_id,
@@ -1961,6 +2026,7 @@ class SummonSession:
             max_inline_chars=self._config.max_inline_chars,
             on_file_change=self._on_file_change,
             on_worktree_entered=rt.permission_handler.notify_entered_worktree,
+            mcp_health=mcp_health_tracker,
         )
 
         # Disable auto-compaction — we handle compaction via !compact
@@ -1993,6 +2059,29 @@ class SummonSession:
         # external content from spoofing the scan trigger system messages.
         _scribe_scan_nonce = secrets.token_hex(8) if is_scribe else ""
 
+        # Fetch Jira params once for PM sessions (survives compaction restarts)
+        # jira_mcp is already computed above — use it as the enabled signal.
+        # PERF-002: jira_cloud_id is extracted from the same token load above.
+        pm_jira_enabled = bool(jira_mcp) and is_pm
+        if pm_jira_enabled and not jira_cloud_id:
+            logger.warning("Jira enabled but no cloud_id — disabling Jira triage for PM")
+            pm_jira_enabled = False
+        pm_jira_jql: str | None = None
+        pm_jira_cloud_id: str | None = jira_cloud_id if pm_jira_enabled else None
+        if pm_jira_enabled and self._project_id:
+            try:
+                project_row = await rt.registry.get_project(self._project_id)
+                if project_row:
+                    pm_jira_jql = project_row.get("jira_jql") or None
+            except Exception as e:
+                logger.warning("Failed to fetch project Jira config: %s", e)
+
+        # Scribe Jira guard: disable if cloud_id is missing (plan T9 S4)
+        scribe_jira_enabled = bool(jira_mcp) and is_scribe
+        if scribe_jira_enabled and not jira_cloud_id:
+            logger.warning("Jira enabled but no cloud_id — disabling Jira for scribe")
+            scribe_jira_enabled = False
+
         while True:
             # Cancel any orphaned scheduler tasks from prior iteration and re-register
             scheduler.cancel_all()
@@ -2009,6 +2098,9 @@ class SummonSession:
                     prompt=build_pm_scan_prompt(
                         github_enabled=bool(self._config.github_mcp_config()),
                         is_git_repo=is_git_repo,
+                        jira_enabled=pm_jira_enabled,
+                        jira_jql=pm_jira_jql,
+                        jira_cloud_id=pm_jira_cloud_id,
                     ),
                     internal=True,
                     max_lifetime_s=0,
@@ -2026,6 +2118,9 @@ class SummonSession:
                         google_enabled=google_mcp_wired,
                         google_accounts=google_accounts or None,
                         slack_enabled=bool(self._slack_monitors),
+                        jira_enabled=scribe_jira_enabled,
+                        jira_cloud_id=jira_cloud_id,
+                        scan_interval_minutes=max(1, self._scan_interval_s // 60),
                         user_mention=scribe_user_mention,
                         importance_keywords=self._config.scribe_importance_keywords,
                         quiet_hours=self._config.scribe_quiet_hours or None,
@@ -2068,6 +2163,7 @@ class SummonSession:
                     google_enabled=google_mcp_wired,
                     google_accounts=google_accounts or None,
                     slack_enabled=bool(self._slack_monitors),
+                    jira_enabled=scribe_jira_enabled,
                 )
                 if self._system_prompt_append:
                     system_prompt["append"] += "\n\n" + self._system_prompt_append
@@ -2080,6 +2176,26 @@ class SummonSession:
                     "preset": "claude_code",
                     "append": effective_append,
                 }
+            # Compaction-loop Jira token refresh (non-proxy path only).
+            # Proxy-backed sessions don't need this — the proxy handles refresh.
+            if self._jira_proxy_port is None and self._config.jira_enabled:
+                from summon_claude import jira_auth as _ja  # noqa: PLC0415
+
+                try:
+                    await asyncio.wait_for(_ja.refresh_jira_token_if_needed(), timeout=35)
+                except TimeoutError:
+                    logger.warning("Jira compaction-loop refresh timed out")
+                jira_token = _ja.load_jira_token()
+                access_token = jira_token.get("access_token") if jira_token else None
+                if access_token:
+                    mcp_servers["jira"] = {
+                        "type": "http",
+                        "url": "https://mcp.atlassian.com/v1/mcp",
+                        "headers": {
+                            "Authorization": f"Bearer {access_token}",
+                        },
+                    }
+
             options = ClaudeAgentOptions(
                 cwd=self._cwd,
                 resume=self._resume,

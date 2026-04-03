@@ -39,6 +39,7 @@ INTERNAL_COMMANDS: frozenset[str] = frozenset(
         # Hidden internal
         "hooks run post-worktree",
         # Group containers (not leaf commands — the subcommands are documented)
+        "auth jira",
         "db",
         "hooks",
         "hooks run",

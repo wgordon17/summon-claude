@@ -1065,6 +1065,78 @@ class TestDispatchSpawnToken:
         assert "initial_prompt" in response["message"]
 
 
+class TestDispatchStripsProxyFields:
+    """IPC boundary safety: CLI must not inject jira_proxy_port/token."""
+
+    async def test_create_session_strips_jira_proxy_port(self):
+        manager, _, _ = _make_manager()
+        manager.create_session = AsyncMock(return_value="abc123")
+        await manager._dispatch_control(
+            {
+                "type": "create_session",
+                "options": {
+                    "cwd": "/tmp",
+                    "name": "t",
+                    "jira_proxy_port": 9999,
+                    "jira_proxy_token": "evil",
+                },
+            }
+        )
+        opts = manager.create_session.call_args[0][0]
+        assert opts.jira_proxy_port is None
+        assert opts.jira_proxy_token is None
+
+    async def test_spawn_token_strips_jira_proxy_fields(self):
+        manager, _, _ = _make_manager()
+        manager.create_session_with_spawn_token = AsyncMock(return_value="abc123")
+        await manager._dispatch_control(
+            {
+                "type": "create_session_with_spawn_token",
+                "options": {
+                    "cwd": "/tmp",
+                    "name": "t",
+                    "jira_proxy_port": 9999,
+                    "jira_proxy_token": "evil",
+                },
+                "spawn_token": "tok",
+            }
+        )
+        opts = manager.create_session_with_spawn_token.call_args[0][0]
+        assert opts.jira_proxy_port is None
+        assert opts.jira_proxy_token is None
+
+
+class TestInjectProxyOptionsPropagation:
+    """Verify _inject_proxy_options injects proxy config at all session creation sites."""
+
+    def test_inject_proxy_options_sets_fields(self):
+        manager, _, _ = _make_manager()
+        manager._jira_proxy_port = 12345
+        manager._jira_proxy_token = "tok-abc"
+        opts = SessionOptions(cwd="/tmp", name="test")
+        result = manager._inject_proxy_options(opts)
+        assert result.jira_proxy_port == 12345
+        assert result.jira_proxy_token == "tok-abc"
+
+    def test_inject_proxy_options_noop_when_none(self):
+        manager, _, _ = _make_manager()
+        opts = SessionOptions(cwd="/tmp", name="test")
+        result = manager._inject_proxy_options(opts)
+        assert result is opts  # identity — no copy made
+
+    def test_inject_called_at_all_construction_sites(self):
+        """Guard test: count the _inject_proxy_options calls in manager.py source."""
+        import inspect
+
+        src = inspect.getsource(SessionManager)
+        count = src.count("_inject_proxy_options(")
+        # 1 definition + 9 call sites = 10 occurrences
+        assert count == 10, (
+            f"Expected 10 occurrences of _inject_proxy_options (1 def + 9 calls), "
+            f"found {count}. A new SummonSession construction site may be missing the call."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers: project up
 # ---------------------------------------------------------------------------

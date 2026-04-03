@@ -948,6 +948,96 @@ class TestSchemaVersioning:
                 assert version == CURRENT_SCHEMA_VERSION
 
 
+class TestMigration15To16:
+    """Targeted tests for migration 15 → 16 (adds jira_jql to projects table)."""
+
+    async def test_migrate_15_to_16_adds_jira_jql(self, tmp_path):
+        """Migration must add jira_jql to a projects table that lacks it."""
+        import aiosqlite
+
+        from summon_claude.sessions.migrations import _migrate_15_to_16
+
+        # Build a minimal projects table without jira_jql (simulating v12 schema)
+        db_path = tmp_path / "migrate_15_to_16.db"
+        async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
+            await raw_db.execute(
+                """
+                CREATE TABLE projects (
+                    project_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    directory TEXT NOT NULL,
+                    channel_prefix TEXT NOT NULL,
+                    hooks TEXT DEFAULT NULL
+                )
+                """
+            )
+
+            # Confirm jira_jql absent before migration
+            async with raw_db.execute("PRAGMA table_info(projects)") as cursor:
+                cols_before = {row[1] for row in await cursor.fetchall()}
+            assert "jira_jql" not in cols_before
+
+            # Run the targeted migration
+            await _migrate_15_to_16(raw_db)
+
+            # Confirm jira_jql present after migration
+            async with raw_db.execute("PRAGMA table_info(projects)") as cursor:
+                cols_after = {row[1] for row in await cursor.fetchall()}
+            assert "jira_jql" in cols_after
+
+    async def test_migrate_15_to_16_idempotent(self, tmp_path):
+        """Running migration 15→16 twice must not raise."""
+        import aiosqlite
+
+        from summon_claude.sessions.migrations import _migrate_15_to_16
+
+        db_path = tmp_path / "idempotent_15_to_16.db"
+        async with SessionRegistry(db_path=db_path):
+            pass
+
+        async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
+            # First run — column already exists (added by full migration chain)
+            await _migrate_15_to_16(raw_db)
+            # Second run — must be a no-op, not raise
+            await _migrate_15_to_16(raw_db)
+
+            async with raw_db.execute("PRAGMA table_info(projects)") as cursor:
+                cols = {row[1] for row in await cursor.fetchall()}
+            assert "jira_jql" in cols
+
+    async def test_migrate_15_to_16_default_is_null(self, tmp_path):
+        """Existing rows must have NULL jira_jql after migration."""
+        import aiosqlite
+
+        from summon_claude.sessions.migrations import _migrate_15_to_16
+
+        db_path = tmp_path / "default_null_15_to_16.db"
+        async with aiosqlite.connect(str(db_path), isolation_level=None) as raw_db:
+            await raw_db.execute(
+                """
+                CREATE TABLE projects (
+                    project_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    directory TEXT NOT NULL,
+                    channel_prefix TEXT NOT NULL
+                )
+                """
+            )
+            await raw_db.execute(
+                "INSERT INTO projects (project_id, name, directory, channel_prefix)"
+                " VALUES ('proj-1', 'Test', '/tmp', 'tst')"
+            )
+
+            await _migrate_15_to_16(raw_db)
+
+            async with raw_db.execute(
+                "SELECT jira_jql FROM projects WHERE project_id = 'proj-1'"
+            ) as cursor:
+                row = await cursor.fetchone()
+            assert row is not None
+            assert row[0] is None  # DEFAULT NULL
+
+
 class TestSpawnTokens:
     async def test_store_and_consume_spawn_token(self, registry):
         from datetime import UTC, datetime, timedelta
@@ -1305,6 +1395,7 @@ class TestReleasedMigrationsImmutable:
         "_migrate_12_to_13": "4dd835d5b9aefb63",
         "_migrate_13_to_14": "cc893dd5f5eacae0",
         "_migrate_14_to_15": "d9d62bd4554b85bd",
+        "_migrate_15_to_16": "72d8ce098dcaa6a0",
     }
 
     def test_released_migrations_unchanged(self):

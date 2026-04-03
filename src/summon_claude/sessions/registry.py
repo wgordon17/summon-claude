@@ -932,12 +932,13 @@ class SessionRegistry:
             return [dict(r) for r in rows]
 
     _UPDATABLE_PROJECT_FIELDS: frozenset[str] = frozenset(
-        {"pm_channel_id", "workflow_instructions", "channel_prefix", "directory"}
+        {"pm_channel_id", "workflow_instructions", "channel_prefix", "directory", "jira_jql"}
     )
 
     async def update_project(self, project_id: str, **kwargs: Any) -> None:
         """Update mutable project fields (pm_channel_id, workflow_instructions, etc.).
 
+        Raises ``ValueError`` for unknown field names.
         Raises ``KeyError`` if the project_id does not exist.
         """
         updates: dict[str, Any] = {}
@@ -945,7 +946,10 @@ class SessionRegistry:
             if key in self._UPDATABLE_PROJECT_FIELDS:
                 updates[key] = val
             else:
-                logger.warning("update_project: ignoring unknown field %r", key)
+                # Intentionally raises (not warns like update_status) because
+                # project field names come from internal code, not runtime data.
+                # A KeyError here is always a programming bug.
+                raise ValueError(f"update_project: unknown field {key!r}")
         if not updates:
             return
         db = self._check_connected()

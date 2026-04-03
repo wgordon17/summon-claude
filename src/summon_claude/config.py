@@ -860,6 +860,44 @@ class SummonConfig(BaseSettings):
             },
         }
 
+    # ------------------------------------------------------------------
+    # Jira integration
+    # ------------------------------------------------------------------
+
+    @property
+    def jira_enabled(self) -> bool:
+        """True if Jira credentials are present on disk (fast stat check, no network I/O)."""
+        from summon_claude.jira_auth import jira_credentials_exist  # noqa: PLC0415
+
+        return jira_credentials_exist()
+
+    def jira_mcp_config(self) -> dict | None:
+        """Return Jira remote MCP server config, or None if not configured.
+
+        SC-03: Only the access_token is placed in the MCP config header.
+        refresh_token and client_secret remain on disk only.
+
+        Note: production session startup (``session.py``) inlines this logic
+        because it must call ``refresh_jira_token_if_needed()`` (async) before
+        the sync ``load_jira_token()`` call.  This method is for diagnostics
+        and tests only — it does NOT trigger a token refresh.
+        """
+        from summon_claude.jira_auth import load_jira_token  # noqa: PLC0415
+
+        token = load_jira_token()
+        if token is None:
+            return None
+        access_token = token.get("access_token")
+        if not access_token:
+            return None
+        return {
+            "type": "http",
+            "url": "https://mcp.atlassian.com/v1/mcp",
+            "headers": {
+                "Authorization": f"Bearer {access_token}",
+            },
+        }
+
     @classmethod
     def from_file(cls, config_path: str | None = None) -> SummonConfig:
         """Load config from env file, re-raising Pydantic errors with clean messages.

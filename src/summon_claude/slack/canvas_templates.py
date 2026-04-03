@@ -147,9 +147,38 @@ _TEMPLATES: dict[str, str] = {
 }
 
 
-def get_canvas_template(profile: str) -> str:
+_JIRA_PM_SECTION = """\
+
+## Jira Issues
+
+| Key | Summary | Status | Assignee | Updated |
+|-----|---------|--------|----------|---------|
+| _No issues tracked yet_ | | | | |
+"""
+
+_JIRA_SCRIBE_SECTION = """\
+
+## Jira Notifications
+
+| Time | Type | Issue | Summary |
+|------|------|-------|---------|
+| _No notifications yet_ | | | |
+
+**Stats:** 0 mentions, 0 assignments, 0 status changes today
+"""
+
+
+def get_canvas_template(profile: str, jira_enabled: bool = False) -> str:
     """Return the canvas template for the given profile name.
 
     Falls back to the default agent template for unknown profiles.
+    When jira_enabled is True, appends Jira sections for pm and scribe profiles.
     """
-    return _TEMPLATES.get(profile, AGENT_CANVAS_TEMPLATE)
+    base = _TEMPLATES.get(profile, AGENT_CANVAS_TEMPLATE)
+    if not jira_enabled:
+        return base
+    if profile == "pm":
+        return base + _JIRA_PM_SECTION
+    if profile == "scribe":
+        return base + _JIRA_SCRIBE_SECTION
+    return base

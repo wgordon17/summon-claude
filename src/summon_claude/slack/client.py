@@ -53,10 +53,18 @@ def sanitize_for_mrkdwn(text: str, max_len: int = 100) -> str:
     return sanitized if max_len >= len(sanitized) else sanitized[:max_len]
 
 
+# Note: Atlassian OAuth access tokens are standard JWTs (eyJ...) with no
+# Atlassian-specific prefix. We match any sufficiently-long base64url JWT
+# starting with eyJ (the base64 prefix for any JSON header starting with
+# '{\"'). The 40-char minimum avoids short base64 fragments. Defense-in-depth
+# alongside the architectural defence (tokens only flow to MCP subprocess,
+# not Slack output).
 _SECRET_RE = re.compile(
     r"xox[a-z]-[A-Za-z0-9\-]+|xapp-[A-Za-z0-9\-]+|sk-ant-[A-Za-z0-9\-]+"
     r"|ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+"
     r"|gho_[A-Za-z0-9_]+|ghu_[A-Za-z0-9_]+|ghs_[A-Za-z0-9_]+|ghr_[A-Za-z0-9_]+"
+    r"|eyJ[A-Za-z0-9._\-]{40,}"
+    r"|X-Summon-Proxy-Token:\s*\S+"
 )
 
 

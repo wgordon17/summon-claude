@@ -10,6 +10,9 @@ from summon_claude.slack.canvas_templates import (
     get_canvas_template,
 )
 
+_JIRA_PM_HEADING = "## Jira Issues"
+_JIRA_SCRIBE_HEADING = "## Jira Notifications"
+
 
 class TestGetCanvasTemplate:
     def test_agent_profile(self):
@@ -76,6 +79,57 @@ class TestTemplateFormatting:
         )
         assert "/home/user/{project}" in result
         assert "{model}" not in result
+
+
+class TestJiraEnabled:
+    def test_pm_with_jira_enabled_includes_jira_section(self):
+        result = get_canvas_template("pm", jira_enabled=True)
+        assert _JIRA_PM_HEADING in result
+
+    def test_pm_without_jira_enabled_excludes_jira_section(self):
+        result = get_canvas_template("pm", jira_enabled=False)
+        assert _JIRA_PM_HEADING not in result
+
+    def test_pm_default_excludes_jira_section(self):
+        result = get_canvas_template("pm")
+        assert _JIRA_PM_HEADING not in result
+
+    def test_scribe_with_jira_enabled_includes_jira_section(self):
+        result = get_canvas_template("scribe", jira_enabled=True)
+        assert _JIRA_SCRIBE_HEADING in result
+
+    def test_scribe_without_jira_enabled_excludes_jira_section(self):
+        result = get_canvas_template("scribe", jira_enabled=False)
+        assert _JIRA_SCRIBE_HEADING not in result
+
+    def test_scribe_default_excludes_jira_section(self):
+        result = get_canvas_template("scribe")
+        assert _JIRA_SCRIBE_HEADING not in result
+
+    def test_agent_with_jira_enabled_excludes_jira_sections(self):
+        result = get_canvas_template("agent", jira_enabled=True)
+        assert _JIRA_PM_HEADING not in result
+        assert _JIRA_SCRIBE_HEADING not in result
+
+    def test_pm_jira_section_contains_table(self):
+        result = get_canvas_template("pm", jira_enabled=True)
+        assert "| Key | Summary | Status | Assignee | Updated |" in result
+        assert "_No issues tracked yet_" in result
+
+    def test_scribe_jira_section_contains_table_and_stats(self):
+        result = get_canvas_template("scribe", jira_enabled=True)
+        assert "| Time | Type | Issue | Summary |" in result
+        assert "_No notifications yet_" in result
+        assert "**Stats:** 0 mentions" in result
+
+    def test_pm_jira_base_content_preserved(self):
+        result = get_canvas_template("pm", jira_enabled=True)
+        assert "## Active Tasks" in result
+        assert "## Work Items" in result
+
+    def test_scribe_jira_base_content_preserved(self):
+        result = get_canvas_template("scribe", jira_enabled=True)
+        assert "## Session Timeline" in result
 
 
 class TestScheduledJobsSection:

@@ -409,6 +409,19 @@ class TestRedactSecrets:
         assert "github_pat_second" not in result
         assert result.count("[REDACTED]") == 2
 
+    def test_atlassian_jwt_redacted(self):
+        # Realistic Atlassian JWT: "eyJhbGci" prefix + 20+ chars
+        jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature"
+        text = f"Bearer {jwt} in header"
+        result = redact_secrets(text)
+        assert jwt not in result
+        assert "[REDACTED]" in result
+
+    def test_short_base64_not_redacted(self):
+        # Short "eyJhbGci" fragment (under 20-char suffix) must NOT be redacted
+        text = "eyJhbGciShort is just data"
+        assert redact_secrets(text) == text
+
     async def test_post_redacts_pat(self):
         web = MagicMock()
         web.chat_postMessage = AsyncMock(return_value={"channel": "C123", "ts": "1.0"})

@@ -43,6 +43,12 @@ summon project add my-api
 summon project add frontend ~/work/acme-frontend
 ```
 
+To associate a [Jira JQL filter](jira-integration.md#per-project-jql-filters) with the project:
+
+```{ .bash .notest }
+summon project add my-api --jql "project = MYAPI AND status != Done"
+```
+
 After registering, set workflow instructions and other project settings using the `summon project workflow` subcommands documented [below](#managing-workflow-instructions).
 
 ### `summon project list`
@@ -227,5 +233,6 @@ Without `$INCLUDE_GLOBAL`, project-specific instructions fully replace the globa
 
 ## See also
 
+- [Jira Integration](jira-integration.md) — JQL filters and PM triage
 - [Scribe](scribe.md) — background monitoring agent
 - [Configuration](configuration.md) — project-level config options

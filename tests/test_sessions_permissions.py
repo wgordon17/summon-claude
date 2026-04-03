@@ -14,6 +14,10 @@ from summon_claude.sessions.permissions import (
     _GITHUB_MCP_AUTO_APPROVE,
     _GITHUB_MCP_AUTO_APPROVE_PREFIXES,
     _GITHUB_MCP_REQUIRE_APPROVAL,
+    _JIRA_MCP_AUTO_APPROVE_EXACT,
+    _JIRA_MCP_AUTO_APPROVE_PREFIXES,
+    _JIRA_MCP_HARD_DENY,
+    _JIRA_MCP_PREFIX,
     _SUMMON_MCP_AUTO_APPROVE_PREFIXES,
     _WRITE_GATED_TOOLS,
     PendingRequest,
@@ -1474,3 +1478,47 @@ class TestClassifierWriteGateOrdering:
         assert isinstance(result, PermissionResultAllow)
         mock_classifier.classify.assert_awaited_once()
         handler._request_approval.assert_not_called()
+
+
+class TestJiraMCPGuardTests:
+    """Guard tests: pin Jira permission sets (mirrors TestGitHubMCPGuardTests)."""
+
+    def test_hard_deny_set_pinned(self):
+        assert (
+            frozenset(
+                {
+                    "mcp__jira__addCommentToJiraIssue",
+                    "mcp__jira__addWorklogToJiraIssue",
+                    "mcp__jira__createConfluenceFooterComment",
+                    "mcp__jira__createConfluenceInlineComment",
+                    "mcp__jira__createConfluencePage",
+                    "mcp__jira__createIssueLink",
+                    "mcp__jira__createJiraIssue",
+                    "mcp__jira__editJiraIssue",
+                    "mcp__jira__fetchAtlassian",
+                    "mcp__jira__transitionJiraIssue",
+                    "mcp__jira__updateConfluencePage",
+                }
+            )
+            == _JIRA_MCP_HARD_DENY
+        )
+
+    def test_auto_approve_prefixes_pinned(self):
+        assert _JIRA_MCP_AUTO_APPROVE_PREFIXES == (
+            "mcp__jira__get",
+            "mcp__jira__search",
+            "mcp__jira__lookup",
+        )
+
+    def test_auto_approve_exact_pinned(self):
+        assert frozenset({"mcp__jira__atlassianUserInfo"}) == _JIRA_MCP_AUTO_APPROVE_EXACT
+
+    def test_no_hard_deny_matches_auto_approve_prefix(self):
+        for tool in _JIRA_MCP_HARD_DENY:
+            assert not tool.startswith(_JIRA_MCP_AUTO_APPROVE_PREFIXES), (
+                f"Hard-deny tool '{tool}' matches an auto-approve prefix"
+            )
+
+    def test_all_prefixes_start_with_jira_prefix(self):
+        for prefix in _JIRA_MCP_AUTO_APPROVE_PREFIXES:
+            assert prefix.startswith(_JIRA_MCP_PREFIX)

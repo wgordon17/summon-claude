@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+import re
+
+# Rejects markdown structural characters (# * [ ] ` { } < > \) that could alter
+# prompt rendering. Note: _ is preserved (valid in JQL custom field names, and
+# backtick fence neutralizes italic). ! is preserved (JQL uses != operator).
+_PROMPT_UNSAFE_RE = re.compile(r"[^\x20-\x7E]|[#*\[\]`{}<>\\]")
+
+
+def sanitize_prompt_value(value: str) -> str:
+    """Sanitize an operator-supplied value for safe prompt embedding."""
+    s = value.replace("\n", " ").replace("\r", " ")
+    return _PROMPT_UNSAFE_RE.sub("", s).strip()
+
+
 # Prepended to every headless agent system prompt (PM, Scribe, GPM, child sessions).
 _HEADLESS_BOILERPLATE = """\
 You are running headlessly via summon-claude, bridged to a private Slack channel. \

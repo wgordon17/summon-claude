@@ -114,6 +114,7 @@ nav:
     - PM Agents: guide/pm-agents.md
     - Scribe: guide/scribe.md
     - GitHub Integration: guide/github-integration.md
+    - Jira Integration: guide/jira-integration.md
     - Scribe Integrations: guide/scribe-integrations.md
     - Cron & Tasks: guide/cron-tasks.md
     - Canvas: guide/canvas.md

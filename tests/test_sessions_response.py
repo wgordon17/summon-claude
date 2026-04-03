@@ -16,7 +16,11 @@ from claude_agent_sdk import (
 )
 
 from helpers import make_mock_slack_client
-from summon_claude.sessions.response import ResponseStreamer, _format_tool_summary
+from summon_claude.sessions.response import (
+    ResponseStreamer,
+    _format_tool_result,
+    _format_tool_summary,
+)
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.router import ThreadRouter
 
@@ -1257,3 +1261,176 @@ class TestWorktreeDetectionCallback:
         await streamer._handle_assistant_message(result_msg)
         await asyncio.sleep(0.05)
         # No error = pass
+
+
+class TestFormatToolResult:
+    """Tests for _format_tool_result."""
+
+    def test_success_string_content_shows_check_mark(self):
+        block = ToolResultBlock(tool_use_id="tu_1", content="some output", is_error=False)
+        text, blocks = _format_tool_result(block)
+        assert text == "Tool result"
+        assert len(blocks) == 1
+        assert ":white_check_mark:" in blocks[0]["elements"][0]["text"]
+        assert ":x:" not in blocks[0]["elements"][0]["text"]
+
+    def test_none_is_error_treated_as_success(self):
+        block = ToolResultBlock(tool_use_id="tu_1", content="some output", is_error=None)
+        text, blocks = _format_tool_result(block)
+        assert ":white_check_mark:" in blocks[0]["elements"][0]["text"]
+
+    def test_error_string_content_shows_x_emoji(self):
+        block = ToolResultBlock(tool_use_id="tu_1", content="something went wrong", is_error=True)
+        text, blocks = _format_tool_result(block)
+        assert text == "Tool result"
+        assert len(blocks) == 1
+        element_text = blocks[0]["elements"][0]["text"]
+        assert ":x:" in element_text
+        assert ":white_check_mark:" not in element_text
+        assert "Tool error:" in element_text
+        assert "something went wrong" in element_text
+
+    def test_error_content_is_redacted(self):
+        secret = "sk-ant-abc123secret"
+        block = ToolResultBlock(tool_use_id="tu_1", content=f"auth failed: {secret}", is_error=True)
+        text, blocks = _format_tool_result(block)
+        element_text = blocks[0]["elements"][0]["text"]
+        assert secret not in element_text
+
+    def test_error_content_truncated_at_200_chars(self):
+        long_error = "x" * 250
+        block = ToolResultBlock(tool_use_id="tu_1", content=long_error, is_error=True)
+        text, blocks = _format_tool_result(block)
+        element_text = blocks[0]["elements"][0]["text"]
+        assert element_text.endswith("...")
+        # prefix + 200 chars + "..."
+        assert len(element_text) < 230
+
+    def test_empty_content_returns_empty(self):
+        block = ToolResultBlock(tool_use_id="tu_1", content="", is_error=False)
+        text, blocks = _format_tool_result(block)
+        assert text == ""
+        assert blocks == []
+
+    def test_error_non_string_content_shows_generic_error(self):
+        block = ToolResultBlock(
+            tool_use_id="tu_1", content=[{"type": "text", "text": "err"}], is_error=True
+        )
+        text, blocks = _format_tool_result(block)
+        element_text = blocks[0]["elements"][0]["text"]
+        assert ":x:" in element_text
+        assert "Tool error" in element_text
+
+    def test_success_non_string_content_shows_completed(self):
+        block = ToolResultBlock(
+            tool_use_id="tu_1", content=[{"type": "text", "text": "ok"}], is_error=False
+        )
+        text, blocks = _format_tool_result(block)
+        element_text = blocks[0]["elements"][0]["text"]
+        assert ":white_check_mark:" in element_text
+        assert "Tool completed" in element_text
+
+
+class TestToolNameTracking:
+    """Tests for tool_use_id → tool name tracking in _TurnState."""
+
+    def test_tool_use_block_stores_name(self):
+        """ToolUseBlock id→name stored in _turn.tool_names."""
+        from summon_claude.sessions.response import _TurnState
+
+        turn = _TurnState()
+        assert turn.tool_names == {}
+        turn.tool_names["tu_abc"] = "mcp__jira__getIssue"
+        assert turn.tool_names["tu_abc"] == "mcp__jira__getIssue"
+
+    def test_turn_state_reset_clears_tool_names(self):
+        """New _TurnState resets tool_names dict."""
+        from summon_claude.sessions.response import _TurnState
+
+        turn1 = _TurnState()
+        turn1.tool_names["tu_1"] = "Read"
+        turn2 = _TurnState()
+        assert turn2.tool_names == {}
+
+
+class TestStreamerHealthTrackerIntegration:
+    """Tests for ResponseStreamer + McpHealthTracker wiring."""
+
+    async def test_error_tool_result_fires_health_tracker(self):
+        """Error ToolResultBlock triggers health tracker record."""
+        from summon_claude.sessions.mcp_health import McpHealthTracker
+
+        callback = AsyncMock()
+        tracker = McpHealthTracker(on_degraded=callback)
+        router = MagicMock()
+        router.post_to_active_thread = AsyncMock()
+        streamer = ResponseStreamer(router=router, mcp_health=tracker)
+        # Simulate tool use then result
+        streamer._turn.tool_names["tu_1"] = "mcp__jira__getIssue"
+        block = ToolResultBlock(tool_use_id="tu_1", content="HTTP 401", is_error=True)
+        await streamer._handle_tool_result_block(block, parent_id=None)
+        # Auth error should trigger immediate notification
+        callback.assert_called_once()
+
+    async def test_success_resets_health_tracker(self):
+        """Success ToolResultBlock resets health tracker counter."""
+        from summon_claude.sessions.mcp_health import McpHealthTracker
+
+        callback = AsyncMock()
+        tracker = McpHealthTracker(on_degraded=callback)
+        router = MagicMock()
+        router.post_to_active_thread = AsyncMock()
+        streamer = ResponseStreamer(router=router, mcp_health=tracker)
+        # 2 errors then success
+        streamer._turn.tool_names["tu_1"] = "mcp__jira__getIssue"
+        streamer._turn.tool_names["tu_2"] = "mcp__jira__getIssue"
+        streamer._turn.tool_names["tu_3"] = "mcp__jira__getIssue"
+        await streamer._handle_tool_result_block(
+            ToolResultBlock(tool_use_id="tu_1", content="err", is_error=True), None
+        )
+        await streamer._handle_tool_result_block(
+            ToolResultBlock(tool_use_id="tu_2", content="err", is_error=True), None
+        )
+        await streamer._handle_tool_result_block(
+            ToolResultBlock(tool_use_id="tu_3", content="ok", is_error=False), None
+        )
+        assert tracker._failures.get("mcp__jira__") == 0
+        callback.assert_not_called()
+
+    async def test_error_content_truncated_to_500_for_health_tracker(self):
+        """Health tracker receives at most 500 chars of error content."""
+        from summon_claude.sessions.mcp_health import McpHealthTracker
+
+        callback = AsyncMock()
+        tracker = McpHealthTracker(on_degraded=callback)
+        original_record = tracker.record_tool_result
+        recorded_contents: list[str] = []
+
+        async def _spy(tool_name, *, is_error=None, error_content=None):
+            if error_content is not None:
+                recorded_contents.append(error_content)
+            await original_record(tool_name, is_error=is_error, error_content=error_content)
+
+        tracker.record_tool_result = _spy  # type: ignore[assignment]
+
+        router = MagicMock()
+        router.post_to_active_thread = AsyncMock()
+        streamer = ResponseStreamer(router=router, mcp_health=tracker)
+        long_content = "HTTP 401 " + "x" * 600
+        streamer._turn.tool_names["tu_1"] = "mcp__jira__getIssue"
+        block = ToolResultBlock(tool_use_id="tu_1", content=long_content, is_error=True)
+        await streamer._handle_tool_result_block(block, parent_id=None)
+        assert len(recorded_contents) == 1
+        assert len(recorded_contents[0]) == 500
+        assert recorded_contents[0].startswith("HTTP 401")
+
+    async def test_no_tracker_means_no_tracking(self):
+        """When mcp_health is None, no tracking occurs."""
+        router = MagicMock()
+        router.post_to_active_thread = AsyncMock()
+        streamer = ResponseStreamer(router=router, mcp_health=None)
+        streamer._turn.tool_names["tu_1"] = "mcp__jira__getIssue"
+        # Should not raise
+        await streamer._handle_tool_result_block(
+            ToolResultBlock(tool_use_id="tu_1", content="err", is_error=True), None
+        )

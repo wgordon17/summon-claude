@@ -43,7 +43,7 @@ _MCP_TO_SUBSYSTEM: dict[str, str] = {
 
 # Keys to explicitly exclude from the scanner (core/internal servers)
 _MCP_EXCLUDE = frozenset(
-    {"summon-slack", "summon-canvas", "summon-cli", "workspace", "external-slack"}
+    {"summon-slack", "summon-canvas", "summon-cli", "workspace", "external-slack", "jira"}
 )
 
 

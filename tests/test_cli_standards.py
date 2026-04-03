@@ -247,6 +247,7 @@ class TestConfigCheck:
                 "summon_claude.cli.preflight.check_claude_cli",
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=False),
         ):
             mock_data_dir.return_value = tmp_path
             result = runner.invoke(cli, ["config", "check"])
@@ -348,6 +349,7 @@ class TestConfigCheck:
                 "summon_claude.cli.preflight.check_claude_cli",
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=False),
         ):
             mock_data_dir.return_value = tmp_path
             result = runner.invoke(cli, ["--quiet", "config", "check"])
@@ -385,6 +387,7 @@ class TestConfigCheck:
                 "summon_claude.cli.preflight.check_claude_cli",
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
+            patch("summon_claude.jira_auth.jira_credentials_exist", return_value=False),
         ):
             result = runner.invoke(cli, ["config", "check"])
             # Should pass since tmp_path is writable

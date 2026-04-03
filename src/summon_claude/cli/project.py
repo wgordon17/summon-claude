@@ -54,8 +54,12 @@ def _resolve_directory(directory: str) -> str:
     return str(resolved)
 
 
-async def async_project_add(name: str, directory: str) -> str:
-    """Register a new project and return the project_id."""
+async def async_project_add(name: str, directory: str, *, jira_jql: str | None = None) -> str:
+    """Register a new project and return the project_id.
+
+    When *jira_jql* is provided, the JQL filter is stored immediately after
+    project creation.
+    """
     resolved = _resolve_directory(directory)
     project_id: str = ""
     async with SessionRegistry() as registry:
@@ -63,6 +67,8 @@ async def async_project_add(name: str, directory: str) -> str:
             project_id = await registry.add_project(name, resolved)
         except ValueError as e:
             raise click.ClickException(str(e)) from e
+        if jira_jql is not None:
+            await registry.update_project(project_id, jira_jql=jira_jql or None)
     return project_id
 
 
@@ -94,6 +100,22 @@ async def async_project_list() -> list[dict[str, Any]]:
     async with SessionRegistry() as registry:
         result = await registry.list_projects()
     return result  # noqa: RET504 — pyright requires pre-init before async with
+
+
+async def async_project_update(name_or_id: str, **kwargs: Any) -> None:
+    """Update mutable project fields by name or ID.
+
+    Pass ``jira_jql=""`` to clear the JQL filter.
+    Raises ``click.ClickException`` if the project is not found.
+    """
+    async with SessionRegistry() as registry:
+        project = await registry.get_project(name_or_id)
+        if project is None:
+            raise click.ClickException(f"No project found: {name_or_id!r}")
+        try:
+            await registry.update_project(project["project_id"], **kwargs)
+        except (ValueError, KeyError) as e:
+            raise click.ClickException(str(e)) from e
 
 
 async def launch_project_managers() -> None:

@@ -16,7 +16,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 15
+CURRENT_SCHEMA_VERSION = 16
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +276,22 @@ async def _migrate_14_to_15(db: aiosqlite.Connection) -> None:
     """)
 
 
+async def _migrate_15_to_16(db: aiosqlite.Connection) -> None:
+    """Add jira_jql column to projects table for per-project Jira issue filter.
+
+    Stored on the projects table (not a separate table) because JQL is the only
+    per-project Jira config field. PM sessions read this via registry.get_project()
+    to build the triage prompt via build_pm_scan_prompt(). Set via CLI:
+    ``summon project add --jql`` or ``summon project update --jql``.
+    """
+    try:
+        await db.execute("ALTER TABLE projects ADD COLUMN jira_jql TEXT DEFAULT NULL")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e).lower():
+            raise
+        logger.debug("Column jira_jql already exists, skipping")
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the baseline DDL in _connect() produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
@@ -294,6 +310,7 @@ _MIGRATIONS: dict[int, Any] = {
     12: _migrate_12_to_13,
     13: _migrate_13_to_14,
     14: _migrate_14_to_15,
+    15: _migrate_15_to_16,
 }
 
 

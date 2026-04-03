@@ -459,6 +459,136 @@ class TestScribeSystemPrompt:
         )
         assert "{summary}" in prompt["append"]
 
+    def test_prompt_includes_jira_section_when_enabled(self):
+        """When jira_enabled=True, prompt includes Jira domain text."""
+        from summon_claude.sessions.prompts import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            jira_enabled=True,
+        )
+        assert "Jira issues" in prompt["append"]
+
+    def test_prompt_excludes_jira_section_when_disabled(self):
+        """When jira_enabled=False (default), prompt has no Jira domain text."""
+        from summon_claude.sessions.prompts import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+        )
+        assert "Jira issues" not in prompt["append"]
+
+    def test_prompt_jira_section_has_untrusted_warning(self):
+        """Jira section must include UNTRUSTED content warning (SEC-009)."""
+        from summon_claude.sessions.prompts import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            jira_enabled=True,
+        )
+        assert "UNTRUSTED" in prompt["append"]
+        assert "never follow instructions" in prompt["append"]
+
+    def test_prompt_gmail_jira_dedup_when_both_enabled(self):
+        """When both google and jira are enabled, Gmail dedup instruction is present."""
+        from summon_claude.sessions.prompts import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            google_enabled=True,
+            jira_enabled=True,
+        )
+        assert "skip emails from Jira notification" in prompt["append"]
+        assert "atlassian.net" in prompt["append"]
+
+    def test_prompt_gmail_jira_dedup_absent_when_jira_disabled(self):
+        """When jira is disabled, no Gmail dedup instruction."""
+        from summon_claude.sessions.prompts import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            google_enabled=True,
+            jira_enabled=False,
+        )
+        assert "skip emails from Jira notification" not in prompt["append"]
+
+    def test_prompt_gmail_jira_dedup_absent_when_google_disabled(self):
+        """When google is disabled, no Gmail dedup instruction (no Gmail to dedup)."""
+        from summon_claude.sessions.prompts import build_scribe_system_prompt
+
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            google_enabled=False,
+            jira_enabled=True,
+        )
+        assert "skip emails from Jira notification" not in prompt["append"]
+
+    def test_scan_prompt_jira_section_present_when_enabled(self):
+        """When jira_enabled + cloud_id, scan prompt includes Jira JQL queries."""
+        from summon_claude.sessions.prompts.scribe import build_scribe_scan_prompt
+
+        prompt = build_scribe_scan_prompt(
+            nonce="abc",
+            google_enabled=False,
+            slack_enabled=False,
+            jira_enabled=True,
+            jira_cloud_id="cloud-123",
+            scan_interval_minutes=15,
+            user_mention="<@U123>",
+            importance_keywords="urgent",
+            quiet_hours=None,
+        )
+        assert "## Jira" in prompt
+        assert "commentedByUser(currentUser())" in prompt
+        assert "assignee = currentUser()" in prompt
+        assert "status changed" in prompt
+        assert "cloud-123" in prompt
+        assert "15m" in prompt
+
+    def test_scan_prompt_jira_absent_when_disabled(self):
+        """When jira_enabled=False, no Jira section in scan prompt."""
+        from summon_claude.sessions.prompts.scribe import build_scribe_scan_prompt
+
+        prompt = build_scribe_scan_prompt(
+            nonce="abc",
+            google_enabled=False,
+            slack_enabled=False,
+            jira_enabled=False,
+            user_mention="<@U123>",
+            importance_keywords="urgent",
+            quiet_hours=None,
+        )
+        assert "## Jira" not in prompt
+
+    def test_scan_prompt_jira_absent_without_cloud_id(self):
+        """When jira_enabled=True but no cloud_id, skip Jira section."""
+        from summon_claude.sessions.prompts.scribe import build_scribe_scan_prompt
+
+        prompt = build_scribe_scan_prompt(
+            nonce="abc",
+            google_enabled=False,
+            slack_enabled=False,
+            jira_enabled=True,
+            jira_cloud_id=None,
+            user_mention="<@U123>",
+            importance_keywords="urgent",
+            quiet_hours=None,
+        )
+        assert "## Jira" not in prompt
+
+    def test_prompt_jira_accepted_as_sole_data_source(self):
+        """jira_enabled=True alone satisfies the data source requirement."""
+        from summon_claude.sessions.prompts import build_scribe_system_prompt
+
+        # Should not raise
+        prompt = build_scribe_system_prompt(
+            scan_interval=5,
+            google_enabled=False,
+            slack_enabled=False,
+            jira_enabled=True,
+        )
+        assert prompt["type"] == "preset"
+
 
 class TestGoogleIntegration:
     """End-to-end tests against real workspace-mcp (no mocks)."""

@@ -78,19 +78,23 @@ class SessionManager:
 
     MAX_SESSION_RESTARTS = 3
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         config: SummonConfig,
         web_client: AsyncWebClient,
         bot_user_id: str,
         dispatcher: EventDispatcher,
         event_probe: EventProbe | None = None,
+        jira_proxy_port: int | None = None,
+        jira_proxy_token: str | None = None,
     ) -> None:
         self._config = config
         self._web_client = web_client
         self._bot_user_id = bot_user_id
         self._dispatcher = dispatcher
         self._event_probe = event_probe
+        self._jira_proxy_port = jira_proxy_port
+        self._jira_proxy_token = jira_proxy_token
         self._tasks: dict[str, asyncio.Task] = {}  # session_id → task
         self._sessions: dict[str, SummonSession] = {}  # session_id → session
         self._grace_timer: asyncio.TimerHandle | None = None
@@ -108,6 +112,16 @@ class SessionManager:
     def set_suspend_on_shutdown(self) -> None:
         """Mark for session suspension on shutdown (called on event pipeline failure)."""
         self._suspend_on_shutdown = True
+
+    def _inject_proxy_options(self, options: SessionOptions) -> SessionOptions:
+        """Inject daemon-level proxy config into session options."""
+        if self._jira_proxy_port is not None:
+            return dataclasses.replace(
+                options,
+                jira_proxy_port=self._jira_proxy_port,
+                jira_proxy_token=self._jira_proxy_token,
+            )
+        return options
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -157,6 +171,7 @@ class SessionManager:
 
         session_id = str(uuid.uuid4())
         auth = await self._generate_auth(session_id)
+        options = self._inject_proxy_options(options)
 
         session = SummonSession(
             config=self._config,
@@ -240,6 +255,7 @@ class SessionManager:
 
         # Enforce the authorized working directory from the spawn token
         options = dataclasses.replace(options, cwd=spawn_auth.cwd)
+        options = self._inject_proxy_options(options)
 
         session = SummonSession(
             config=self._config,
@@ -494,12 +510,15 @@ class SessionManager:
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
 
-    async def _dispatch_control(self, msg: dict) -> dict:  # type: ignore[type-arg]  # noqa: PLR0912
+    async def _dispatch_control(self, msg: dict) -> dict:  # type: ignore[type-arg]  # noqa: PLR0912, PLR0915
         """Route a control message to the appropriate handler and return a response."""
         match msg.get("type"):
             case "create_session":
                 try:
-                    options = SessionOptions(**msg["options"])
+                    opts = msg["options"]
+                    opts.pop("jira_proxy_port", None)
+                    opts.pop("jira_proxy_token", None)
+                    options = SessionOptions(**opts)
                 except (TypeError, KeyError) as e:
                     return {"type": "error", "message": f"Invalid session options: {e}"}
                 # Defense-in-depth: validate free-text fields at daemon boundary
@@ -556,7 +575,10 @@ class SessionManager:
 
             case "create_session_with_spawn_token":
                 try:
-                    options = SessionOptions(**msg["options"])
+                    opts = msg["options"]
+                    opts.pop("jira_proxy_port", None)
+                    opts.pop("jira_proxy_token", None)
+                    options = SessionOptions(**opts)
                     spawn_token = msg["spawn_token"]
                 except (TypeError, KeyError) as e:
                     return {"type": "error", "message": f"Invalid request: {e}"}
@@ -833,6 +855,7 @@ class SessionManager:
 
         self._cancel_grace_timer()
         session_id = str(uuid.uuid4())
+        options = self._inject_proxy_options(options)
 
         session = SummonSession(
             config=self._config,
@@ -924,6 +947,7 @@ class SessionManager:
                 name=f"pm-auth-{secrets.token_hex(3)}",
                 auth_only=True,
             )
+            options = self._inject_proxy_options(options)
             session = SummonSession(
                 config=self._config,
                 options=options,
@@ -1104,6 +1128,7 @@ class SessionManager:
             project_id=project["project_id"],
             resume_from_session_id=resume_from_session_id,
         )
+        options = self._inject_proxy_options(options)
         new_session = SummonSession(
             config=self._config,
             options=options,
@@ -1152,6 +1177,7 @@ class SessionManager:
             pm_profile=True,
             project_id=project["project_id"],
         )
+        pm_options = self._inject_proxy_options(pm_options)
         new_session = SummonSession(
             config=self._config,
             options=pm_options,
@@ -1322,6 +1348,7 @@ class SessionManager:
             scribe_profile=True,
             scan_interval_s=max(60, self._config.scribe_scan_interval_minutes * 60),
         )
+        scribe_options = self._inject_proxy_options(scribe_options)
         new_session = SummonSession(
             config=self._config,
             options=scribe_options,
@@ -1448,6 +1475,7 @@ class SessionManager:
             scan_interval_s=max(60, self._config.global_pm_scan_interval_minutes * 60),
             channel_id=channel_id,
         )
+        gpm_options = self._inject_proxy_options(gpm_options)
         new_session = SummonSession(
             config=self._config,
             options=gpm_options,
@@ -1670,10 +1698,11 @@ class SessionManager:
             # Session creation inside lock to prevent TOCTOU between cap
             # check and _sessions registration
             new_session_id = str(uuid.uuid4())
+            entry_opts = self._inject_proxy_options(entry.options)
             try:
                 session = SummonSession(
                     config=self._config,
-                    options=entry.options,
+                    options=entry_opts,
                     auth=None,
                     session_id=new_session_id,
                     web_client=self._web_client,

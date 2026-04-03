@@ -48,6 +48,7 @@ from summon_claude.cli.project import (
     async_project_add,
     async_project_list,
     async_project_remove,
+    async_project_update,
     async_workflow_clear,
     async_workflow_set,
     async_workflow_show,
@@ -311,6 +312,13 @@ def cmd_stop(ctx: click.Context, session: str | None, stop_all: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# auth command group — summon auth <provider> <action>
+# ---------------------------------------------------------------------------
+
+cli.add_command(cmd_auth)
+
+
+# ---------------------------------------------------------------------------
 # session command group (alias: s)
 # ---------------------------------------------------------------------------
 
@@ -385,6 +393,9 @@ def session_cleanup(ctx: click.Context, archive: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+_MAX_JQL_LEN = 500
+
+
 @cli.group("project")
 def cmd_project() -> None:
     """Manage summon projects."""
@@ -393,10 +404,13 @@ def cmd_project() -> None:
 @cmd_project.command("add")
 @click.argument("name")
 @click.argument("directory", default=".", type=click.Path())
+@click.option("--jql", default=None, help="JQL filter for Jira issue triage (optional).")
 @click.pass_context
-def project_add(ctx: click.Context, name: str, directory: str) -> None:
+def project_add(ctx: click.Context, name: str, directory: str, jql: str | None) -> None:
     """Register a project directory for PM agent management."""
-    project_id = asyncio.run(async_project_add(name, directory))
+    if jql and len(jql) > _MAX_JQL_LEN:
+        raise click.BadParameter(f"JQL filter too long (max {_MAX_JQL_LEN} chars)")
+    project_id = asyncio.run(async_project_add(name, directory, jira_jql=jql))
     if not ctx.obj.get("quiet"):
         click.echo(f"Project {name!r} registered (id: {project_id[:8]}...)")
         click.echo("Run 'summon project up' to start a PM agent for this project.")
@@ -460,6 +474,9 @@ def project_list(ctx: click.Context, output: str) -> None:
             if len(err) > name_w + dir_w:
                 err = err[: name_w + dir_w - 1] + "\u2026"
             click.echo(f"  └ {err}", err=True)
+        # Show JQL filter if set
+        if p.get("jira_jql"):
+            click.echo(f"  └ JQL: {p['jira_jql']}")
 
 
 @cmd_project.command("up")
@@ -540,6 +557,29 @@ def workflow_set(project_name: str | None) -> None:
 def workflow_clear(project_name: str | None) -> None:
     """Clear workflow instructions. Without PROJECT_NAME, clears global defaults."""
     asyncio.run(async_workflow_clear(project_name))
+
+
+@cmd_project.command("update")
+@click.argument("name_or_id")
+@click.option("--jql", default=None, help='JQL filter for Jira triage. Pass "" to clear.')
+@click.pass_context
+def project_update(ctx: click.Context, name_or_id: str, jql: str | None) -> None:
+    """Update a project's configuration.
+
+    NAME_OR_ID can be the project name or project ID prefix.
+    Pass --jql "" to clear the Jira JQL filter.
+    """
+    if jql is None:
+        raise click.UsageError("No fields to update. Use --jql to set a JQL filter.")
+    if jql and len(jql) > _MAX_JQL_LEN:
+        raise click.BadParameter(f"JQL filter too long (max {_MAX_JQL_LEN} chars)")
+    # Empty string clears the field; non-empty sets it.
+    asyncio.run(async_project_update(name_or_id, jira_jql=jql or None))
+    if not ctx.obj.get("quiet"):
+        if jql:
+            click.echo(f"Project {name_or_id!r} updated: JQL filter set.")
+        else:
+            click.echo(f"Project {name_or_id!r} updated: JQL filter cleared.")
 
 
 # ---------------------------------------------------------------------------
@@ -780,13 +820,6 @@ def config_set_cmd(ctx: click.Context, key: str, value: str) -> None:
     """Set a configuration value (e.g. SUMMON_SLACK_BOT_TOKEN)."""
     config_path_override = ctx.obj.get("config_path") if ctx.obj else None
     config_set(key, value, config_path_override)
-
-
-# ---------------------------------------------------------------------------
-# auth command group (defined in cli/auth.py)
-# ---------------------------------------------------------------------------
-
-cli.add_command(cmd_auth)
 
 
 # ---------------------------------------------------------------------------

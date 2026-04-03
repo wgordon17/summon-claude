@@ -619,6 +619,20 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         click.echo(click.style("Features:", bold=True))
         _print_feature_inventory(db_path, values)
 
+    # Jira (optional, only if credentials exist)
+    from summon_claude.jira_auth import check_jira_status, jira_credentials_exist  # noqa: PLC0415
+
+    if jira_credentials_exist():
+        jira_err = check_jira_status()
+        if jira_err is None:
+            if not quiet:
+                click.echo("  [PASS] Jira credentials valid")
+        else:
+            click.echo(f"  [FAIL] Jira: {jira_err}")
+            all_pass = False
+    elif not quiet:
+        click.echo("  [INFO] Jira: not configured (optional)")
+
     return all_pass
 
 
