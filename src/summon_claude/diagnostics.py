@@ -659,8 +659,8 @@ class WorkspaceMcpCheck:
     name = "mcp_workspace"
     description = "workspace-mcp binary, Google credentials, and scope validity"
 
-    async def run(self, config: SummonConfig | None) -> CheckResult:  # noqa: PLR0912
-        if config is None or not config.scribe_enabled:
+    async def run(self, config: SummonConfig | None) -> CheckResult:
+        if not config or not config.scribe_google_enabled:
             return CheckResult(
                 status="skip",
                 subsystem="mcp_workspace",
@@ -668,12 +668,13 @@ class WorkspaceMcpCheck:
             )
 
         from summon_claude.config import (  # noqa: PLC0415
+            detect_account_services,
+            discover_google_accounts,
             find_workspace_mcp_bin,
-            get_google_credentials_dir,
         )
 
-        details: list[str] = []
         status: Literal["pass", "fail", "warn", "info", "skip"] = "pass"
+        details: list[str] = []
 
         # Binary check
         bin_path = find_workspace_mcp_bin()
@@ -687,54 +688,39 @@ class WorkspaceMcpCheck:
             )
         details.append(f"workspace-mcp binary: {bin_path}")
 
-        # Google credentials directory
-        creds_dir = get_google_credentials_dir()
-        if not creds_dir.exists():
-            details.append("Google credentials directory: not found")
-            if status == "pass":
-                status = "warn"
-        else:
-            details.append(f"Google credentials directory: {creds_dir}")
-
-        # client_secret.json
-        client_secret = creds_dir / "client_secret.json"
-        if not client_secret.exists():
-            details.append("client_secret.json: not found")
-            if status == "pass":
-                status = "warn"
-        else:
-            details.append("client_secret.json: present")
-
-        # Credential validity via auth.google_auth
-        try:
-            from auth.google_auth import (  # type: ignore[import-not-found]  # noqa: PLC0415
-                has_required_scopes,
-            )
-            from auth.scopes import (  # type: ignore[import-not-found]  # noqa: PLC0415
-                get_scopes_for_tools,
+        # Discover accounts
+        accounts = discover_google_accounts()
+        if not accounts:
+            return CheckResult(
+                status="warn",
+                subsystem="mcp_workspace",
+                message="No Google accounts discovered",
+                details=[*details, "No account subdirectories found in credentials directory"],
+                suggestion="Run: summon auth google setup --account <label>",
             )
 
-            services = [s.strip() for s in config.scribe_google_services.split(",") if s.strip()]
-            required = get_scopes_for_tools(services)
-            valid = has_required_scopes(required)  # type: ignore[call-arg]
-            if valid:
-                details.append("Google credentials: valid scopes")
-            else:
-                details.append("Google credentials: missing required scopes")
+        # Per-account checks
+        for account in accounts:
+            account_prefix = f"Account '{account.label}'"
+            try:
+                services = detect_account_services(account)
+                if services:
+                    details.append(
+                        f"{account_prefix}: {account.email or '(unknown)'} — services: {services}"
+                    )
+                else:
+                    details.append(
+                        f"{account_prefix}: {account.email or '(unknown)'} — no services detected"
+                    )
+                    if status == "pass":
+                        status = "warn"
+            except Exception as e:
+                details.append(f"{account_prefix}: check failed — {e}")
                 if status == "pass":
                     status = "warn"
-        except ImportError:
-            details.append("workspace-mcp package not importable (auth module not found)")
-            if status == "pass":
-                status = "warn"
-        except Exception as e:
-            details.append(f"Google credential check failed: {e}")
-            if status == "pass":
-                status = "warn"
 
-        message = (
-            "workspace-mcp configured" if status == "pass" else "workspace-mcp issues detected"
-        )
+        account_names = ", ".join(a.label for a in accounts)
+        message = f"workspace-mcp configured: {len(accounts)} account(s) ({account_names})"
         return CheckResult(
             status=status, subsystem="mcp_workspace", message=message, details=details
         )

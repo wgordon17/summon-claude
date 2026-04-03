@@ -162,7 +162,6 @@ _EXCLUDED_FIELDS = frozenset(
     {
         "scribe_slack_enabled",  # sub-feature of scribe, not an independent subsystem
         "scribe_google_enabled",  # sub-feature of scribe, covered by mcp_workspace
-        "scribe_google_services",  # config value, not a credential
         "scribe_slack_browser",  # config value, not a credential
         "scribe_slack_monitored_channels",  # config value, not a credential
         "auto_classifier_enabled",  # feature flag, not a credential

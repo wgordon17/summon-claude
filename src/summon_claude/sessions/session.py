@@ -38,14 +38,17 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.canvas_mcp import create_canvas_mcp_server
 from summon_claude.config import (
+    GoogleAccount,
     SummonConfig,
+    detect_account_services,
+    discover_google_accounts,
     discover_installed_plugins,
     discover_plugin_skills,
     find_workspace_mcp_bin,
     get_data_dir,
     get_reports_dir,
     get_workspace_config_path,
-    google_mcp_env,
+    google_mcp_env_for_account,
 )
 from summon_claude.sessions.auth import SessionAuth, generate_spawn_token
 from summon_claude.sessions.classifier import SummonAutoClassifier
@@ -218,7 +221,7 @@ _WORKTREE_DISALLOWED_TOOLS = frozenset(
 # NOTE: disallowed_tools bare names don't match MCP-namespaced tool names
 # (mcp__server__tool). MCP tools are primarily defended by:
 # - workspace-mcp: PermissionHandler gates all non-read tools via Slack HITL
-#   (see _GOOGLE_MCP_AUTO_APPROVE_PREFIXES in permissions.py)
+#   (see _is_google_read_tool in permissions.py)
 # - Slack/Canvas MCP: can_use_tool callback requires Slack button approval
 # - summon-cli: registered with is_pm=False (excludes session_start/stop/message/resume/log_status)
 # The bare names below are defense-in-depth for built-in tools (Cron*, Task*)
@@ -289,7 +292,7 @@ def _build_scan_cron(interval_s: int) -> str:
     return f"0 */{max(1, interval_min // 60)} * * *"
 
 
-def _build_google_workspace_mcp_untrusted(services: str) -> dict:
+def _build_google_workspace_mcp_untrusted(services: str, account: GoogleAccount) -> dict:
     """Build workspace-mcp config wrapped in the untrusted MCP proxy.
 
     For Scribe sessions: all tool results from workspace-mcp are wrapped
@@ -316,11 +319,11 @@ def _build_google_workspace_mcp_untrusted(services: str) -> dict:
             "-m",
             "summon_claude.mcp_untrusted_proxy",
             "--source",
-            "Google Workspace",
+            f"Google Workspace ({account.label})",
             "--",
             *downstream_cmd,
         ],
-        "env": google_mcp_env(),
+        "env": google_mcp_env_for_account(account),
     }
 
 
@@ -1906,15 +1909,29 @@ class SummonSession:
         # Scribe sessions use the untrusted proxy to wrap tool results with
         # spotlighting markers (defense against indirect prompt injection).
         google_mcp_wired = False
-        if is_scribe and self._config.scribe_google_enabled and self._config.scribe_google_services:
-            try:
-                google_mcp = _build_google_workspace_mcp_untrusted(
-                    self._config.scribe_google_services
-                )
-                mcp_servers["workspace"] = google_mcp
-                google_mcp_wired = True
-            except Exception as e:
-                logger.warning("Scribe: failed to build workspace MCP config: %s", e)
+        google_accounts: list[GoogleAccount] = []
+        if is_scribe and self._config.scribe_google_enabled:
+            accounts = discover_google_accounts()
+            for account in accounts:
+                try:
+                    services = detect_account_services(account)
+                    if not services:
+                        logger.warning(
+                            "Scribe: could not detect services for account %s, skipping",
+                            account.label,
+                        )
+                        continue
+                    key = f"workspace-{account.label}"
+                    mcp = _build_google_workspace_mcp_untrusted(services, account)
+                    mcp_servers[key] = mcp
+                    google_mcp_wired = True
+                    google_accounts.append(account)
+                except Exception:
+                    logger.warning(
+                        "Scribe: failed to wire Google account %s, skipping",
+                        account.label,
+                        exc_info=True,
+                    )
 
         # C10: Start external Slack browser monitors for scribe sessions
         if is_scribe and self._config.scribe_slack_enabled:
@@ -2007,6 +2024,7 @@ class SummonSession:
                     prompt=build_scribe_scan_prompt(
                         nonce=_scribe_scan_nonce,
                         google_enabled=google_mcp_wired,
+                        google_accounts=google_accounts or None,
                         slack_enabled=bool(self._slack_monitors),
                         user_mention=scribe_user_mention,
                         importance_keywords=self._config.scribe_importance_keywords,
@@ -2048,6 +2066,7 @@ class SummonSession:
                 system_prompt = build_scribe_system_prompt(
                     scan_interval=max(1, self._scan_interval_s // 60),
                     google_enabled=google_mcp_wired,
+                    google_accounts=google_accounts or None,
                     slack_enabled=bool(self._slack_monitors),
                 )
                 if self._system_prompt_append:

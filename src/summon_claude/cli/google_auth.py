@@ -13,9 +13,31 @@ from typing import Any
 
 import click
 
-from summon_claude.config import get_config_file, get_google_credentials_dir
+from summon_claude.config import (
+    ACCOUNT_LABEL_RE,
+    GOOGLE_SCOPE_PREFIX,
+    GOOGLE_SERVICE_SCOPES,
+    RESERVED_ACCOUNT_LABELS,
+    get_config_file,
+    get_google_credentials_dir,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_account_label(label: str) -> str:
+    """Validate and return an account label for Google credential directories."""
+    if not ACCOUNT_LABEL_RE.match(label):
+        raise click.BadParameter(
+            f"Account label must be 1-20 lowercase alphanumeric characters or hyphens, "
+            f"starting with a letter. Got: {label!r}"
+        )
+    if label in RESERVED_ACCOUNT_LABELS:
+        raise click.BadParameter(
+            f"Account label {label!r} is reserved (conflicts with summon MCP server names)"
+        )
+    return label
+
 
 _CHOICE_CURRENT = "use-current"
 _CHOICE_EXISTING = "enter-existing"
@@ -30,20 +52,31 @@ _SETUP_STEPS = [
 ]
 
 
+def _roadmap_rows(step: int, completed: dict[int, str]) -> list[tuple[str, dict[str, Any]]]:
+    """Return step rows as (text, click_style_kwargs) tuples.
+
+    Shared by _setup_roadmap (plain text) and _setup_header (styled terminal).
+    """
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for i, title in enumerate(_SETUP_STEPS, 1):
+        if i in completed:
+            detail = f" [{completed[i]}]" if completed[i] else ""
+            rows.append((f"  ✓ {i}. {title}{detail}", {"fg": "green"}))
+        elif i == step:
+            rows.append((f"  ◉ {i}. {title}", {"bold": True}))
+        else:
+            rows.append((f"    {i}. {title}", {"dim": True}))
+    return rows
+
+
 def _setup_roadmap(step: int, completed: dict[int, str]) -> str:
     """Return the step roadmap as a plain-text string (for pick titles)."""
     lines = [
         f"Google OAuth Setup                            Step {step} of {len(_SETUP_STEPS)}",
         "-" * 60,
     ]
-    for i, title in enumerate(_SETUP_STEPS, 1):
-        if i in completed:
-            detail = f" [{completed[i]}]" if completed[i] else ""
-            lines.append(f"  ✓ {i}. {title}{detail}")
-        elif i == step:
-            lines.append(f"  ◉ {i}. {title}")
-        else:
-            lines.append(f"    {i}. {title}")
+    for text, _style in _roadmap_rows(step, completed):
+        lines.append(text)
     lines.append("")
     lines.append("-" * 60)
     lines.append("")
@@ -59,14 +92,8 @@ def _setup_header(step: int, completed: dict[int, str], *, skip_clear: bool = Fa
         bold=True,
     )
     click.echo(click.style("-" * 60, dim=True))
-    for i, title in enumerate(_SETUP_STEPS, 1):
-        if i in completed:
-            detail = f" [{completed[i]}]" if completed[i] else ""
-            click.secho(f"  ✓ {i}. {title}{detail}", fg="green")
-        elif i == step:
-            click.secho(f"  ◉ {i}. {title}", bold=True)
-        else:
-            click.secho(f"    {i}. {title}", dim=True)
+    for text, style in _roadmap_rows(step, completed):
+        click.secho(text, **style)
     click.echo()
 
 
@@ -138,12 +165,23 @@ def _show_and_open(urls: list[tuple[str, str]]) -> None:
             click.launch(url)
 
 
-def google_setup() -> None:
+def google_setup(account: str | None = None) -> None:
     """Interactive guided setup for Google OAuth credentials."""
+    if account is not None:
+        account = _validate_account_label(account)
+    else:
+        from summon_claude.config import _migrate_flat_credentials  # noqa: PLC0415
+
+        _migrate_flat_credentials()
+        account = "default"
+
+    account_dir = get_google_credentials_dir() / account
+    account_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+
     # Check for existing credentials
     client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
     client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
-    secrets_file = get_google_credentials_dir() / "client_env"
+    secrets_file = account_dir / "client_env"
 
     if not (client_id and client_secret) and secrets_file.exists():
         for line in secrets_file.read_text().splitlines():
@@ -620,7 +658,7 @@ def google_setup() -> None:
                     click.echo(f"Invalid client_secret.json: {e}")
                     continue
                 # Copy JSON to credentials dir for workspace-mcp (0o600 from creation)
-                dest = get_google_credentials_dir() / "client_secret.json"
+                dest = account_dir / "client_secret.json"
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, "w") as f:
@@ -646,9 +684,8 @@ def google_setup() -> None:
         readline.set_completer_delims(_prev_delims)
 
     # Save credentials (atomic write with 0o600 from creation — no world-readable window)
-    creds_dir = get_google_credentials_dir()
-    creds_dir.mkdir(parents=True, exist_ok=True)
-    secrets_file = creds_dir / "client_env"
+    account_dir.mkdir(parents=True, exist_ok=True)
+    secrets_file = account_dir / "client_env"
     fd = os.open(secrets_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(f"GOOGLE_OAUTH_CLIENT_ID={client_id}\nGOOGLE_OAUTH_CLIENT_SECRET={client_secret}\n")
@@ -662,28 +699,10 @@ def google_setup() -> None:
     click.echo("Run `summon auth google login` to authenticate.")
 
 
-# Read-only by default.  Append `:rw` to a service name to opt into write
-# scopes (e.g. "calendar:rw").  This keeps the consent screen minimal while
-# still being compatible with workspace-mcp's has_required_scopes() hierarchy.
-_GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
-_GOOGLE_SERVICE_SCOPES: dict[str, dict[str, list[str]]] = {
-    "gmail": {
-        "ro": ["gmail.readonly"],
-        "rw": ["gmail.modify", "gmail.settings.basic"],
-    },
-    "drive": {
-        "ro": ["drive.readonly"],
-        "rw": ["drive"],
-    },
-    "calendar": {
-        "ro": ["calendar.readonly"],
-        "rw": ["calendar"],
-    },
-}
 _GOOGLE_BASE_SCOPES = [
     "openid",
-    f"{_GOOGLE_SCOPE_PREFIX}userinfo.email",
-    f"{_GOOGLE_SCOPE_PREFIX}userinfo.profile",
+    f"{GOOGLE_SCOPE_PREFIX}userinfo.email",
+    f"{GOOGLE_SCOPE_PREFIX}userinfo.profile",
 ]
 
 
@@ -697,10 +716,10 @@ def _google_scopes_for_services(services: list[str]) -> list[str]:
     for spec in services:
         name, _, mode = spec.partition(":")
         tier = "rw" if mode == "rw" else "ro"
-        entry = _GOOGLE_SERVICE_SCOPES.get(name)
+        entry = GOOGLE_SERVICE_SCOPES.get(name)
         if entry:
             for s in entry[tier]:
-                full = s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}"
+                full = s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}"
                 if full not in scopes:
                     scopes.append(full)
     return scopes
@@ -709,12 +728,12 @@ def _google_scopes_for_services(services: list[str]) -> list[str]:
 def _describe_granted_scopes(granted: set[str]) -> str:
     """Return a short human summary of granted Google scopes."""
     parts: list[str] = []
-    for svc, tiers in _GOOGLE_SERVICE_SCOPES.items():
+    for svc, tiers in GOOGLE_SERVICE_SCOPES.items():
         rw_scopes = {
-            s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
         }
         ro_scopes = {
-            s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["ro"]
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["ro"]
         }
         if rw_scopes & granted:
             parts.append(f"{svc} (read-write)")
@@ -730,13 +749,13 @@ _GOOGLE_WRITE_PROMPTS: dict[str, str] = {
 }
 
 
-def _load_google_client_credentials() -> tuple[str, str]:
+def _load_google_client_credentials(account_dir: Path) -> tuple[str, str]:
     """Return (client_id, client_secret) or sys.exit."""
     client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
     client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
 
     if not (client_id and client_secret):
-        secrets_file = get_google_credentials_dir() / "client_env"
+        secrets_file = account_dir / "client_env"
         if secrets_file.exists():
             for line in secrets_file.read_text().splitlines():
                 if line.startswith("GOOGLE_OAUTH_CLIENT_ID="):
@@ -752,9 +771,9 @@ def _load_google_client_credentials() -> tuple[str, str]:
     return client_id, client_secret
 
 
-def _secure_credential_files(creds_dir: Path) -> None:
+def _secure_credential_files(directory: Path) -> None:
     """Ensure all credential JSON files are owner-readable only (0600)."""
-    for p in creds_dir.glob("*.json"):
+    for p in directory.glob("*.json"):
         p.chmod(0o600)
 
 
@@ -809,8 +828,29 @@ def _resolve_google_email(cred: Any) -> str:
         return "default"
 
 
-def google_auth() -> None:
+def google_auth(account: str | None = None) -> None:
     """Interactive Google Workspace authentication."""
+    if account is not None:
+        account = _validate_account_label(account)
+    else:
+        from summon_claude.config import discover_google_accounts  # noqa: PLC0415
+
+        accounts = discover_google_accounts()
+        if len(accounts) == 1:
+            account = accounts[0].label
+        elif len(accounts) > 1:
+            raise click.UsageError(
+                f"Multiple Google accounts found ({', '.join(a.label for a in accounts)}). "
+                f"Specify --account <label>"
+            )
+        else:
+            from summon_claude.config import _migrate_flat_credentials  # noqa: PLC0415
+
+            _migrate_flat_credentials()
+            account = "default"
+
+    account_dir = get_google_credentials_dir() / account
+
     try:
         from auth.credential_store import LocalDirectoryCredentialStore  # noqa: PLC0415
         from auth.google_auth import has_required_scopes  # noqa: PLC0415
@@ -822,9 +862,8 @@ def google_auth() -> None:
         )
         sys.exit(1)
 
-    client_id, client_secret = _load_google_client_credentials()
-    creds_dir = get_google_credentials_dir()
-    store = LocalDirectoryCredentialStore(str(creds_dir))
+    client_id, client_secret = _load_google_client_credentials(account_dir=account_dir)
+    store = LocalDirectoryCredentialStore(str(account_dir))
 
     # Load existing credential to derive prompt defaults.
     existing_cred = None
@@ -835,9 +874,9 @@ def google_auth() -> None:
     # Detect which services already have write access.
     granted = set(existing_cred.scopes or []) if existing_cred else set()
     existing_rw: set[str] = set()
-    for svc, tiers in _GOOGLE_SERVICE_SCOPES.items():
+    for svc, tiers in GOOGLE_SERVICE_SCOPES.items():
         rw_scopes = {
-            s if s.startswith("https://") else f"{_GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
         }
         if rw_scopes & granted:
             existing_rw.add(svc)
@@ -867,7 +906,7 @@ def google_auth() -> None:
             try:
                 existing_cred.refresh(Request())
                 store.store_credential(users[0], existing_cred)
-                _secure_credential_files(creds_dir)
+                _secure_credential_files(account_dir)
             except Exception:
                 existing_cred = None  # force re-auth below
 
@@ -890,10 +929,10 @@ def google_auth() -> None:
         cred = _run_google_oauth(client_id, client_secret, scopes)
         user_email = _resolve_google_email(cred)
         store.store_credential(user_email, cred)
-        _secure_credential_files(creds_dir)
+        _secure_credential_files(account_dir)
         click.echo()
         click.echo(f"Google Workspace authenticated as {user_email}.")
-        click.echo(f"Credentials stored in {creds_dir}")
+        click.echo(f"Credentials stored in {account_dir}")
 
     # Context-aware next-step guidance.
     from summon_claude.cli.config import parse_env_file  # noqa: PLC0415
@@ -919,11 +958,15 @@ def _check_google_status(
     *,
     prefix: str = "",
     quiet: bool = False,
+    account: str | None = None,
 ) -> bool | None:
     """Check Google Workspace authentication status.
 
     Returns True if valid, False if credentials exist but are broken,
     or None if Google isn't configured (not an error, just absent).
+
+    When *account* is given, checks only that account's subdirectory.
+    Otherwise iterates all discovered account subdirectories.
     """
     try:
         from auth.credential_store import LocalDirectoryCredentialStore  # noqa: PLC0415
@@ -932,51 +975,82 @@ def _check_google_status(
             click.echo(f"{prefix}[INFO] Google: not installed (install summon-claude[google])")
         return None
 
-    creds_dir = get_google_credentials_dir()
-    if not creds_dir.exists():
+    base_dir = get_google_credentials_dir()
+    if not base_dir.exists():
         if not quiet:
             click.echo(f"{prefix}[INFO] Google: not configured (run `summon auth google setup`)")
         return None
 
-    store = LocalDirectoryCredentialStore(str(creds_dir))
-    users = store.list_users()
-    if not users:
-        if not quiet:
-            click.echo(f"{prefix}[INFO] Google: no credentials found")
-        return None
-
-    all_ok = True
-    for user in users:
-        cred = store.get_credential(user)
-        if not cred:
-            if not quiet:
-                click.echo(f"{prefix}[FAIL] Google: invalid credential file ({user})")
-            all_ok = False
-            continue
-
-        if cred.valid:
-            status = "valid"
-        elif cred.expired and cred.refresh_token:
-            status = "expired (will refresh on next use)"
-        else:
+    if account is not None:
+        # Check a single account subdirectory.
+        account_dir = base_dir / account
+        if not account_dir.exists():
             if not quiet:
                 click.echo(
-                    f"{prefix}[FAIL] Google: invalid — re-run `summon auth google login` ({user})"
+                    f"{prefix}[INFO] Google: account {account!r} not found"
+                    f" (run `summon auth google setup --account {account}`)"
                 )
+            return None
+        dirs_to_check = [(account, account_dir)]
+    else:
+        # Iterate all discovered account subdirectories.
+        from summon_claude.config import discover_google_accounts  # noqa: PLC0415
+
+        discovered = discover_google_accounts()
+        if not discovered:
+            if not quiet:
+                click.echo(
+                    f"{prefix}[INFO] Google: not configured (run `summon auth google setup`)"
+                )
+            return None
+        dirs_to_check = [(a.label, base_dir / a.label) for a in discovered]
+
+    all_ok = True
+    for acct_label, creds_dir in dirs_to_check:
+        store = LocalDirectoryCredentialStore(str(creds_dir))
+        users = store.list_users()
+        if not users:
+            if not quiet:
+                click.echo(f"{prefix}[INFO] Google [{acct_label}]: no credentials found")
             all_ok = False
             continue
 
-        if not quiet:
-            # Summarise granted access level per service.
-            granted = set(cred.scopes or [])
-            access = _describe_granted_scopes(granted)
-            click.echo(f"{prefix}[PASS] Google: {status} ({user})")
-            if access:
-                click.echo(f"{prefix}  Access: {access}")
+        for user in users:
+            cred = store.get_credential(user)
+            if not cred:
+                if not quiet:
+                    click.echo(
+                        f"{prefix}[FAIL] Google [{acct_label}]: invalid credential file ({user})"
+                    )
+                all_ok = False
+                continue
+
+            if cred.valid:
+                status = "valid"
+            elif cred.expired and cred.refresh_token:
+                status = "expired (will refresh on next use)"
+            else:
+                if not quiet:
+                    click.echo(
+                        f"{prefix}[FAIL] Google [{acct_label}]: invalid"
+                        f" — re-run `summon auth google login --account {acct_label}` ({user})"
+                    )
+                all_ok = False
+                continue
+
+            if not quiet:
+                # Summarise granted access level per service.
+                granted = set(cred.scopes or [])
+                access = _describe_granted_scopes(granted)
+                click.echo(f"{prefix}[PASS] Google [{acct_label}]: {status} ({user})")
+                if access:
+                    click.echo(f"{prefix}  Access: {access}")
 
     return all_ok
 
 
-def google_status() -> None:
+def google_status(account: str | None = None) -> None:
     """Check Google Workspace authentication status (CLI entry point)."""
-    _check_google_status()
+    if account is not None:
+        account = _validate_account_label(account)
+    _check_google_status(account=account)

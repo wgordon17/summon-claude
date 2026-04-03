@@ -138,24 +138,27 @@ def auth_google() -> None:
 
 
 @auth_google.command("setup")
-def auth_google_setup() -> None:
+@click.option("--account", default=None, help="Account label (e.g., personal, work)")
+def auth_google_setup(account: str | None) -> None:
     """Interactive guided setup for Google OAuth credentials."""
     try:
-        google_setup()
+        google_setup(account=account)
     except KeyboardInterrupt:
         click.echo("\nSetup cancelled.", err=True)
 
 
 @auth_google.command("login")
-def auth_google_login() -> None:
+@click.option("--account", default=None, help="Account label (e.g., personal, work)")
+def auth_google_login(account: str | None) -> None:
     """Authenticate with Google Workspace."""
-    google_auth()
+    google_auth(account=account)
 
 
 @auth_google.command("status")
-def auth_google_status() -> None:
+@click.option("--account", default=None, help="Account label (e.g., personal, work)")
+def auth_google_status(account: str | None) -> None:
     """Check Google Workspace authentication status."""
-    google_status()
+    google_status(account=account)
 
 
 # ---------------------------------------------------------------------------

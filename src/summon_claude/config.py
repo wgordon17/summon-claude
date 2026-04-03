@@ -344,36 +344,260 @@ def get_google_credentials_dir() -> Path:
     return get_config_dir() / "google-credentials"
 
 
-def google_mcp_env() -> dict[str, str]:
-    """Build env var overrides so workspace-mcp uses summon's credential dir.
+def _migrate_flat_credentials() -> None:
+    """Auto-migrate flat google-credentials/ layout to google-credentials/default/.
 
-    Also sets ``GOOGLE_CLIENT_SECRETS_PATH`` if a ``client_secret.json``
-    has been saved in the credentials directory.
+    Triggers when: google-credentials/ exists AND contains client_env or *.json
+    files at the top level AND no subdirectories exist yet.
+    Idempotent: skips if migration is already complete.
     """
     creds_dir = get_google_credentials_dir()
-    env: dict[str, str] = {"WORKSPACE_MCP_CREDENTIALS_DIR": str(creds_dir)}
-    json_path = creds_dir / "client_secret.json"
+    if not creds_dir.exists():
+        return
+
+    # Check for existing subdirectories (non-hidden)
+    subdirs = [d for d in creds_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+
+    # Check for flat credential files
+    has_client_env = (creds_dir / "client_env").exists()
+    has_credential_json = any(
+        f.suffix == ".json" and "@" in f.stem for f in creds_dir.glob("*.json")
+    )
+    has_flat_files = has_client_env or has_credential_json
+
+    if not has_flat_files:
+        return  # Nothing to migrate
+
+    if subdirs and has_flat_files and not (creds_dir / "default").is_dir():
+        # Non-default subdirs exist alongside flat files — don't migrate (safety)
+        logger.warning(
+            "Google credentials directory has mixed layout (flat files + subdirs). "
+            "Skipping auto-migration. Move files manually to a subdirectory."
+        )
+        return
+    # Either no subdirs (fresh migration) or default/ exists (partial recovery)
+
+    default_dir = creds_dir / "default"
+    default_dir.mkdir(mode=0o700, exist_ok=True)
+
+    # Files to migrate: client_env, client_secret.json, *.json with @ in stem
+    files_to_move: list[Path] = []
+    if (creds_dir / "client_env").exists():
+        files_to_move.append(creds_dir / "client_env")
+    if (creds_dir / "client_secret.json").exists():
+        files_to_move.append(creds_dir / "client_secret.json")
+    for f in creds_dir.glob("*.json"):
+        if "@" in f.stem and f.parent == creds_dir:
+            files_to_move.append(f)
+
+    moved_count = 0
+    for src in files_to_move:
+        dest = default_dir / src.name
+        try:
+            src.rename(dest)
+            dest.chmod(0o600)
+            moved_count += 1
+        except FileNotFoundError:
+            pass  # Concurrent migration — file already moved
+
+    if moved_count:
+        logger.info(
+            "Migrated %d Google credential files to default/ subdirectory. "
+            "MCP tool names changed from mcp__workspace__* to mcp__workspace-default__*.",
+            moved_count,
+        )
+
+
+def discover_google_accounts() -> list[GoogleAccount]:
+    """Scan google-credentials/ for account subdirectories with valid credentials.
+
+    An account is wirable if its subdirectory contains BOTH:
+    (a) a client_env file (setup completed), AND
+    (b) at least one *.json file with @ in the stem (login completed).
+
+    Calls _migrate_flat_credentials() first for backward compatibility.
+    Returns a sorted list of GoogleAccount objects.
+    """
+    _migrate_flat_credentials()
+
+    creds_dir = get_google_credentials_dir()
+    if not creds_dir.exists():
+        return []
+
+    accounts: list[GoogleAccount] = []
+    for item in sorted(creds_dir.iterdir(), key=lambda p: p.name):
+        if not item.is_dir() or item.name.startswith("."):
+            continue
+
+        # Validate label
+        if not ACCOUNT_LABEL_RE.match(item.name):
+            logger.warning("Skipping Google account directory with invalid label: %s", item.name)
+            continue
+
+        if item.name in RESERVED_ACCOUNT_LABELS:
+            logger.warning("Skipping Google account with reserved label: %s", item.name)
+            continue
+
+        # Check for required files
+        if not (item / "client_env").exists():
+            continue  # Setup not completed
+
+        # Find credential JSON (login completed)
+        cred_files = sorted(f for f in item.glob("*.json") if "@" in f.stem)
+        if not cred_files:
+            continue  # Login not completed
+
+        # Extract and validate email from first credential file
+        raw_email = cred_files[0].stem
+        email: str | None = raw_email if EMAIL_RE.match(raw_email) else None
+        if email is None and raw_email:
+            logger.warning(
+                "Google account %s has credential file with invalid email format: %s",
+                item.name,
+                cred_files[0].name,
+            )
+
+        accounts.append(GoogleAccount(label=item.name, creds_dir=item, email=email))
+
+    return accounts
+
+
+def google_mcp_env_for_account(account: GoogleAccount) -> dict[str, str]:
+    """Build env var overrides for a specific Google account's workspace-mcp process.
+
+    Each account gets its own WORKSPACE_MCP_CREDENTIALS_DIR pointing to its
+    credential subdirectory, ensuring process-level credential isolation.
+
+    Raises ValueError if account.creds_dir is outside the google-credentials directory.
+    """
+    # Path containment guard — defense-in-depth
+    google_dir = get_google_credentials_dir()
+    if not account.creds_dir.resolve().is_relative_to(google_dir.resolve()):
+        raise ValueError(f"Account credential dir {account.creds_dir} is outside {google_dir}")
+
+    resolved = account.creds_dir.resolve()
+    env: dict[str, str] = {"WORKSPACE_MCP_CREDENTIALS_DIR": str(resolved)}
+    json_path = resolved / "client_secret.json"
     if json_path.exists():
         env["GOOGLE_CLIENT_SECRETS_PATH"] = str(json_path)
     return env
 
 
-VALID_GOOGLE_SERVICES = frozenset(
-    {
-        "gmail",
-        "drive",
-        "calendar",
-        "docs",
-        "sheets",
-        "chat",
-        "forms",
-        "slides",
-        "tasks",
-        "contacts",
-        "search",
-        "appscript",
-    }
-)
+# Read-only by default.  Append `:rw` to a service name to opt into write
+# scopes (e.g. "calendar:rw").  This keeps the consent screen minimal while
+# still being compatible with workspace-mcp's has_required_scopes() hierarchy.
+GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
+GOOGLE_SERVICE_SCOPES: dict[str, dict[str, list[str]]] = {
+    "gmail": {
+        "ro": ["gmail.readonly"],
+        "rw": ["gmail.modify", "gmail.settings.basic"],
+    },
+    "drive": {
+        "ro": ["drive.readonly"],
+        "rw": ["drive", "drive.file"],
+    },
+    "calendar": {
+        "ro": ["calendar.readonly"],
+        "rw": ["calendar", "calendar.events"],
+    },
+    "docs": {
+        "ro": ["documents.readonly"],
+        "rw": ["documents"],
+    },
+    "sheets": {
+        "ro": ["spreadsheets.readonly"],
+        "rw": ["spreadsheets"],
+    },
+    "chat": {
+        "ro": ["chat.messages.readonly", "chat.spaces.readonly"],
+        "rw": ["chat.messages", "chat.spaces"],
+    },
+    "forms": {
+        "ro": ["forms.body.readonly", "forms.responses.readonly"],
+        "rw": ["forms.body"],
+    },
+    "slides": {
+        "ro": ["presentations.readonly"],
+        "rw": ["presentations"],
+    },
+    "tasks": {
+        "ro": ["tasks.readonly"],
+        "rw": ["tasks"],
+    },
+    "contacts": {
+        "ro": ["contacts.readonly"],
+        "rw": ["contacts"],
+    },
+    "search": {
+        "ro": ["cse"],
+        "rw": ["cse"],
+    },
+    "appscript": {
+        "ro": ["script.projects.readonly", "script.deployments.readonly"],
+        "rw": ["script.projects", "script.deployments"],
+    },
+}
+
+
+def _scopes_to_services(granted: set[str]) -> list[str]:
+    """Invert GOOGLE_SERVICE_SCOPES: granted scopes -> list of service names."""
+    services = []
+    for service, scope_sets in GOOGLE_SERVICE_SCOPES.items():
+        all_scopes = scope_sets.get("ro", []) + scope_sets.get("rw", [])
+        full_scopes = {
+            s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in all_scopes
+        }
+        if granted & full_scopes:
+            services.append(service)
+    return sorted(services)
+
+
+def detect_account_services(account: GoogleAccount) -> str | None:
+    """Detect which Google services an account's credential supports.
+
+    Returns a comma-separated service string (e.g., "gmail,calendar,drive")
+    or None if the credential can't be read.
+
+    Uses a deferred import of LocalDirectoryCredentialStore to avoid making
+    workspace-mcp a hard dependency.
+    """
+    try:
+        from auth.credential_store import LocalDirectoryCredentialStore  # noqa: PLC0415
+    except ImportError:
+        logger.warning("workspace-mcp auth module not importable — cannot detect services")
+        return None
+
+    try:
+        store = LocalDirectoryCredentialStore(str(account.creds_dir))
+        users = store.list_users()
+        if not users:
+            return None
+        cred = store.get_credential(users[0])
+        if not cred or not cred.scopes:
+            return None
+        services = _scopes_to_services(set(cred.scopes))
+        return ",".join(services) if services else None
+    except Exception:
+        logger.warning("Failed to detect services for account %s", account.label, exc_info=True)
+        return None
+
+
+VALID_GOOGLE_SERVICES: frozenset[str] = frozenset(GOOGLE_SERVICE_SCOPES.keys())
+
+ACCOUNT_LABEL_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
+EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]{1,64}@[a-zA-Z0-9.\-]{1,253}\.[a-zA-Z]{2,}$")
+
+# Reserved labels that could create confusing MCP tool namespaces
+RESERVED_ACCOUNT_LABELS = frozenset({"cli", "slack", "canvas"})
+
+
+@dataclass(frozen=True)
+class GoogleAccount:
+    """A discovered Google account with isolated credentials."""
+
+    label: str  # user-chosen directory name (e.g., "personal")
+    creds_dir: Path  # absolute path to the account's credential subdirectory
+    email: str | None  # extracted from credential filename ({email}.json)
 
 
 _SLACK_WORKSPACE_FILE = "slack_workspace.json"
@@ -458,7 +682,6 @@ class SummonConfig(BaseSettings):
     # credential exists (from ``summon auth google login``).  Can be
     # explicitly disabled with SUMMON_SCRIBE_GOOGLE_ENABLED=false.
     scribe_google_enabled: bool | None = None  # None = auto-detect
-    scribe_google_services: str = "gmail,calendar,drive"  # comma-separated service list
 
     # External Slack data collector
     # Auto-detected: enabled when Playwright is installed AND valid browser
@@ -534,21 +757,6 @@ class SummonConfig(BaseSettings):
         valid = {"low", "medium", "high", "max"}
         if v not in valid:
             raise ValueError(f"SUMMON_DEFAULT_EFFORT must be one of {sorted(valid)}, got {v!r}")
-        return v
-
-    @field_validator("scribe_google_services")
-    @classmethod
-    def validate_scribe_google_services(cls, v: str) -> str:
-        """Validate that all service names are recognized by workspace-mcp."""
-        if not v:
-            return v
-        services = [s.strip() for s in v.split(",") if s.strip()]
-        invalid = set(services) - VALID_GOOGLE_SERVICES
-        if invalid:
-            raise ValueError(
-                f"SUMMON_SCRIBE_GOOGLE_SERVICES contains unknown services: {sorted(invalid)}. "
-                f"Valid: {sorted(VALID_GOOGLE_SERVICES)}"
-            )
         return v
 
     @field_validator("scribe_scan_interval_minutes")
@@ -750,17 +958,43 @@ def _scribe_enabled(cfg: dict[str, str]) -> bool:
     if explicit:
         return _is_truthy(explicit)
     # Auto-detect: enabled when any sub-feature's prerequisites are met.
-    # Uses raw detection primitives (not _scribe_google_enabled/_scribe_slack_enabled)
-    # to avoid circular dependency — those functions gate on _scribe_enabled.
+    # Uses raw detection primitives (not _scribe_slack_enabled)
+    # to avoid circular dependency — that function gates on _scribe_enabled.
     google_detected = _workspace_mcp_installed() and _google_credentials_exist()
     slack_detected = is_extra_installed("playwright") and _slack_browser_auth_exists()
     return google_detected or slack_detected
 
 
 def _google_credentials_exist() -> bool:
-    """Check if a user has completed Google OAuth (credential file exists)."""
+    """Check if a user has completed Google OAuth (credential file exists).
+
+    Lightweight check that does NOT trigger migration — used as a visibility
+    callback in the config wizard where side effects are undesirable.
+    Checks both subdirectory layout (post-migration) and flat layout (pre-migration).
+    """
     creds_dir = get_google_credentials_dir()
-    return any(f.suffix == ".json" and "@" in f.stem for f in creds_dir.glob("*.json"))
+    if not creds_dir.exists():
+        return False
+    # Check for subdirectory layout (post-migration) — validate labels to
+    # stay consistent with discover_google_accounts() (prevents auto-enabling
+    # scribe for directories that discover_google_accounts would skip).
+    for item in creds_dir.iterdir():
+        if (
+            item.is_dir()
+            and not item.name.startswith(".")
+            and ACCOUNT_LABEL_RE.match(item.name)
+            and item.name not in RESERVED_ACCOUNT_LABELS
+            and (item / "client_env").exists()
+            and any(f.suffix == ".json" and "@" in f.stem for f in item.glob("*.json"))
+        ):
+            return True
+    # Check for flat layout (pre-migration, backward compat).
+    # Requires both client_env AND credential JSON — consistent with
+    # discover_google_accounts() which also requires both.  Env-var-only
+    # users (no client_env) must run ``summon auth google setup`` first.
+    return (creds_dir / "client_env").exists() and any(
+        f.suffix == ".json" and "@" in f.stem for f in creds_dir.glob("*.json")
+    )
 
 
 def _slack_browser_auth_exists() -> bool:
@@ -781,16 +1015,6 @@ def _slack_browser_auth_exists() -> bool:
         return False
     state_path = Path(data.get("auth_state_path", ""))
     return state_path.is_file()
-
-
-def _scribe_google_enabled(cfg: dict[str, str]) -> bool:
-    # Explicit config takes precedence.  If unset, auto-detect from
-    # credentials: if workspace-mcp is installed AND a user credential
-    # file exists, Google is enabled automatically.
-    explicit = cfg.get("SUMMON_SCRIBE_GOOGLE_ENABLED", "")
-    if explicit:
-        return _scribe_enabled(cfg) and _is_truthy(explicit) and _workspace_mcp_installed()
-    return _scribe_enabled(cfg) and _workspace_mcp_installed() and _google_credentials_exist()
 
 
 def _scribe_slack_enabled(cfg: dict[str, str]) -> bool:
@@ -831,16 +1055,6 @@ def _validate_quiet_hours(v: str) -> str | None:
             datetime.strptime(part, "%H:%M")  # noqa: DTZ007
         except ValueError:
             return "Must be in HH:MM-HH:MM format"
-    return None
-
-
-def _validate_google_services(v: str) -> str | None:
-    if not v:
-        return None
-    services = [s.strip() for s in v.split(",") if s.strip()]
-    invalid = set(services) - VALID_GOOGLE_SERVICES
-    if invalid:
-        return f"Unknown services: {sorted(invalid)}. Valid: {sorted(VALID_GOOGLE_SERVICES)}"
     return None
 
 
@@ -979,16 +1193,6 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         input_type="flag",
         visible=lambda cfg: _scribe_enabled(cfg) and _workspace_mcp_installed(),
     ),
-    ConfigOption(
-        field_name="scribe_google_services",
-        env_key="SUMMON_SCRIBE_GOOGLE_SERVICES",
-        group="Scribe Google",
-        label="Google Services",
-        help_text="Comma-separated Google services for scribe (e.g. gmail,calendar,drive)",
-        input_type="text",
-        visible=_scribe_google_enabled,
-        validate_fn=_validate_google_services,
-    ),
     # Scribe Slack
     ConfigOption(
         field_name="scribe_slack_enabled",
@@ -1014,7 +1218,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS",
         group="Scribe Slack",
         label="Monitored Slack Channels",
-        help_text="Comma-separated Slack channel names for the scribe collector",
+        help_text="Comma-separated Slack channel IDs for the scribe collector",
         input_type="text",
         visible=_scribe_slack_enabled,
     ),

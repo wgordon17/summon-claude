@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from summon_claude.sessions.prompts.shared import _HEADLESS_BOILERPLATE
+
+if TYPE_CHECKING:
+    from summon_claude.config import GoogleAccount
 
 # NOTE: {summary} on line ~52 is intentional example text for Claude's output,
 # not a .replace() substitution target.
@@ -69,6 +74,7 @@ def build_scribe_system_prompt(
     *,
     scan_interval: int,
     google_enabled: bool = True,
+    google_accounts: list[GoogleAccount] | None = None,
     slack_enabled: bool = False,
 ) -> dict:
     """Build the Scribe system prompt with interpolated values.
@@ -76,15 +82,30 @@ def build_scribe_system_prompt(
     Args:
         scan_interval: Scan interval in minutes.
         google_enabled: Whether Google Workspace MCP is available.
+        google_accounts: List of configured Google accounts (multi-account mode).
         slack_enabled: Whether external Slack monitoring is enabled.
 
     """
-    google_section = (
-        "Your domain: Gmail, Google Calendar, Google Drive — "
-        "watch every inbox, every calendar event, every shared document.\n\n"
-        if google_enabled
-        else ""
-    )
+    if google_accounts:
+        lines = [
+            "## Google Workspace Accounts\n",
+            "You have read access to these Google accounts:\n",
+            "| Account | Email | Tools prefix |",
+            "|---------|-------|-------------|",
+        ]
+        for acct in google_accounts:
+            email = acct.email or "(unknown)"
+            lines.append(f"| {acct.label} | {email} | mcp__workspace-{acct.label}__* |")
+        lines.append("")
+        lines.append("Always identify which account data came from in your reports.\n\n")
+        google_section = "\n".join(lines)
+    elif google_enabled:
+        google_section = (
+            "Your domain: Gmail, Google Calendar, Google Drive — "
+            "watch every inbox, every calendar event, every shared document.\n\n"
+        )
+    else:
+        google_section = ""
     external_slack_section = (
         "Your domain: External Slack channels, DMs, and @mentions — "
         "every message in your monitored workspaces passes through your watch.\n\n"
@@ -108,6 +129,7 @@ def build_scribe_scan_prompt(  # noqa: PLR0913
     *,
     nonce: str,
     google_enabled: bool,
+    google_accounts: list[GoogleAccount] | None = None,
     slack_enabled: bool,
     user_mention: str,
     importance_keywords: str,
@@ -120,7 +142,21 @@ def build_scribe_scan_prompt(  # noqa: PLR0913
     parts = [f"[SUMMON-INTERNAL-{nonce}] Periodic scan. Check current time.\n\n"]
 
     # Source-specific instructions
-    if google_enabled:
+    if google_accounts:
+        scan_lines = ["## Google Workspace\n"]
+        for acct in google_accounts:
+            email_str = f" ({acct.email})" if acct.email else ""
+            scan_lines.append(f"### {acct.label}{email_str}")
+            scan_lines.append(
+                f"- Check Gmail via `mcp__workspace-{acct.label}__search_gmail_messages`"
+            )
+            scan_lines.append(f"- Check Calendar via `mcp__workspace-{acct.label}__get_events`")
+            scan_lines.append(
+                f"- Check Drive via `mcp__workspace-{acct.label}__search_drive_files`"
+            )
+            scan_lines.append("")
+        parts.append("\n".join(scan_lines))
+    elif google_enabled:
         parts.append(
             "## Google Workspace\n\n"
             "- Check Gmail for new/unread emails.\n"

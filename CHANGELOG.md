@@ -52,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Scribe & External Integrations
 
-- **Scribe agent configuration** — `SUMMON_SCRIBE_ENABLED`, `SUMMON_SCRIBE_MODEL`, `SUMMON_SCRIBE_GOOGLE_ENABLED` (default `false`), `SUMMON_SCRIBE_GOOGLE_SERVICES`, and related config vars for the scribe monitoring agent. `summon auth google login` / `summon auth google status` for Google Workspace OAuth (#41)
+- **Scribe agent configuration** — `SUMMON_SCRIBE_ENABLED`, `SUMMON_SCRIBE_MODEL`, `SUMMON_SCRIBE_GOOGLE_ENABLED` (default `false`), and related config vars for the scribe monitoring agent. Google services are auto-detected from OAuth scopes. `summon auth google login` / `summon auth google status` for Google Workspace OAuth (#41)
 - **Google Workspace MCP integration** — workspace-mcp subprocess wiring for Gmail, Calendar, and Drive access in Claude sessions when scribe is configured (#41)
 - **Scribe agent session profile** — `--scribe-profile` internal flag, persistent `0-scribe` channel with reuse-or-create pattern, scribe-specific canvas template, scan timer via `SessionScheduler`, and hardened prompt injection defense with attack pattern examples and canary phrase (#67)
 - **Scribe auto-spawn** — `summon project up` spawns scribe after PM sessions when `scribe_enabled=true`. Includes preflight dependency checks, idempotent guard, and scribe stop on `project down` (#67)

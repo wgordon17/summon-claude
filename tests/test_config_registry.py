@@ -123,7 +123,7 @@ class TestConfigOptionVisibility:
 
     def test_scribe_options_hidden_when_disabled(self):
         """Scribe sub-options should not be visible when scribe_enabled is false."""
-        cfg: dict[str, str] = {}
+        cfg: dict[str, str] = {"SUMMON_SCRIBE_ENABLED": "false"}
         with (
             patch("summon_claude.config._workspace_mcp_installed", return_value=False),
             patch("summon_claude.config._google_credentials_exist", return_value=False),
@@ -178,31 +178,6 @@ class TestConfigOptionVisibility:
 
 class TestVisibilityGracefulDegradation:
     """Visibility predicates degrade gracefully when optional extras missing."""
-
-    def test_scribe_google_hidden_without_workspace_mcp(self):
-        """scribe_google_services hidden when workspace-mcp binary not found."""
-        cfg = {"SUMMON_SCRIBE_ENABLED": "true"}
-        google_opt = next(o for o in CONFIG_OPTIONS if o.field_name == "scribe_google_services")
-        assert google_opt.visible is not None
-        with patch("summon_claude.config._workspace_mcp_installed", return_value=False):
-            assert not google_opt.visible(cfg)
-
-    def test_scribe_google_services_hidden_without_google_enabled(self):
-        """scribe_google_services hidden when SCRIBE_GOOGLE_ENABLED is false."""
-        cfg = {"SUMMON_SCRIBE_ENABLED": "true"}  # GOOGLE_ENABLED not set
-        google_opt = next(o for o in CONFIG_OPTIONS if o.field_name == "scribe_google_services")
-        with (
-            patch("summon_claude.config._workspace_mcp_installed", return_value=True),
-            patch("summon_claude.config._google_credentials_exist", return_value=False),
-        ):
-            assert not google_opt.visible(cfg)
-
-    def test_scribe_google_services_visible_when_all_enabled(self):
-        """scribe_google_services visible when scribe + google enabled + workspace-mcp installed."""
-        cfg = {"SUMMON_SCRIBE_ENABLED": "true", "SUMMON_SCRIBE_GOOGLE_ENABLED": "true"}
-        google_opt = next(o for o in CONFIG_OPTIONS if o.field_name == "scribe_google_services")
-        with patch("summon_claude.config._workspace_mcp_installed", return_value=True):
-            assert google_opt.visible(cfg)
 
     def test_scribe_slack_browser_hidden_without_playwright(self):
         """scribe_slack_browser hidden when playwright not importable."""
@@ -599,25 +574,6 @@ class TestValidateFunctions:
         from summon_claude.config import _validate_quiet_hours
 
         result = _validate_quiet_hours(value)
-        if expected_none:
-            assert result is None, f"Expected valid for {value!r}, got {result!r}"
-        else:
-            assert result is not None, f"Expected error for {value!r}"
-
-    @pytest.mark.parametrize(
-        "value,expected_none",
-        [
-            ("", True),
-            ("gmail", True),
-            ("gmail,calendar,drive", True),
-            ("gmail,unknown_svc", False),
-            ("bogus", False),
-        ],
-    )
-    def test_validate_google_services(self, value, expected_none):
-        from summon_claude.config import _validate_google_services
-
-        result = _validate_google_services(value)
         if expected_none:
             assert result is None, f"Expected valid for {value!r}, got {result!r}"
         else:

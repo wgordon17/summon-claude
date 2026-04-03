@@ -70,14 +70,7 @@ The Google collector is **auto-detected**: when workspace-mcp is installed and G
 
 To explicitly disable it: `summon config set SUMMON_SCRIBE_GOOGLE_ENABLED false`
 
-By default the scribe monitors `gmail`, `calendar`, and `drive`. To customize:
-
-```bash
-# Monitor only Gmail and Calendar, not Drive
-summon config set SUMMON_SCRIBE_GOOGLE_SERVICES gmail,calendar
-```
-
-The full set of supported services is: `gmail`, `calendar`, `drive`, `docs`, `sheets`, `chat`, `forms`, `slides`, `tasks`, `contacts`, `search`, `appscript`.
+Available Google services are auto-detected from the OAuth scopes granted during `summon auth google login`. The scribe automatically monitors whichever services the credential supports (e.g., Gmail, Calendar, Drive).
 
 ---
 

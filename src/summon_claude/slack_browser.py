@@ -120,9 +120,6 @@ async def _launch_browser(pw, browser_type: str, *, headless: bool = True):  # t
     if browser_type == "chrome":
         launcher = pw.chromium
         kwargs: dict = {"channel": "chrome"}
-    elif browser_type == "chromium":
-        launcher = pw.chromium
-        kwargs = {}
     elif browser_type == "firefox":
         launcher = pw.firefox
         kwargs = {}

@@ -931,16 +931,16 @@ class TestGoogleWorkspaceMCPReadToolsAutoApproved:
     @pytest.mark.parametrize(
         "tool_name",
         [
-            "mcp__workspace__get_gmail_message_content",
-            "mcp__workspace__get_events",
-            "mcp__workspace__get_drive_file_content",
-            "mcp__workspace__list_calendars",
-            "mcp__workspace__search_gmail_messages",
-            "mcp__workspace__search_drive_files",
-            "mcp__workspace__query_freebusy",
-            "mcp__workspace__read_sheet_values",
-            "mcp__workspace__check_drive_file_public_access",
-            "mcp__workspace__inspect_doc_structure",
+            "mcp__workspace-default__get_gmail_message_content",
+            "mcp__workspace-default__get_events",
+            "mcp__workspace-default__get_drive_file_content",
+            "mcp__workspace-default__list_calendars",
+            "mcp__workspace-default__search_gmail_messages",
+            "mcp__workspace-default__search_drive_files",
+            "mcp__workspace-default__query_freebusy",
+            "mcp__workspace-default__read_sheet_values",
+            "mcp__workspace-default__check_drive_file_public_access",
+            "mcp__workspace-default__inspect_doc_structure",
         ],
     )
     async def test_read_tool_auto_approved(self, tool_name):
@@ -956,20 +956,20 @@ class TestGoogleWorkspaceMCPWriteToolsRequireApproval:
     @pytest.mark.parametrize(
         "tool_name",
         [
-            "mcp__workspace__send_gmail_message",
-            "mcp__workspace__manage_event",
-            "mcp__workspace__create_drive_file",
-            "mcp__workspace__create_drive_folder",
-            "mcp__workspace__import_to_google_doc",
-            "mcp__workspace__draft_gmail_message",
-            "mcp__workspace__modify_gmail_message_labels",
-            "mcp__workspace__update_drive_file",
-            "mcp__workspace__set_drive_file_permissions",
-            "mcp__workspace__manage_drive_access",
-            "mcp__workspace__copy_drive_file",
+            "mcp__workspace-default__send_gmail_message",
+            "mcp__workspace-default__manage_event",
+            "mcp__workspace-default__create_drive_file",
+            "mcp__workspace-default__create_drive_folder",
+            "mcp__workspace-default__import_to_google_doc",
+            "mcp__workspace-default__draft_gmail_message",
+            "mcp__workspace-default__modify_gmail_message_labels",
+            "mcp__workspace-default__update_drive_file",
+            "mcp__workspace-default__set_drive_file_permissions",
+            "mcp__workspace-default__manage_drive_access",
+            "mcp__workspace-default__copy_drive_file",
             # Unknown (fail-closed: new tools default to requiring approval)
             pytest.param(
-                "mcp__workspace__some_future_write_tool",
+                "mcp__workspace-default__some_future_write_tool",
                 id="unknown_tool_requires_approval",
             ),
         ],
@@ -984,8 +984,8 @@ class TestGoogleWorkspaceMCPWriteToolsRequireApproval:
     @pytest.mark.parametrize(
         "tool_name",
         [
-            "mcp__workspace__send_gmail_message",
-            "mcp__workspace__manage_event",
+            "mcp__workspace-default__send_gmail_message",
+            "mcp__workspace-default__manage_event",
         ],
     )
     async def test_ignores_sdk_allow_suggestion(self, tool_name):
@@ -1006,24 +1006,84 @@ class TestGoogleWorkspaceMCPWriteToolsRequireApproval:
 class TestGoogleWorkspaceMCPGuardTests:
     """Guard tests: pin prefix sets so changes aren't silently missed."""
 
-    def test_auto_approve_prefixes_pinned(self):
-        from summon_claude.sessions.permissions import _GOOGLE_MCP_AUTO_APPROVE_PREFIXES
-
-        assert _GOOGLE_MCP_AUTO_APPROVE_PREFIXES == (
-            "mcp__workspace__get_",
-            "mcp__workspace__list_",
-            "mcp__workspace__search_",
-            "mcp__workspace__query_",
-            "mcp__workspace__read_",
-            "mcp__workspace__check_",
-            "mcp__workspace__debug_",
-            "mcp__workspace__inspect_",
-        )
-
     def test_prefix_pinned(self):
         from summon_claude.sessions.permissions import _GOOGLE_MCP_PREFIX
 
-        assert _GOOGLE_MCP_PREFIX == "mcp__workspace__"
+        assert _GOOGLE_MCP_PREFIX == "mcp__workspace-"
+
+    def test_google_read_tool_prefixes_pinned(self):
+        from summon_claude.sessions.permissions import _GOOGLE_READ_TOOL_PREFIXES
+
+        assert _GOOGLE_READ_TOOL_PREFIXES == (
+            "get_",
+            "list_",
+            "search_",
+            "query_",
+            "read_",
+            "check_",
+            "debug_",
+            "inspect_",
+        )
+
+    def test_is_google_read_tool(self):
+        from summon_claude.sessions.permissions import _is_google_read_tool
+
+        # Read tools
+        assert _is_google_read_tool("mcp__workspace-default__get_gmail_message") is True
+        assert _is_google_read_tool("mcp__workspace-personal__list_calendars") is True
+        assert _is_google_read_tool("mcp__workspace-work__search_drive_files") is True
+        # Write tools
+        assert _is_google_read_tool("mcp__workspace-default__send_gmail_message") is False
+        assert _is_google_read_tool("mcp__workspace-work__manage_event") is False
+        # Pathological
+        assert _is_google_read_tool("mcp__workspace-personal__get_x__send_y") is True
+        # Malformed
+        assert _is_google_read_tool("malformed_tool_name") is False
+
+
+class TestGoogleWriteToolNeverSessionCached:
+    """End-to-end: Google write tools require HITL on every invocation (never session-cached)."""
+
+    async def test_second_call_still_requires_hitl(self):
+        """Calling handle() twice for a Google write tool should prompt HITL both times."""
+        handler, provider, _ = make_handler()
+        provider.post_interactive = AsyncMock(side_effect=_interactive_auto_approve(handler))
+
+        tool = "mcp__workspace-default__send_gmail_message"
+
+        # First call — requires HITL
+        result1 = await handler.handle(tool, {}, None)
+        assert isinstance(result1, PermissionResultAllow)
+        assert provider.post_interactive.call_count == 1
+
+        # Second call — must still require HITL (not session-cached)
+        result2 = await handler.handle(tool, {}, None)
+        assert isinstance(result2, PermissionResultAllow)
+        assert provider.post_interactive.call_count == 2
+
+
+class TestGoogleWriteToolCacheExclusion:
+    """Defense-in-depth: _cache_session_approvals never caches Google write tools."""
+
+    def test_cache_session_approvals_excludes_google_write_tools(self):
+        """approve_session for a Google write tool must NOT populate either cache."""
+        handler, _, _ = make_handler()
+        batch_id = "test-batch"
+        handler._batch.tool_names[batch_id] = ["mcp__workspace-default__send_gmail_message"]
+        handler._batch.tool_inputs[batch_id] = [{"to": "user@example.com", "subject": "hi"}]
+        handler._cache_session_approvals(batch_id)
+        tool = "mcp__workspace-default__send_gmail_message"
+        assert tool not in handler._session_approved_tools
+        assert tool not in handler._session_approved_tool_args
+
+    def test_cache_session_approvals_allows_google_read_tools(self):
+        """approve_session for a Google read tool SHOULD populate bare-name cache."""
+        handler, _, _ = make_handler()
+        batch_id = "test-batch"
+        handler._batch.tool_names[batch_id] = ["mcp__workspace-default__get_gmail_message"]
+        handler._batch.tool_inputs[batch_id] = [{}]
+        handler._cache_session_approvals(batch_id)
+        assert "mcp__workspace-default__get_gmail_message" in handler._session_approved_tools
 
 
 class TestIdentityVerificationFailClosed:

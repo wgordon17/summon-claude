@@ -3,7 +3,7 @@
 ??? info "Prerequisites"
     This guide assumes you've completed the [Quick Start](../getting-started/quickstart.md) and have a working `summon config check`.
 
-The scribe is a background monitoring agent that keeps an eye on your inboxes so you don't have to. It periodically checks Gmail, Google Calendar, Google Drive, and optionally external Slack channels, then posts alerts, daily summaries, and important signals to its persistent `#0-summon-scribe` channel.
+The scribe is a background monitoring agent that keeps an eye on your inboxes so you don't have to. It periodically checks Gmail, Google Calendar, Google Drive, and optionally external Slack channels, then posts alerts, daily summaries, and important signals to its persistent `#0-scribe` channel.
 
 ---
 
@@ -65,7 +65,7 @@ The scribe auto-spawns when you run:
 summon project up
 ```
 
-It creates (or reuses) a persistent private channel called `#0-summon-scribe`. No manual start or `/summon CODE` authentication is needed — the scribe inherits the authenticated user from `project up`.
+It creates (or reuses) a persistent private channel called `#0-scribe`. No manual start or `/summon CODE` authentication is needed — the scribe inherits the authenticated user from `project up`.
 
 If the scribe was previously suspended by `project down`, `project up` resumes it with transcript continuity.
 
@@ -103,14 +103,8 @@ summon config set SUMMON_SCRIBE_QUIET_HOURS 23:00-07:00
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SUMMON_SCRIBE_GOOGLE_ENABLED` | auto-detect | Enable the Google Workspace data collector (auto-detected when credentials exist) |
-| `SUMMON_SCRIBE_GOOGLE_SERVICES` | `gmail,calendar,drive` | Comma-separated list of Google services to monitor |
 
-The default services are `gmail`, `calendar`, `drive`. The full set of supported services is: `gmail`, `calendar`, `drive`, `docs`, `sheets`, `chat`, `forms`, `slides`, `tasks`, `contacts`, `search`, `appscript`.
-
-```bash
-# Monitor only Gmail and Calendar, not Drive
-summon config set SUMMON_SCRIBE_GOOGLE_SERVICES gmail,calendar
-```
+Available services are auto-detected from the OAuth scopes granted during `summon auth google login`.
 
 !!! note "Requires workspace-mcp"
     The Google collector requires the `google` extra: `uv tool install "summon-claude[google]"`. Google OAuth credentials must also be configured via `summon auth google setup` and `summon auth google login`.
@@ -122,7 +116,7 @@ The scribe can monitor an external Slack workspace using browser-based WebSocket
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SUMMON_SCRIBE_SLACK_ENABLED` | auto-detect | Enable Slack channel monitoring (auto-detected when Playwright and browser auth exist) |
-| `SUMMON_SCRIBE_SLACK_BROWSER` | `chrome` | Browser to use: `chrome`, `chromium`, `firefox`, or `webkit` |
+| `SUMMON_SCRIBE_SLACK_BROWSER` | `chrome` | Browser to use: `chrome`, `firefox`, or `webkit` |
 | `SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS` | (unset) | Comma-separated channel IDs to monitor |
 
 DMs and @mentions are always captured regardless of `SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS`. The channel list controls which channels have *all* messages monitored.
@@ -220,7 +214,6 @@ SUMMON_SCRIBE_QUIET_HOURS=22:00-08:00
 
 # Google Workspace collector (auto-detected when credentials exist)
 # SUMMON_SCRIBE_GOOGLE_ENABLED=true  # optional — auto-detected
-SUMMON_SCRIBE_GOOGLE_SERVICES=gmail,calendar
 
 # External Slack collector (auto-detected when browser auth exists)
 # SUMMON_SCRIBE_SLACK_ENABLED=true  # optional — auto-detected

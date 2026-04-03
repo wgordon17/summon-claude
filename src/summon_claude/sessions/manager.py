@@ -1277,20 +1277,21 @@ class SessionManager:
         # Pre-flight: validate dependencies before spawning.
         # workspace-mcp uses bare top-level modules (not a 'workspace_mcp' package),
         # so find_spec('workspace_mcp') always returns None. Use the binary check.
-        if self._config.scribe_google_enabled and self._config.scribe_google_services:
-            from summon_claude.config import find_workspace_mcp_bin  # noqa: PLC0415
+        if self._config.scribe_google_enabled:
+            from summon_claude.config import (  # noqa: PLC0415
+                discover_google_accounts,
+                find_workspace_mcp_bin,
+            )
 
             if not find_workspace_mcp_bin().exists():
                 logger.error("Scribe requires Google support: pip install summon-claude[google]")
                 return
-            # Check for OAuth credentials
-            from summon_claude.config import get_google_credentials_dir  # noqa: PLC0415
-
-            creds_dir = get_google_credentials_dir()
-            if not creds_dir.is_dir() or not any(
-                f.suffix == ".json" and "@" in f.stem for f in creds_dir.glob("*.json")
-            ):
-                logger.error("Run 'summon auth google setup' before starting scribe")
+            accounts = discover_google_accounts()
+            if not accounts:
+                logger.error(
+                    "Scribe Google enabled but no accounts discovered. "
+                    "Run 'summon auth google setup' then 'summon auth google login'"
+                )
                 return
 
         if self._config.scribe_slack_enabled:

@@ -305,13 +305,11 @@ class TestStartScribeSpawnsSession:
     def test_start_scribe_spawns_session(self):
         """With scribe_enabled=True and no existing scribe, a session is registered.
 
-        Disables all preflight checks by: setting scribe_google_services="" and
-        scribe_slack_enabled=False, then mocking asyncio.create_task to avoid
-        needing a running event loop.
+        Disables all preflight checks by: disabling Google and Slack,
+        then mocking asyncio.create_task to avoid needing a running event loop.
         """
-        # Bypass google preflight: empty services string and slack disabled
         manager = make_manager(
-            scribe_enabled=True, scribe_google_services="", scribe_slack_enabled=False
+            scribe_enabled=True, scribe_google_enabled=False, scribe_slack_enabled=False
         )
 
         with (
@@ -983,9 +981,7 @@ class TestProjectDownStopsScribe:
 class TestScribePreflight:
     def test_scribe_preflight_missing_google(self):
         """_start_scribe_if_enabled returns early when workspace-mcp binary missing."""
-        manager = make_manager(
-            scribe_enabled=True, scribe_google_enabled=True, scribe_google_services="gmail"
-        )
+        manager = make_manager(scribe_enabled=True, scribe_google_enabled=True)
 
         missing_bin = MagicMock()
         missing_bin.exists.return_value = False
@@ -998,16 +994,14 @@ class TestScribePreflight:
 
         mock_cls.assert_not_called()
 
-    def test_scribe_preflight_missing_google_creds(self, tmp_path):
-        """_start_scribe_if_enabled returns early when Google creds directory has no .json files."""
-        manager = make_manager(
-            scribe_enabled=True, scribe_google_enabled=True, scribe_google_services="gmail"
-        )
+    def test_scribe_preflight_missing_google_creds_fatal(self, tmp_path):
+        """_start_scribe_if_enabled returns early when no Google accounts discovered."""
+        manager = make_manager(scribe_enabled=True, scribe_google_enabled=True)
 
         present_bin = MagicMock()
         present_bin.exists.return_value = True
 
-        # Create an empty creds directory (no .json files)
+        # Create an empty creds directory (no account subdirs)
         creds_dir = tmp_path / "google-creds"
         creds_dir.mkdir()
 
@@ -1145,7 +1139,7 @@ class TestResumeOrStartScribe:
     async def test_falls_through_to_fresh_start(self):
         """When no suspended scribe exists, falls through to _start_scribe_if_enabled."""
         manager = make_manager(
-            scribe_enabled=True, scribe_google_services="", scribe_slack_enabled=False
+            scribe_enabled=True, scribe_google_enabled=False, scribe_slack_enabled=False
         )
 
         mock_reg = _mock_registry_with_suspended_scribe(None)  # no suspended scribe
@@ -1191,7 +1185,7 @@ class TestResumeOrStartScribe:
     async def test_resume_failure_marks_errored_and_falls_through(self):
         """If resume fails, marks old session errored and falls through to fresh start."""
         manager = make_manager(
-            scribe_enabled=True, scribe_google_services="", scribe_slack_enabled=False
+            scribe_enabled=True, scribe_google_enabled=False, scribe_slack_enabled=False
         )
 
         suspended_scribe = {

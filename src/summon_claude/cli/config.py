@@ -563,10 +563,20 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
 
     # Optional extras availability (informational)
     if not quiet:
-        from summon_claude.config import is_extra_installed  # noqa: PLC0415
+        from summon_claude.config import (  # noqa: PLC0415
+            discover_google_accounts,
+            is_extra_installed,
+        )
 
+        accounts = discover_google_accounts()
+        bin_exists = find_workspace_mcp_bin().exists()
+        label = (
+            f"workspace-mcp (Google: {len(accounts)} account{'s' if len(accounts) != 1 else ''})"
+            if accounts
+            else "workspace-mcp (Google)"
+        )
         extras = [
-            ("workspace-mcp (Google)", find_workspace_mcp_bin().exists()),
+            (label, bin_exists and len(accounts) > 0),
             ("playwright (Slack browser)", is_extra_installed("playwright")),
         ]
         for label, installed in extras:
