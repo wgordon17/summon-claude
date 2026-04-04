@@ -3080,7 +3080,7 @@ class SummonSession:
                 stderr=asyncio.subprocess.PIPE,
                 env={**os.environ, "GIT_CEILING_DIRECTORIES": cwd},
             )
-            stdout_bytes, _ = await proc.communicate()
+            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             stdout = stdout_bytes.decode(errors="replace")
 
             if stdout:

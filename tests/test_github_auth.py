@@ -682,6 +682,22 @@ class TestLoadTokenEnvFallback:
         assert result == "sk-ant-badtoken"
         assert any("unrecognized format" in r.message for r in caplog.records)
 
+    def test_env_var_empty_string_returns_none(self, tmp_path):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": ""}),
+        ):
+            assert load_token() is None
+
+    def test_env_var_whitespace_only_returns_none(self, tmp_path):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "   "}),
+        ):
+            assert load_token() is None
+
     def test_env_var_valid_prefixes_no_warning(self, tmp_path, caplog):
         token_file = tmp_path / "nonexistent.json"
         for prefix in ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_"):

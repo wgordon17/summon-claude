@@ -715,7 +715,7 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
             click.echo(f"  {format_tag('INFO')} Lifecycle hooks: not set (summon hooks set)")
 
     except Exception:
-        logging.getLogger(__name__).debug("Feature inventory DB error", exc_info=True)
+        logger.debug("Feature inventory DB error", exc_info=True)
 
     # Hook bridge — check settings.json for summon-owned entries
     has_bridge = False
@@ -734,7 +734,7 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
         else:
             click.echo(f"  {format_tag('INFO')} Hook bridge: not installed (summon hooks install)")
     except Exception:
-        logging.getLogger(__name__).debug("Hook bridge check error", exc_info=True)
+        logger.debug("Hook bridge check error", exc_info=True)
 
     # Scribe → Google auth nudge
     scribe_on = config_values.get("SUMMON_SCRIBE_ENABLED", "").lower() in _BOOL_TRUE
@@ -783,6 +783,6 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
     if next_steps:
         click.echo()
         click.echo(click.style("Next steps:", bold=True))
-        _col = 36
+        cmd_col = 36
         for cmd, desc in next_steps:
-            click.echo(f"  {cmd:<{_col}}{desc}")
+            click.echo(f"  {cmd:<{cmd_col}}{desc}")

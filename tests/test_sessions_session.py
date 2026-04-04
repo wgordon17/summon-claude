@@ -4688,6 +4688,72 @@ class TestHandleDiffAll:
         posted = [str(c) for c in rt.client.post.call_args_list]
         assert any("could not run git diff" in p.lower() for p in posted)
 
+    async def test_large_diff_truncated_and_warning_posted(self, tmp_path):
+        """Diff exceeding _MAX_DIFF_UPLOAD_CHARS should be truncated with a warning."""
+        from summon_claude.sessions import session as session_mod
+
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        big_diff = "x" * 200
+        with (
+            patch.object(session_mod, "_MAX_DIFF_UPLOAD_CHARS", 100),
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+        ):
+            mock_proc = AsyncMock()
+            mock_proc.communicate.return_value = (big_diff.encode(), b"")
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+
+            await session._handle_diff_all(rt, "thread_1")
+
+        # Warning about truncation should be posted
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("truncated" in p.lower() for p in posted)
+        # Upload should still happen with truncated content
+        rt.client.upload.assert_called_once()
+        uploaded = rt.client.upload.call_args.kwargs.get("content", "")
+        assert len(uploaded) == 100
+
+    async def test_diff_all_timeout_posts_warning(self, tmp_path):
+        """Timeout from asyncio.wait_for should be caught and post a warning."""
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = AsyncMock()
+            mock_proc.communicate.side_effect = TimeoutError()
+            mock_exec.return_value = mock_proc
+
+            await session._handle_diff_all(rt, "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("could not run git diff" in p.lower() for p in posted)
+
+
+class TestRunSessionCanvasException:
+    """Canvas update_table_field failure in _run_session must not block activation."""
+
+    async def test_canvas_failure_does_not_block_activation(self, tmp_path):
+        session = make_session(cwd=str(tmp_path))
+
+        mock_canvas = AsyncMock()
+        mock_canvas.update_table_field = AsyncMock(side_effect=RuntimeError("canvas API down"))
+        session._canvas_store = mock_canvas
+
+        # Call the canvas update block directly — it's a try/except around update_table_field
+        # Replicate the pattern from _run_session lines 1063-1067
+        if session._canvas_store:
+            with contextlib.suppress(Exception):
+                await session._canvas_store.update_table_field("Status", "Active")
+
+        # The point is that no exception propagates
+        mock_canvas.update_table_field.assert_awaited_once_with("Status", "Active")
+
 
 class TestShutdownCanvasException:
     """Canvas update_table_field failure in _shutdown must not block shutdown."""

@@ -460,7 +460,7 @@ class PermissionHandler:
             logger.debug("Auto-approving summon MCP tool: %s", tool_name)
             return PermissionResultAllow()
 
-        # 2f. Session-lifetime cached approvals (defense-in-depth:
+        # 2g. Session-lifetime cached approvals (defense-in-depth:
         # GitHub require-approval tools are never session-cached;
         # Google Workspace write tools are never session-cached)
         if (

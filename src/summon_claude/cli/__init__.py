@@ -748,6 +748,19 @@ def cmd_init(ctx: click.Context) -> None:
             prompt_default = current_value or (str(default) if default is not None else None)
             raw = click.prompt(f"    {opt.label}", default=prompt_default, show_default=True)
             value = str(raw)
+            if value and opt.validate_fn:
+                err = opt.validate_fn(value)
+                while err:
+                    click.echo(f"    Error: {err}")
+                    if hint:
+                        click.echo(click.style(f"    {hint}", dim=True))
+                    raw = click.prompt(
+                        f"    {opt.label}", default=prompt_default, show_default=True
+                    )
+                    value = str(raw)
+                    if not value:
+                        break
+                    err = opt.validate_fn(value)
 
         else:  # text
             prompt_default = current_value or (str(default) if default is not None else "") or ""
@@ -758,6 +771,8 @@ def cmd_init(ctx: click.Context) -> None:
                 err = opt.validate_fn(value)
                 while err:
                     click.echo(f"    Error: {err}")
+                    if hint:
+                        click.echo(click.style(f"    {hint}", dim=True))
                     value = click.prompt(
                         f"    {opt.label}",
                         default=prompt_default,

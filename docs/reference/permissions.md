@@ -32,7 +32,7 @@ You can configure directories where writes are allowed **without entering contai
 summon config set SUMMON_SAFE_WRITE_DIRS "hack/,.dev/"
 ```
 
-Paths are **comma-separated**. Relative paths (e.g. `hack/`) are resolved relative to the session's working directory. Absolute paths (e.g. `/opt/shared/config/`) are also supported. Tilde (`~`) is expanded to the home directory. Trailing slashes are optional — `hack` and `hack/` are equivalent.
+Paths are **comma-separated**. Relative paths (e.g. `hack/`) are resolved relative to the project root (the `cwd` passed to the session). Absolute paths (e.g. `/opt/shared/config/`) are also supported. Tilde (`~`) is expanded to the home directory. Trailing slashes are optional — `hack` and `hack/` are equivalent.
 
 Files written to these directories bypass the containment requirement entirely. Paths are resolved with symlink protection (`Path.resolve()` on both sides) to prevent escapes. Setting `safe_write_dirs=.` exempts the entire project directory for file-targeting tools (Bash remains gated regardless).
 

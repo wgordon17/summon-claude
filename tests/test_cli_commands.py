@@ -188,6 +188,51 @@ class TestCmdInit:
         assert "xoxb-existing" in content
         assert "Existing config found" in result.output
 
+    def test_init_user_value_overrides_existing(self, tmp_path):
+        """User-entered values must override existing config values on re-run.
+
+        Verifies merge order: merged = {**existing, **collected} means collected wins.
+        """
+        config_file = tmp_path / "config.env"
+        config_file.write_text(
+            "SUMMON_SLACK_BOT_TOKEN=xoxb-old-token\n"
+            "SUMMON_SLACK_APP_TOKEN=xapp-existing\n"
+            "SUMMON_SLACK_SIGNING_SECRET=abcdef012345\n"
+        )
+
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-new-token",  # new bot token (override existing)
+                    "",  # slack_app_token (keep existing)
+                    "",  # signing_secret (keep existing)
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # Configure advanced settings?
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        content = config_file.read_text()
+        assert "xoxb-new-token" in content, f"New value not written. Config:\n{content}"
+        assert "xoxb-old-token" not in content, f"Old value not overridden. Config:\n{content}"
+
     def test_init_preserves_hidden_keys_on_rerun(self, tmp_path):
         """Hidden config keys (visible=False) must survive when init is re-run.
 
@@ -1126,6 +1171,13 @@ class TestGetUpgradeCommand:
 
         with patch("summon_claude.cli.config.sys") as mock_sys:
             mock_sys.executable = "/opt/homebrew/Cellar/summon-claude/1.0/libexec/bin/python"
+            assert "brew upgrade" in get_upgrade_command()
+
+    def test_homebrew_detected_via_homebrew_path(self):
+        from summon_claude.cli.config import get_upgrade_command
+
+        with patch("summon_claude.cli.config.sys") as mock_sys:
+            mock_sys.executable = "/opt/homebrew/opt/python/bin/python3"
             assert "brew upgrade" in get_upgrade_command()
 
     def test_pipx_detected(self):

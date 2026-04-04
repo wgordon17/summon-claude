@@ -196,7 +196,7 @@ def load_token() -> str | None:
         pass
 
     # Fallback: check SUMMON_GITHUB_PAT env var (for CI/CD and enterprise environments)
-    pat = os.environ.get("SUMMON_GITHUB_PAT", "")
+    pat = os.environ.get("SUMMON_GITHUB_PAT", "").strip()
     if pat:
         clean = pat.replace("\r", "").replace("\n", "")
         # Validate known GitHub token formats to catch misconfiguration early

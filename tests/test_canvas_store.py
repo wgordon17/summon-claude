@@ -553,6 +553,7 @@ class TestCanvasStoreUpdateTableField:
         )
         await store.update_table_field("Status", "Active")
         assert store.read() == md
+        assert store._dirty is False
 
     async def test_field_name_with_regex_metacharacters(self, canvas_registry):
         client = _make_mock_client()
