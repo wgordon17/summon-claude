@@ -588,11 +588,18 @@ def project_update(ctx: click.Context, name_or_id: str, jql: str | None) -> None
 # ---------------------------------------------------------------------------
 
 
-def _mask_secret(value: str, prefix_len: int = 5, suffix_len: int = 4) -> str:
-    """Return a masked preview of a secret value for user feedback."""
-    if len(value) <= prefix_len + suffix_len:
-        return f"{'*' * len(value)} ({len(value)} chars)"
-    return f"{value[:prefix_len]}...{value[-suffix_len:]} ({len(value)} chars)"
+def _mask_secret(value: str, prefix_len: int = 5) -> str:
+    """Return a masked preview of a secret value for user feedback.
+
+    Shows a recognized format prefix (if any) plus character count.
+    Does not reveal unique suffix characters to avoid terminal scrollback leaks.
+    """
+    if not value:
+        return "(empty)"
+    # Only show prefix when it reveals less than half the value
+    if len(value) > 2 * prefix_len:
+        return f"{value[:prefix_len]}*** [{len(value)} chars]"
+    return f"[{len(value)} chars]"
 
 
 @cli.command("init")

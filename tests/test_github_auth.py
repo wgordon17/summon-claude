@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import stat
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -653,14 +655,12 @@ class TestLoadTokenEnvFallback:
 
     def test_none_when_no_file_no_env(self, tmp_path):
         token_file = tmp_path / "nonexistent.json"
+        # Use clear=True to guarantee SUMMON_GITHUB_PAT is absent
+        clean_env = {k: v for k, v in os.environ.items() if k != "SUMMON_GITHUB_PAT"}
         with (
             patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
-            patch.dict("os.environ", {}, clear=False),
+            patch.dict("os.environ", clean_env, clear=True),
         ):
-            # Ensure SUMMON_GITHUB_PAT is not set
-            import os
-
-            os.environ.pop("SUMMON_GITHUB_PAT", None)
             assert load_token() is None
 
     def test_env_var_strips_crlf(self, tmp_path):
@@ -670,3 +670,26 @@ class TestLoadTokenEnvFallback:
             patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "ghp_token\r\n"}),
         ):
             assert load_token() == "ghp_token"
+
+    def test_env_var_warns_on_unrecognized_prefix(self, tmp_path, caplog):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "sk-ant-badtoken"}),
+            caplog.at_level(logging.WARNING, logger="summon_claude.github_auth"),
+        ):
+            result = load_token()
+        assert result == "sk-ant-badtoken"
+        assert any("unrecognized format" in r.message for r in caplog.records)
+
+    def test_env_var_valid_prefixes_no_warning(self, tmp_path, caplog):
+        token_file = tmp_path / "nonexistent.json"
+        for prefix in ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_"):
+            with (
+                patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+                patch.dict("os.environ", {"SUMMON_GITHUB_PAT": f"{prefix}test"}),
+                caplog.at_level(logging.WARNING, logger="summon_claude.github_auth"),
+            ):
+                caplog.clear()
+                load_token()
+            assert not any("unrecognized format" in r.message for r in caplog.records)

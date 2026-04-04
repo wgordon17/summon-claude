@@ -453,6 +453,7 @@ class TestFeatureInventory:
 
         out = capsys.readouterr().out
         assert "Getting started" not in out
+        assert "summon doctor" in out
 
     def test_shows_workflow_configured(self, tmp_path, capsys):
         """Feature inventory shows PASS when workflow defaults are set."""

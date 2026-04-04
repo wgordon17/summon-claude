@@ -419,3 +419,49 @@ class TestInteractiveSlackAuth:
             pytest.raises(RuntimeError, match="symlink"),
         ):
             await interactive_slack_auth("https://test.slack.com")
+
+    @pytest.mark.asyncio
+    async def test_non_timeout_exception_reraises_original(self, tmp_path):
+        """Non-timeout exceptions from wait_for_url must propagate unchanged."""
+        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import patch as _patch
+
+        from summon_claude.slack_browser import interactive_slack_auth
+
+        auth_dir = tmp_path / "browser_auth"
+        auth_dir.mkdir()
+
+        class NetworkError(Exception):
+            pass
+
+        # Build Playwright mock chain
+        mock_page = AsyncMock()
+        mock_page.url = "https://test.slack.com/signin"
+        mock_page.wait_for_url = AsyncMock(side_effect=NetworkError("connection reset"))
+        mock_page.bring_to_front = AsyncMock()
+        mock_page.locator = MagicMock()
+        mock_page.locator.return_value.first = AsyncMock()
+        mock_page.locator.return_value.first.click = AsyncMock(side_effect=Exception("no input"))
+
+        mock_context = AsyncMock()
+        mock_context.new_page = AsyncMock(return_value=mock_page)
+
+        mock_browser = AsyncMock()
+        mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+        mock_pw_instance = AsyncMock()
+        mock_pw_instance.chromium = AsyncMock()
+        mock_pw_instance.chromium.launch = AsyncMock(return_value=mock_browser)
+
+        mock_pw_cm = AsyncMock()
+        mock_pw_cm.__aenter__ = AsyncMock(return_value=mock_pw_instance)
+        mock_pw_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            _patch("summon_claude.slack_browser.get_browser_auth_dir", return_value=auth_dir),
+            _patch("playwright.async_api.async_playwright", return_value=mock_pw_cm),
+            pytest.raises(NetworkError, match="connection reset"),
+        ):
+            await interactive_slack_auth("https://test.slack.com")
+
+        mock_browser.close.assert_awaited_once()

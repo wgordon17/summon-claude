@@ -198,7 +198,12 @@ def load_token() -> str | None:
     # Fallback: check SUMMON_GITHUB_PAT env var (for CI/CD and enterprise environments)
     pat = os.environ.get("SUMMON_GITHUB_PAT", "")
     if pat:
-        return pat.replace("\r", "").replace("\n", "")
+        clean = pat.replace("\r", "").replace("\n", "")
+        # Validate known GitHub token formats to catch misconfiguration early
+        valid_prefixes = ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_")
+        if not any(clean.startswith(p) for p in valid_prefixes):
+            logger.warning("SUMMON_GITHUB_PAT has unrecognized format (expected ghp_/gho_/...)")
+        return clean
 
     return None
 

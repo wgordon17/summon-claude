@@ -17,13 +17,16 @@ pytestmark = pytest.mark.docs
 
 _SUMMON_TEST_PREFIX = "SUMMON_TEST_"
 
+# Env vars read directly via os.environ (not SummonConfig fields)
+_NON_CONFIG_VARS = frozenset({"SUMMON_GITHUB_PAT"})
+
 # Files that legitimately reference removed/historical env vars
 _EXCLUDED_FILES = {"changelog.md"}
 
 
 def _is_non_config(var: str) -> bool:
-    """Filter out SUMMON_TEST_* vars (test fixtures, not real config)."""
-    return var.startswith(_SUMMON_TEST_PREFIX)
+    """Filter out vars that are not SummonConfig fields."""
+    return var.startswith(_SUMMON_TEST_PREFIX) or var in _NON_CONFIG_VARS
 
 
 # ---------------------------------------------------------------------------

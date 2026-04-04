@@ -88,12 +88,11 @@ class CanvasStore:
         await self._persist()
 
     async def update_table_field(self, field_name: str, value: str) -> None:
-        """Update a field value in a markdown table row.
+        """Update a field value in a two-column markdown table row.
 
         Finds ``| {field_name} | ... |`` and replaces the value cell.
+        Only works for rows with exactly two data columns (field + value).
         """
-        import re  # noqa: PLC0415
-
         pattern = re.compile(
             rf"^\| *{re.escape(field_name)} *\|[^|]*\|",
             re.MULTILINE,

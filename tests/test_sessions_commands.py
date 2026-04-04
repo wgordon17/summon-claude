@@ -1095,3 +1095,18 @@ class TestAutoHandler:
         defn = COMMAND_ACTIONS["auto"]
         assert defn.handler is not None
         assert "automode" in (defn.aliases or [])
+
+
+# ------------------------------------------------------------------
+# !diff command handler tests
+# ------------------------------------------------------------------
+
+
+class TestDiffHandler:
+    """Tests for !diff command dispatch."""
+
+    async def test_bare_diff_sets_diff_all_metadata(self, make_context):
+        """Bare !diff with no args should set metadata['diff_all'] = True."""
+        context = make_context()
+        result = await dispatch("diff", [], context)
+        assert result.metadata.get("diff_all") is True

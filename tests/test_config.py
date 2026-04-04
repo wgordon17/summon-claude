@@ -452,6 +452,7 @@ class TestCwdValidators:
         assert cfg.scribe_cwd is not None
         assert cfg.scribe_cwd.startswith("/")
         assert "~" not in cfg.scribe_cwd
+        assert cfg.scribe_cwd.endswith("/scribe-dir")
 
     def test_scribe_cwd_rejects_relative(self):
         with pytest.raises(Exception, match="absolute path"):

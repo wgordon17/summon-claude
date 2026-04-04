@@ -653,11 +653,17 @@ async def interactive_slack_auth(
                 timeout=_AUTH_TIMEOUT_S * 1000,
                 wait_until="commit",
             )
-        except Exception:
+        except Exception as exc:
             await browser.close()
-            raise TimeoutError(
-                f"Slack login not completed within {_AUTH_TIMEOUT_S}s for {workspace_url}"
-            ) from None
+            # Playwright raises its own TimeoutError (not asyncio.TimeoutError).
+            # Convert timeout to a clean message; re-raise all others as-is.
+            from playwright.async_api import TimeoutError as PlaywrightTimeout  # noqa: PLC0415
+
+            if isinstance(exc, PlaywrightTimeout):
+                raise TimeoutError(
+                    f"Slack login not completed within {_AUTH_TIMEOUT_S}s for {workspace_url}"
+                ) from exc
+            raise
 
         logger.info("Authenticated at %s", page.url)
 

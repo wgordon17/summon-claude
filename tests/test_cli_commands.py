@@ -188,6 +188,58 @@ class TestCmdInit:
         assert "xoxb-existing" in content
         assert "Existing config found" in result.output
 
+    def test_init_preserves_hidden_keys_on_rerun(self, tmp_path):
+        """Hidden config keys (visible=False) must survive when init is re-run.
+
+        SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS is never presented to the user
+        during init (visible=lambda _config: False). The fix merges existing
+        values before writing: merged = {**existing, **collected}. This test
+        verifies that hidden keys are not silently dropped on re-run.
+        """
+        config_file = tmp_path / "config.env"
+        config_file.write_text(
+            "SUMMON_SLACK_BOT_TOKEN=xoxb-existing\n"
+            "SUMMON_SLACK_APP_TOKEN=xapp-existing\n"
+            "SUMMON_SLACK_SIGNING_SECRET=abcdef012345\n"
+            "SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS=C123,C456\n"
+        )
+
+        # All empty inputs = accept existing/default values (same as test_init_with_existing_config)
+        inputs = (
+            "\n".join(
+                [
+                    "",  # slack_bot_token (keep existing)
+                    "",  # slack_app_token (keep existing)
+                    "",  # signing_secret (keep existing)
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # Configure advanced settings?
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        assert config_file.exists(), f"Config file not created. Output: {result.output}"
+        content = config_file.read_text()
+        assert "SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS=C123,C456" in content, (
+            f"Hidden key was dropped on re-run. Config:\n{content}\nOutput:\n{result.output}"
+        )
+
     def test_init_validates_bot_token_prefix(self, tmp_path):
         """init should reject bot tokens that don't start with xoxb-."""
         config_dir = tmp_path / "summon"
@@ -1024,27 +1076,39 @@ class TestMaskSecret:
 
         result = _mask_secret("xoxb-1234567890-abcdefghij")
         assert result.startswith("xoxb-")
-        assert "ghij" in result
         assert "26 chars" in result
+        # Must not reveal unique suffix characters
+        assert "ghij" not in result
 
     def test_short_value(self):
         from summon_claude.cli import _mask_secret
 
         result = _mask_secret("abc")
-        assert "***" in result
         assert "3 chars" in result
+        # Short values should not reveal original content
+        assert "abc" not in result
 
     def test_empty_value(self):
         from summon_claude.cli import _mask_secret
 
         result = _mask_secret("")
-        assert "0 chars" in result
+        assert result == "(empty)"
 
-    def test_exact_boundary(self):
+    def test_short_value_no_prefix(self):
+        """Values ≤ 2*prefix_len (10 chars) show only count, no prefix."""
         from summon_claude.cli import _mask_secret
 
-        result = _mask_secret("123456789")  # exactly prefix_len + suffix_len
-        assert "9 chars" in result
+        result = _mask_secret("1234567890")  # exactly 10 chars = 2 * prefix_len
+        assert "10 chars" in result
+        assert "12345" not in result  # prefix must NOT be shown
+
+    def test_boundary_prefix_shown(self):
+        """Values > 2*prefix_len (11+ chars) show prefix + count."""
+        from summon_claude.cli import _mask_secret
+
+        result = _mask_secret("12345678901")  # 11 chars > threshold
+        assert "11 chars" in result
+        assert result.startswith("12345")  # prefix IS shown
 
 
 class TestGetUpgradeCommand:

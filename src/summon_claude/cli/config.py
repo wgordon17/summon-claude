@@ -328,29 +328,36 @@ def _check_github_status(*, prefix: str = "", quiet: bool = False) -> bool | Non
     token = load_token()
     if not token:
         if not quiet:
-            tag = format_tag("INFO")
-            click.echo(f"{prefix}{tag} GitHub: not configured (run `summon auth github login`)")
+            click.echo(
+                f"{prefix}{format_tag('INFO')} GitHub: not configured"
+                " (run `summon auth github login`)"
+            )
         return None
 
     try:
         result = asyncio.run(validate_token(token))
     except (OSError, aiohttp.ClientError, GitHubAuthError):
         if not quiet:
-            tag = format_tag("WARN")
-            click.echo(f"{prefix}{tag} GitHub: token found (validation skipped — network error)")
+            click.echo(
+                f"{prefix}{format_tag('WARN')} GitHub: token found"
+                " (validation skipped — network error)"
+            )
         return True
 
     if result is None:
         if not quiet:
-            tag = format_tag("FAIL")
-            click.echo(f"{prefix}{tag} GitHub: token invalid — run `summon auth github login`")
+            click.echo(
+                f"{prefix}{format_tag('FAIL')} GitHub: token invalid"
+                " — run `summon auth github login`"
+            )
         return False
 
     if not quiet:
         login = re.sub(r"[^a-zA-Z0-9-]", "", result["login"]) or "unknown"
         scopes = re.sub(r"[^\x20-\x7e]", "", result["scopes"])
-        tag = format_tag("PASS")
-        click.echo(f"{prefix}{tag} GitHub: authenticated as {login} (scopes: {scopes})")
+        click.echo(
+            f"{prefix}{format_tag('PASS')} GitHub: authenticated as {login} (scopes: {scopes})"
+        )
     return True
 
 
@@ -684,9 +691,11 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
     project_count: int | None = None
     has_workflow = False
     has_creds = False
+    db_ok = False
 
     try:
         has_workflow, has_hooks, project_count = asyncio.run(_check_features(db_path))
+        db_ok = True
 
         # Projects — the primary workflow
         if project_count:
@@ -756,15 +765,20 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
         if not _check_existing_slack_auth():
             next_steps.append(("summon auth slack login", "Authenticate Slack browser"))
 
-    # Project commands
-    if project_count == 0:
-        next_steps.append(("summon project add <path>", "Register a project directory"))
-    if not has_workflow:
-        next_steps.append(("summon project workflow set", "Set workflow instructions"))
-    if not has_bridge:
-        next_steps.append(("summon hooks install", "Install Claude Code hook bridge"))
-    if project_count == 0:
-        next_steps.append(("summon project up", "Start PM agents for all projects"))
+    # Project commands — only show when DB state is known
+    if db_ok:
+        if project_count == 0:
+            next_steps.append(("summon project add <path>", "Register a project directory"))
+        if not has_workflow:
+            next_steps.append(("summon project workflow set", "Set workflow instructions"))
+        if not has_bridge:
+            next_steps.append(("summon hooks install", "Install Claude Code hook bridge"))
+        if project_count == 0:
+            next_steps.append(("summon project up", "Start PM agents for all projects"))
+    else:
+        next_steps.append(
+            ("summon doctor --submit", "DB unavailable — diagnose with summon doctor")
+        )
 
     if next_steps:
         click.echo()

@@ -2808,10 +2808,13 @@ class SummonSession:
             )
             self._shutdown_completed = True
             if self._canvas_store:
-                status_label = {"completed": "Completed", "suspended": "Suspended"}.get(
-                    final_status, final_status.title()
-                )
-                await self._canvas_store.update_table_field("Status", status_label)
+                try:
+                    status_label = {"completed": "Completed", "suspended": "Suspended"}.get(
+                        final_status, final_status.title()
+                    )
+                    await self._canvas_store.update_table_field("Status", status_label)
+                except Exception:
+                    logger.debug("Canvas status update failed on shutdown", exc_info=True)
             await asyncio.wait_for(
                 rt.registry.log_event(
                     "session_ended",

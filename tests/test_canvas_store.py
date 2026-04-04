@@ -553,3 +553,25 @@ class TestCanvasStoreUpdateTableField:
         )
         await store.update_table_field("Status", "Active")
         assert store.read() == md
+
+    async def test_field_name_with_regex_metacharacters(self, canvas_registry):
+        client = _make_mock_client()
+        md = (
+            "# Info\n\n"
+            "| Field | Value |\n"
+            "|-------|-------|\n"
+            "| Version (Semver) | 1.0.0 |\n"
+            "| Status | OK |\n"
+        )
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+            channel_id="C_TEST",
+            markdown=md,
+        )
+        await store.update_table_field("Version (Semver)", "2.0.0")
+        result = store.read()
+        assert "| Version (Semver) | 2.0.0 |" in result
+        assert "| Status | OK |" in result

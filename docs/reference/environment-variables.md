@@ -76,7 +76,13 @@ Slack monitoring via browser automation. Requires the `slack-browser` optional e
 
 ## GitHub
 
-GitHub integration uses OAuth device flow authentication — no environment variable needed. Run `summon auth github login` to authenticate.
+GitHub integration uses OAuth device flow authentication. Run `summon auth github login` to authenticate interactively.
+
+For CI/CD and enterprise environments where interactive auth is unavailable, you can set a personal access token via environment variable:
+
+| Config Key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `SUMMON_GITHUB_PAT` | text | _(none)_ | GitHub personal access token (fallback when OAuth token file is absent). Must use a recognized prefix (`ghp_`, `github_pat_`, `gho_`, `ghu_`, `ghs_`, `ghr_`). OAuth token file takes priority when both are present. |
 
 See [GitHub Integration](../guide/github-integration.md) for setup details.
 

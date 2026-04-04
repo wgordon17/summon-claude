@@ -294,9 +294,6 @@ def slack_auth(workspace: str) -> None:
 
     try:
         result = asyncio.run(interactive_slack_auth(workspace_url, browser_type))
-    except TimeoutError as e:
-        click.echo(f"Slack login failed: {e}", err=True)
-        sys.exit(1)
     except Exception as e:
         click.echo(f"Slack login failed: {e}", err=True)
         sys.exit(1)
