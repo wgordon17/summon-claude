@@ -202,7 +202,10 @@ def load_token() -> str | None:
         # Validate known GitHub token formats to catch misconfiguration early
         valid_prefixes = ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_")
         if not any(clean.startswith(p) for p in valid_prefixes):
-            logger.warning("SUMMON_GITHUB_PAT has unrecognized format (expected ghp_/gho_/...)")
+            logger.error(
+                "SUMMON_GITHUB_PAT has unrecognized format (expected ghp_/gho_/github_pat_/...);"
+                " check that this is a GitHub token, not a credential from another provider"
+            )
         return clean
 
     return None

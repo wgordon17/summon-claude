@@ -345,6 +345,23 @@ def _make_channel_name(prefix: str, session_name: str) -> str:
     return name[:_MAX_CHANNEL_NAME_LEN].lower()
 
 
+def _git_safe_env(resolved_cwd: str) -> dict[str, str]:
+    """Return an env dict safe for git subprocesses (SC-03).
+
+    Scrubs GIT_DIR and GIT_WORK_TREE to prevent git from discovering
+    repositories outside the intended working directory, and sets
+    GIT_CEILING_DIRECTORIES to stop traversal above cwd.
+    """
+    env = dict(os.environ)
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    existing_ceiling = env.get("GIT_CEILING_DIRECTORIES", "")
+    env["GIT_CEILING_DIRECTORIES"] = (
+        f"{existing_ceiling}:{resolved_cwd}" if existing_ceiling else resolved_cwd
+    )
+    return env
+
+
 async def _detect_git(cwd: str) -> tuple[bool, str | None]:
     """Detect whether cwd is inside a git repo and return the current branch.
 
@@ -358,14 +375,7 @@ async def _detect_git(cwd: str) -> tuple[bool, str | None]:
     if not os.path.isabs(cwd) or not os.path.isdir(cwd):  # noqa: ASYNC240, PTH117, PTH112
         return False, None
     resolved = os.path.realpath(cwd)  # noqa: ASYNC240
-    env = dict(os.environ)
-    env.pop("GIT_DIR", None)
-    env.pop("GIT_WORK_TREE", None)
-    # Preserve caller's GIT_CEILING_DIRECTORIES if set; extend with resolved cwd
-    existing_ceiling = env.get("GIT_CEILING_DIRECTORIES", "")
-    env["GIT_CEILING_DIRECTORIES"] = (
-        f"{existing_ceiling}:{resolved}" if existing_ceiling else resolved
-    )
+    env = _git_safe_env(resolved)
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -1060,11 +1070,7 @@ class SummonSession:
             authenticated_at=datetime.now(UTC).isoformat(),
             authenticated_user_id=self._authenticated_user_id,
         )
-        if self._canvas_store:
-            try:
-                await self._canvas_store.update_table_field("Status", "Active")
-            except Exception:
-                logger.debug("Canvas status update failed", exc_info=True)
+        await self._update_canvas_status("Active")
         await registry.log_event(
             "session_active",
             session_id=self._session_id,
@@ -2807,14 +2813,10 @@ class SummonSession:
                 timeout=_CLEANUP_TIMEOUT_S,
             )
             self._shutdown_completed = True
-            if self._canvas_store:
-                try:
-                    status_label = {"completed": "Completed", "suspended": "Suspended"}.get(
-                        final_status, final_status.title()
-                    )
-                    await self._canvas_store.update_table_field("Status", status_label)
-                except Exception:
-                    logger.debug("Canvas status update failed on shutdown", exc_info=True)
+            status_label = {"completed": "Completed", "suspended": "Suspended"}.get(
+                final_status, final_status.title()
+            )
+            await self._update_canvas_status(status_label)
             await asyncio.wait_for(
                 rt.registry.log_event(
                     "session_ended",
@@ -2950,6 +2952,14 @@ class SummonSession:
             except Exception:
                 logger.debug("Canvas Changed Files update failed", exc_info=True)
 
+    async def _update_canvas_status(self, status: str) -> None:
+        """Update the canvas Status field, swallowing errors."""
+        if self._canvas_store:
+            try:
+                await self._canvas_store.update_table_field("Status", status)
+            except Exception:
+                logger.debug("Canvas status update failed", exc_info=True)
+
     def _display_path(self, full_path: str) -> str:
         """Compute a human-friendly display path for a file."""
         try:
@@ -3024,7 +3034,7 @@ class SummonSession:
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "GIT_CEILING_DIRECTORIES": cwd},
+                env=_git_safe_env(cwd),
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             if stdout:
@@ -3078,7 +3088,7 @@ class SummonSession:
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "GIT_CEILING_DIRECTORIES": cwd},
+                env=_git_safe_env(cwd),
             )
             stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             stdout = stdout_bytes.decode(errors="replace")
@@ -3160,7 +3170,7 @@ class SummonSession:
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "GIT_CEILING_DIRECTORIES": cwd},
+                env=_git_safe_env(cwd),
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             if stdout:

@@ -576,3 +576,20 @@ class TestCanvasStoreUpdateTableField:
         result = store.read()
         assert "| Version (Semver) | 2.0.0 |" in result
         assert "| Status | OK |" in result
+
+    async def test_same_value_leaves_dirty_false(self, canvas_registry):
+        """update_table_field with the same value does not set _dirty."""
+        client = _make_mock_client()
+        md = "# Session Status\n\n| Field | Value |\n|-------|-------|\n| Status | Active |\n"
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+            channel_id="C_TEST",
+            markdown=md,
+        )
+        store._dirty = False
+
+        await store.update_table_field("Status", "Active")
+        assert store._dirty is False

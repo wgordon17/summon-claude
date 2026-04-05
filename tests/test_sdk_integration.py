@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -285,7 +286,7 @@ class TestThinkingConfigIntegration:
 class TestSDKCommandInventory:
     """Verify COMMAND_ACTIONS covers all SDK commands."""
 
-    @pytest.fixture(scope="class")
+    @pytest_asyncio.fixture(scope="class", loop_scope="class")
     async def server_info(self):
         """Get server_info from a real Claude SDK connection."""
         options = ClaudeAgentOptions(cwd="/tmp")

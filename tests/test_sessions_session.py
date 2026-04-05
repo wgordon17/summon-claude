@@ -264,6 +264,38 @@ class TestFormatFileReferences:
         assert "unknown" in result
 
 
+class TestGitSafeEnv:
+    """Unit tests for _git_safe_env helper (SC-03)."""
+
+    def test_scrubs_git_dir(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.setenv("GIT_DIR", "/rogue/.git")
+        env = _git_safe_env("/home/user/project")
+        assert "GIT_DIR" not in env
+
+    def test_scrubs_git_work_tree(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.setenv("GIT_WORK_TREE", "/rogue")
+        env = _git_safe_env("/home/user/project")
+        assert "GIT_WORK_TREE" not in env
+
+    def test_sets_ceiling(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.delenv("GIT_CEILING_DIRECTORIES", raising=False)
+        env = _git_safe_env("/home/user/project")
+        assert env["GIT_CEILING_DIRECTORIES"] == "/home/user/project"
+
+    def test_extends_existing_ceiling(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", "/existing")
+        env = _git_safe_env("/home/user/project")
+        assert env["GIT_CEILING_DIRECTORIES"] == "/existing:/home/user/project"
+
+
 class TestDetectGit:
     """Unit tests for the _detect_git async helper."""
 
@@ -4736,7 +4768,7 @@ class TestHandleDiffAll:
 
 
 class TestRunSessionCanvasException:
-    """Canvas update_table_field failure in _run_session must not block activation."""
+    """Canvas update_table_field failure in _update_canvas_status must not propagate."""
 
     async def test_canvas_failure_does_not_block_activation(self, tmp_path):
         session = make_session(cwd=str(tmp_path))
@@ -4745,13 +4777,9 @@ class TestRunSessionCanvasException:
         mock_canvas.update_table_field = AsyncMock(side_effect=RuntimeError("canvas API down"))
         session._canvas_store = mock_canvas
 
-        # Call the canvas update block directly — it's a try/except around update_table_field
-        # Replicate the pattern from _run_session lines 1063-1067
-        if session._canvas_store:
-            with contextlib.suppress(Exception):
-                await session._canvas_store.update_table_field("Status", "Active")
+        # Call the production method — exception must be swallowed
+        await session._update_canvas_status("Active")
 
-        # The point is that no exception propagates
         mock_canvas.update_table_field.assert_awaited_once_with("Status", "Active")
 
 

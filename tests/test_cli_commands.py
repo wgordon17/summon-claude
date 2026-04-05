@@ -1186,3 +1186,174 @@ class TestGetUpgradeCommand:
         with patch("summon_claude.cli.config.sys") as mock_sys:
             mock_sys.executable = "/home/user/.local/pipx/venvs/summon-claude/bin/python"
             assert "pipx upgrade" in get_upgrade_command()
+
+
+class TestSlackAuthLoginCLI:
+    """Tests for auth slack login exception-to-exit path."""
+
+    def test_slack_auth_exception_exits_nonzero(self):
+        """When interactive_slack_auth raises, CLI exits non-zero."""
+        runner = CliRunner()
+        with (
+            patch(
+                "summon_claude.cli.slack_auth.asyncio.run",
+                side_effect=RuntimeError("browser crashed"),
+            ),
+            patch(
+                "summon_claude.cli.slack_auth._check_existing_slack_auth",
+                return_value=None,
+            ),
+        ):
+            result = runner.invoke(
+                cli, ["auth", "slack", "login", "myteam.slack.com"], catch_exceptions=False
+            )
+
+        assert result.exit_code != 0
+        assert "Slack login failed" in result.output
+
+
+class TestInitPydanticValidationError:
+    """Tests for cmd_init pydantic ValidationError handler."""
+
+    def test_init_validation_error_exits_nonzero(self, tmp_path):
+        """cmd_init exits non-zero when SummonConfig construction raises ValidationError."""
+        import pydantic
+
+        config_file = tmp_path / "config.env"
+
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+
+        # Build a real ValidationError
+        try:
+            from summon_claude.config import SummonConfig
+
+            SummonConfig(
+                slack_bot_token="bad",
+                slack_app_token="bad",
+                slack_signing_secret="not-hex",
+            )
+            real_error = None
+        except pydantic.ValidationError as exc:
+            real_error = exc
+
+        if real_error is None:
+            pytest.skip("Could not construct a real ValidationError")
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.SummonConfig", side_effect=real_error),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code != 0
+        assert "Validation error" in result.output
+        assert "Config file NOT written" in result.output
+
+
+class TestInitTextValidateFnRetry:
+    """Tests for text/int validate_fn retry loops in cmd_init."""
+
+    def test_init_text_validate_fn_retries_on_invalid_input(self, tmp_path):
+        """Text options with validate_fn reprompt on invalid input."""
+        config_file = tmp_path / "config.env"
+
+        # channel_prefix validate_fn rejects uppercase
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "",  # default_model
+                    "high",  # default_effort
+                    "UPPER",  # channel_prefix — invalid
+                    "valid-prefix",  # channel_prefix — valid (retry)
+                    "n",  # scribe_enabled
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        assert "Error:" in result.output
+        content = config_file.read_text()
+        assert "SUMMON_CHANNEL_PREFIX=valid-prefix" in content
+
+    def test_init_int_validate_fn_retries_on_invalid_input(self, tmp_path):
+        """Int options with validate_fn reprompt on invalid value (e.g. 0 < 1)."""
+        config_file = tmp_path / "config.env"
+
+        # scribe_scan_interval_minutes visible when scribe=yes; 0 fails validate_fn, 5 succeeds
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "y",  # scribe_enabled
+                    "0",  # scribe_scan_interval_minutes — invalid (< 1)
+                    "10",  # scribe_scan_interval_minutes — valid (retry, non-default)
+                    "",  # scribe_cwd
+                    "",  # scribe_model
+                    "",  # scribe_important_keywords
+                    "",  # scribe_quiet_hours
+                    "n",  # scribe_google_enabled
+                    "n",  # scribe_slack_enabled
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        assert "Error:" in result.output or "at least 1" in result.output
+        content = config_file.read_text()
+        assert "SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES=10" in content

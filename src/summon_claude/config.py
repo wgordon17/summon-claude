@@ -1190,7 +1190,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Enable the background scribe agent (auto-detected from Google/Slack)",
         input_type="flag",
         help_hint=(
-            "Background agent that monitors Slack/Google notifications,"
+            "Background agent that monitors notifications,"
             " triages by importance, and posts daily summaries"
         ),
     ),
@@ -1209,13 +1209,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_CWD",
         group="Scribe",
         label="Scribe Working Directory",
-        help_text="Working directory for the scribe agent (default: XDG data dir)",
+        help_text="Working directory for the scribe agent",
         input_type="text",
         visible=_scribe_enabled,
-        help_hint=(
-            "Scratch directory for the scribe agent."
-            " Leave blank for default. Does not need to be a git repo."
-        ),
+        help_hint=f"Default: {get_data_dir() / 'scribe'}. Does not need to be a git repo.",
         validate_fn=lambda v: (
             None if not v or Path(v).expanduser().is_absolute() else "Must be an absolute path"
         ),
@@ -1308,9 +1305,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_GLOBAL_PM_CWD",
         group="Global PM",
         label="Global PM Working Directory",
-        help_text="Working directory for the Global PM (default: XDG data dir)",
+        help_text="Working directory for the Global PM",
         input_type="text",
         advanced=True,
+        help_hint=f"Default: {get_data_dir() / 'global-pm'}. Does not need to be a git repo.",
         validate_fn=lambda v: (
             None
             if not v or Path(v).expanduser().is_absolute()

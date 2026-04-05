@@ -690,7 +690,6 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
     """Print discoverable status of external setup flows."""
     project_count: int | None = None
     has_workflow = False
-    has_creds = False
     db_ok = False
 
     try:
@@ -738,12 +737,13 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
 
     # Scribe → Google auth nudge
     scribe_on = config_values.get("SUMMON_SCRIBE_ENABLED", "").lower() in _BOOL_TRUE
+    has_creds = False
     if scribe_on:
         try:
             google_dir = get_google_credentials_dir()
             has_creds = google_dir.exists() and any(google_dir.iterdir())
         except OSError:
-            has_creds = False
+            pass
         if not has_creds:
             tag = format_tag("INFO")
             msg = "Scribe enabled but Google not configured (summon auth google setup)"
@@ -769,12 +769,11 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
     if db_ok:
         if project_count == 0:
             next_steps.append(("summon project add <path>", "Register a project directory"))
+            next_steps.append(("summon project up", "Start PM agents for all projects"))
         if not has_workflow:
             next_steps.append(("summon project workflow set", "Set workflow instructions"))
         if not has_bridge:
             next_steps.append(("summon hooks install", "Install Claude Code hook bridge"))
-        if project_count == 0:
-            next_steps.append(("summon project up", "Start PM agents for all projects"))
     else:
         next_steps.append(
             ("summon doctor --submit", "DB unavailable — diagnose with summon doctor")

@@ -701,3 +701,88 @@ class TestConfigCheckEventHealth:
             config_check(quiet=False)
         output = capsys.readouterr().out
         assert "Events not delivered" in output
+
+
+class TestNextSteps:
+    """Tests for 'Next steps' section of _print_feature_inventory."""
+
+    def test_shows_github_when_no_token(self, tmp_path, capsys):
+        """Next steps includes GitHub login when no token is stored."""
+        from unittest.mock import AsyncMock
+
+        from summon_claude.cli.config import _print_feature_inventory
+
+        with (
+            patch(
+                "summon_claude.cli.config._check_features",
+                new_callable=AsyncMock,
+                return_value=(True, True, 1),
+            ),
+            patch("summon_claude.cli.hooks.read_settings", return_value={}),
+            patch("summon_claude.github_auth.load_token", return_value=None),
+        ):
+            _print_feature_inventory(tmp_path / "r.db", {})
+
+        out = capsys.readouterr().out
+        assert "summon auth github login" in out
+        assert "Next steps:" in out
+
+    def test_omits_github_when_token_present(self, tmp_path, capsys):
+        """Next steps omits GitHub login when token is already stored."""
+        from unittest.mock import AsyncMock
+
+        from summon_claude.cli.config import _print_feature_inventory
+
+        with (
+            patch(
+                "summon_claude.cli.config._check_features",
+                new_callable=AsyncMock,
+                return_value=(True, True, 1),
+            ),
+            patch("summon_claude.cli.hooks.read_settings", return_value={}),
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+        ):
+            _print_feature_inventory(tmp_path / "r.db", {})
+
+        out = capsys.readouterr().out
+        assert "summon auth github login" not in out
+
+    def test_shows_project_add_when_no_projects(self, tmp_path, capsys):
+        """Next steps includes project add/up when no projects registered."""
+        from unittest.mock import AsyncMock
+
+        from summon_claude.cli.config import _print_feature_inventory
+
+        with (
+            patch(
+                "summon_claude.cli.config._check_features",
+                new_callable=AsyncMock,
+                return_value=(True, True, 0),
+            ),
+            patch("summon_claude.cli.hooks.read_settings", return_value={}),
+            patch("summon_claude.github_auth.load_token", return_value="gho_test"),
+        ):
+            _print_feature_inventory(tmp_path / "r.db", {})
+
+        out = capsys.readouterr().out
+        assert "summon project add" in out
+        assert "summon project up" in out
+
+    def test_db_failure_shows_doctor_in_next_steps(self, tmp_path, capsys):
+        """When DB is unavailable, next steps shows summon doctor."""
+        from summon_claude.cli.config import _print_feature_inventory
+
+        def _failing_run(coro, *a, **kw):
+            coro.close()
+            raise OSError("DB fail")
+
+        with (
+            patch("summon_claude.cli.config.asyncio.run", side_effect=_failing_run),
+            patch("summon_claude.cli.hooks.read_settings", return_value={}),
+            patch("summon_claude.github_auth.load_token", return_value=None),
+        ):
+            _print_feature_inventory(tmp_path / "r.db", {})
+
+        out = capsys.readouterr().out
+        assert "Next steps:" in out
+        assert "summon doctor" in out

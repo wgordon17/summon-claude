@@ -36,7 +36,7 @@ from summon_claude.cli.config import (
 )
 from summon_claude.cli.db import async_db_purge, async_db_status, async_db_vacuum
 from summon_claude.cli.doctor import async_doctor
-from summon_claude.cli.formatting import echo
+from summon_claude.cli.formatting import _mask_secret, echo
 from summon_claude.cli.hooks import (
     async_clear_hooks,
     async_set_hooks,
@@ -588,20 +588,6 @@ def project_update(ctx: click.Context, name_or_id: str, jql: str | None) -> None
 # ---------------------------------------------------------------------------
 
 
-def _mask_secret(value: str, prefix_len: int = 5) -> str:
-    """Return a masked preview of a secret value for user feedback.
-
-    Shows a recognized format prefix (if any) plus character count.
-    Does not reveal unique suffix characters to avoid terminal scrollback leaks.
-    """
-    if not value:
-        return "(empty)"
-    # Only show prefix when it reveals less than half the value
-    if len(value) > 2 * prefix_len:
-        return f"{value[:prefix_len]}*** [{len(value)} chars]"
-    return f"[{len(value)} chars]"
-
-
 @cli.command("init")
 @click.pass_context
 def cmd_init(ctx: click.Context) -> None:
@@ -746,7 +732,9 @@ def cmd_init(ctx: click.Context) -> None:
 
         elif opt.input_type == "int":
             prompt_default = current_value or (str(default) if default is not None else None)
-            raw = click.prompt(f"    {opt.label}", default=prompt_default, show_default=True)
+            raw = click.prompt(
+                f"    {opt.label}", default=prompt_default, show_default=True, type=int
+            )
             value = str(raw)
             if value and opt.validate_fn:
                 err = opt.validate_fn(value)
@@ -755,7 +743,10 @@ def cmd_init(ctx: click.Context) -> None:
                     if hint:
                         click.echo(click.style(f"    {hint}", dim=True))
                     raw = click.prompt(
-                        f"    {opt.label}", default=prompt_default, show_default=True
+                        f"    {opt.label}",
+                        default=prompt_default,
+                        show_default=True,
+                        type=int,
                     )
                     value = str(raw)
                     if not value:

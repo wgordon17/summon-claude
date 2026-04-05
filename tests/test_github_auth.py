@@ -671,16 +671,18 @@ class TestLoadTokenEnvFallback:
         ):
             assert load_token() == "ghp_token"
 
-    def test_env_var_warns_on_unrecognized_prefix(self, tmp_path, caplog):
+    def test_env_var_errors_on_unrecognized_prefix(self, tmp_path, caplog):
         token_file = tmp_path / "nonexistent.json"
         with (
             patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
             patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "sk-ant-badtoken"}),
-            caplog.at_level(logging.WARNING, logger="summon_claude.github_auth"),
+            caplog.at_level(logging.ERROR, logger="summon_claude.github_auth"),
         ):
             result = load_token()
         assert result == "sk-ant-badtoken"
-        assert any("unrecognized format" in r.message for r in caplog.records)
+        matching = [r for r in caplog.records if "unrecognized format" in r.message]
+        assert matching
+        assert all(r.levelno == logging.ERROR for r in matching)
 
     def test_env_var_empty_string_returns_none(self, tmp_path):
         token_file = tmp_path / "nonexistent.json"
