@@ -188,6 +188,103 @@ class TestCmdInit:
         assert "xoxb-existing" in content
         assert "Existing config found" in result.output
 
+    def test_init_user_value_overrides_existing(self, tmp_path):
+        """User-entered values must override existing config values on re-run.
+
+        Verifies merge order: merged = {**existing, **collected} means collected wins.
+        """
+        config_file = tmp_path / "config.env"
+        config_file.write_text(
+            "SUMMON_SLACK_BOT_TOKEN=xoxb-old-token\n"
+            "SUMMON_SLACK_APP_TOKEN=xapp-existing\n"
+            "SUMMON_SLACK_SIGNING_SECRET=abcdef012345\n"
+        )
+
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-new-token",  # new bot token (override existing)
+                    "",  # slack_app_token (keep existing)
+                    "",  # signing_secret (keep existing)
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # Configure advanced settings?
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        content = config_file.read_text()
+        assert "xoxb-new-token" in content, f"New value not written. Config:\n{content}"
+        assert "xoxb-old-token" not in content, f"Old value not overridden. Config:\n{content}"
+
+    def test_init_preserves_hidden_keys_on_rerun(self, tmp_path):
+        """Hidden config keys (visible=False) must survive when init is re-run.
+
+        SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS is never presented to the user
+        during init (visible=lambda _config: False). The fix merges existing
+        values before writing: merged = {**existing, **collected}. This test
+        verifies that hidden keys are not silently dropped on re-run.
+        """
+        config_file = tmp_path / "config.env"
+        config_file.write_text(
+            "SUMMON_SLACK_BOT_TOKEN=xoxb-existing\n"
+            "SUMMON_SLACK_APP_TOKEN=xapp-existing\n"
+            "SUMMON_SLACK_SIGNING_SECRET=abcdef012345\n"
+            "SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS=C123,C456\n"
+        )
+
+        # All empty inputs = accept existing/default values (same as test_init_with_existing_config)
+        inputs = (
+            "\n".join(
+                [
+                    "",  # slack_bot_token (keep existing)
+                    "",  # slack_app_token (keep existing)
+                    "",  # signing_secret (keep existing)
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # Configure advanced settings?
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        assert config_file.exists(), f"Config file not created. Output: {result.output}"
+        content = config_file.read_text()
+        assert "SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS=C123,C456" in content, (
+            f"Hidden key was dropped on re-run. Config:\n{content}\nOutput:\n{result.output}"
+        )
+
     def test_init_validates_bot_token_prefix(self, tmp_path):
         """init should reject bot tokens that don't start with xoxb-."""
         config_dir = tmp_path / "summon"
@@ -761,9 +858,12 @@ class TestGitHubAuthCLI:
             scopes="repo",
             token_path=Path("/fake/path"),
         )
-        with patch(
-            "summon_claude.github_auth.run_device_flow",
-            new=AsyncMock(return_value=mock_result),
+        with (
+            patch(
+                "summon_claude.github_auth.run_device_flow",
+                new=AsyncMock(return_value=mock_result),
+            ),
+            patch("summon_claude.cli.config.click.launch"),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "github", "login"])
@@ -789,9 +889,12 @@ class TestGitHubAuthCLI:
                 on_code("AB\x1b[31mCD", "https://github.com/login/device\x1b[0m")
             return mock_result
 
-        with patch(
-            "summon_claude.github_auth.run_device_flow",
-            new=AsyncMock(side_effect=_fake_flow),
+        with (
+            patch(
+                "summon_claude.github_auth.run_device_flow",
+                new=AsyncMock(side_effect=_fake_flow),
+            ),
+            patch("summon_claude.cli.config.click.launch"),
         ):
             runner = CliRunner()
             result = runner.invoke(cli, ["auth", "github", "login"])
@@ -1008,3 +1111,249 @@ class TestCleanupCommand:
 
             # Verify archive was called
             mock_web_client.conversations_archive.assert_called_once_with(channel="C_STALE")
+
+
+class TestMaskSecret:
+    """Tests for _mask_secret helper (BUG-046)."""
+
+    def test_normal_token(self):
+        from summon_claude.cli import _mask_secret
+
+        result = _mask_secret("xoxb-1234567890-abcdefghij")
+        assert result.startswith("xoxb-")
+        assert "26 chars" in result
+        # Must not reveal unique suffix characters
+        assert "ghij" not in result
+
+    def test_short_value(self):
+        from summon_claude.cli import _mask_secret
+
+        result = _mask_secret("abc")
+        assert "3 chars" in result
+        # Short values should not reveal original content
+        assert "abc" not in result
+
+    def test_empty_value(self):
+        from summon_claude.cli import _mask_secret
+
+        result = _mask_secret("")
+        assert result == "(empty)"
+
+    def test_short_value_no_prefix(self):
+        """Values ≤ 2*prefix_len (10 chars) show only count, no prefix."""
+        from summon_claude.cli import _mask_secret
+
+        result = _mask_secret("1234567890")  # exactly 10 chars = 2 * prefix_len
+        assert "10 chars" in result
+        assert "12345" not in result  # prefix must NOT be shown
+
+    def test_boundary_prefix_shown(self):
+        """Values > 2*prefix_len (11+ chars) show prefix + count."""
+        from summon_claude.cli import _mask_secret
+
+        result = _mask_secret("12345678901")  # 11 chars > threshold
+        assert "11 chars" in result
+        assert result.startswith("12345")  # prefix IS shown
+
+
+class TestGetUpgradeCommand:
+    """Tests for get_upgrade_command helper (BUG-069)."""
+
+    def test_default_is_uv(self):
+        from summon_claude.cli.config import get_upgrade_command
+
+        with patch("summon_claude.cli.config.sys") as mock_sys:
+            mock_sys.executable = "/home/user/.local/share/uv/tools/summon-claude/bin/python"
+            assert "uv tool upgrade" in get_upgrade_command()
+
+    def test_homebrew_detected(self):
+        from summon_claude.cli.config import get_upgrade_command
+
+        with patch("summon_claude.cli.config.sys") as mock_sys:
+            mock_sys.executable = "/opt/homebrew/Cellar/summon-claude/1.0/libexec/bin/python"
+            assert "brew upgrade" in get_upgrade_command()
+
+    def test_homebrew_detected_via_homebrew_path(self):
+        from summon_claude.cli.config import get_upgrade_command
+
+        with patch("summon_claude.cli.config.sys") as mock_sys:
+            mock_sys.executable = "/opt/homebrew/opt/python/bin/python3"
+            assert "brew upgrade" in get_upgrade_command()
+
+    def test_pipx_detected(self):
+        from summon_claude.cli.config import get_upgrade_command
+
+        with patch("summon_claude.cli.config.sys") as mock_sys:
+            mock_sys.executable = "/home/user/.local/pipx/venvs/summon-claude/bin/python"
+            assert "pipx upgrade" in get_upgrade_command()
+
+
+class TestSlackAuthLoginCLI:
+    """Tests for auth slack login exception-to-exit path."""
+
+    def test_slack_auth_exception_exits_nonzero(self):
+        """When interactive_slack_auth raises, CLI exits non-zero."""
+        runner = CliRunner()
+        with (
+            patch(
+                "summon_claude.cli.slack_auth.asyncio.run",
+                side_effect=RuntimeError("browser crashed"),
+            ),
+            patch(
+                "summon_claude.cli.slack_auth._check_existing_slack_auth",
+                return_value=None,
+            ),
+        ):
+            result = runner.invoke(
+                cli, ["auth", "slack", "login", "myteam.slack.com"], catch_exceptions=False
+            )
+
+        assert result.exit_code != 0
+        assert "Slack login failed" in result.output
+
+
+class TestInitPydanticValidationError:
+    """Tests for cmd_init pydantic ValidationError handler."""
+
+    def test_init_validation_error_exits_nonzero(self, tmp_path):
+        """cmd_init exits non-zero when SummonConfig construction raises ValidationError."""
+        import pydantic
+
+        config_file = tmp_path / "config.env"
+
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+
+        # Build a real ValidationError
+        try:
+            from summon_claude.config import SummonConfig
+
+            SummonConfig(
+                slack_bot_token="bad",
+                slack_app_token="bad",
+                slack_signing_secret="not-hex",
+            )
+            real_error = None
+        except pydantic.ValidationError as exc:
+            real_error = exc
+
+        if real_error is None:
+            pytest.skip("Could not construct a real ValidationError")
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.SummonConfig", side_effect=real_error),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code != 0
+        assert "Validation error" in result.output
+        assert "Config file NOT written" in result.output
+
+
+class TestInitTextValidateFnRetry:
+    """Tests for text/int validate_fn retry loops in cmd_init."""
+
+    def test_init_text_validate_fn_retries_on_invalid_input(self, tmp_path):
+        """Text options with validate_fn reprompt on invalid input."""
+        config_file = tmp_path / "config.env"
+
+        # channel_prefix validate_fn rejects uppercase
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "",  # default_model
+                    "high",  # default_effort
+                    "UPPER",  # channel_prefix — invalid
+                    "valid-prefix",  # channel_prefix — valid (retry)
+                    "n",  # scribe_enabled
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        assert "Error:" in result.output
+        content = config_file.read_text()
+        assert "SUMMON_CHANNEL_PREFIX=valid-prefix" in content
+
+    def test_init_int_validate_fn_retries_on_invalid_input(self, tmp_path):
+        """Int options with validate_fn reprompt on invalid value (e.g. 0 < 1)."""
+        config_file = tmp_path / "config.env"
+
+        # scribe_scan_interval_minutes visible when scribe=yes; 0 fails validate_fn, 5 succeeds
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "y",  # scribe_enabled
+                    "0",  # scribe_scan_interval_minutes — invalid (< 1)
+                    "10",  # scribe_scan_interval_minutes — valid (retry, non-default)
+                    "",  # scribe_cwd
+                    "",  # scribe_model
+                    "",  # scribe_important_keywords
+                    "",  # scribe_quiet_hours
+                    "n",  # scribe_google_enabled
+                    "n",  # scribe_slack_enabled
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        assert "Error:" in result.output or "at least 1" in result.output
+        content = config_file.read_text()
+        assert "SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES=10" in content

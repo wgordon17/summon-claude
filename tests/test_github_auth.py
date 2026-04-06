@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import stat
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -629,3 +631,83 @@ class TestRunDeviceFlow:
             pytest.raises(GitHubAuthError, match="HTTP 403"),
         ):
             await run_device_flow(client_id="test-client")
+
+
+class TestLoadTokenEnvFallback:
+    """Tests for load_token() SUMMON_GITHUB_PAT env var fallback (BUG-049)."""
+
+    def test_file_token_takes_priority(self, tmp_path):
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({"access_token": "gho_file_token"}))
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "ghp_env_token"}),
+        ):
+            assert load_token() == "gho_file_token"
+
+    def test_env_var_fallback_when_no_file(self, tmp_path):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "ghp_env_token"}),
+        ):
+            assert load_token() == "ghp_env_token"
+
+    def test_none_when_no_file_no_env(self, tmp_path):
+        token_file = tmp_path / "nonexistent.json"
+        # Use clear=True to guarantee SUMMON_GITHUB_PAT is absent
+        clean_env = {k: v for k, v in os.environ.items() if k != "SUMMON_GITHUB_PAT"}
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", clean_env, clear=True),
+        ):
+            assert load_token() is None
+
+    def test_env_var_strips_crlf(self, tmp_path):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "ghp_token\r\n"}),
+        ):
+            assert load_token() == "ghp_token"
+
+    def test_env_var_errors_on_unrecognized_prefix(self, tmp_path, caplog):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "sk-ant-badtoken"}),
+            caplog.at_level(logging.ERROR, logger="summon_claude.github_auth"),
+        ):
+            result = load_token()
+        assert result == "sk-ant-badtoken"
+        matching = [r for r in caplog.records if "unrecognized format" in r.message]
+        assert matching
+        assert all(r.levelno == logging.ERROR for r in matching)
+
+    def test_env_var_empty_string_returns_none(self, tmp_path):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": ""}),
+        ):
+            assert load_token() is None
+
+    def test_env_var_whitespace_only_returns_none(self, tmp_path):
+        token_file = tmp_path / "nonexistent.json"
+        with (
+            patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+            patch.dict("os.environ", {"SUMMON_GITHUB_PAT": "   "}),
+        ):
+            assert load_token() is None
+
+    def test_env_var_valid_prefixes_no_warning(self, tmp_path, caplog):
+        token_file = tmp_path / "nonexistent.json"
+        for prefix in ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_"):
+            with (
+                patch("summon_claude.github_auth.get_github_token_path", return_value=token_file),
+                patch.dict("os.environ", {"SUMMON_GITHUB_PAT": f"{prefix}test"}),
+                caplog.at_level(logging.WARNING, logger="summon_claude.github_auth"),
+            ):
+                caplog.clear()
+                load_token()
+            assert not any("unrecognized format" in r.message for r in caplog.records)

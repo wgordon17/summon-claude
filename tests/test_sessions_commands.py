@@ -190,7 +190,7 @@ class TestHelpHandler:
         context = make_context()
         result = await dispatch("help", [], context)
         assert result.text is not None
-        assert "*Session* (local):" in result.text
+        assert "*Session (local):*" in result.text
 
     async def test_help_with_known_command_shows_detail(self, make_context):
         """!help status should show local detail view."""
@@ -242,8 +242,8 @@ class TestHelpHandler:
         context = make_context()
         result = await dispatch("help", ["diff"], context)
         assert result.text is not None
-        assert "<file_path>" in result.text
-        assert "!diff <file_path>" in result.text
+        assert "[file_path]" in result.text
+        assert "!diff [file_path]" in result.text
 
     async def test_help_detail_no_hint_omits_argument(self, make_context):
         """!help changes (no argument_hint) should show bare command name."""
@@ -264,7 +264,7 @@ class TestHelpHandler:
             context = make_context()
             result = await dispatch("help", [], context)
             assert result.text is not None
-            assert "*Skills*:" in result.text
+            assert "*Installed Plugins:*" in result.text
             assert "test-plug" in result.text
             assert "(2)" in result.text
             # Full skill names should NOT appear in the listing
@@ -1095,3 +1095,18 @@ class TestAutoHandler:
         defn = COMMAND_ACTIONS["auto"]
         assert defn.handler is not None
         assert "automode" in (defn.aliases or [])
+
+
+# ------------------------------------------------------------------
+# !diff command handler tests
+# ------------------------------------------------------------------
+
+
+class TestDiffHandler:
+    """Tests for !diff command dispatch."""
+
+    async def test_bare_diff_sets_diff_all_metadata(self, make_context):
+        """Bare !diff with no args should set metadata['diff_all'] = True."""
+        context = make_context()
+        result = await dispatch("diff", [], context)
+        assert result.metadata.get("diff_all") is True

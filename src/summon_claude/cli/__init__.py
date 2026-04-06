@@ -23,6 +23,7 @@ import sys
 import threading
 
 import click
+import pydantic
 
 from summon_claude import __version__
 from summon_claude.cli.auth import cmd_auth
@@ -35,7 +36,7 @@ from summon_claude.cli.config import (
 )
 from summon_claude.cli.db import async_db_purge, async_db_status, async_db_vacuum
 from summon_claude.cli.doctor import async_doctor
-from summon_claude.cli.formatting import echo
+from summon_claude.cli.formatting import _mask_secret, echo
 from summon_claude.cli.hooks import (
     async_clear_hooks,
     async_set_hooks,
@@ -645,31 +646,45 @@ def cmd_init(ctx: click.Context) -> None:
         current_value = existing.get(opt.env_key)
         default = get_config_default(opt)
 
-        # Show contextual help hint for new values
-        if opt.help_hint and not current_value:
-            click.echo(click.style(f"    {opt.help_hint}", dim=True))
+        # Show contextual guidance — help_hint preferred, help_text as fallback
+        hint = opt.help_hint or opt.help_text
+        if hint:
+            click.echo(click.style(f"    {hint}", dim=True))
+        # Show env var name for cross-reference with docs
+        click.echo(click.style(f"    ({opt.env_key})", dim=True))
 
         if opt.input_type == "secret":
+            # Build prompt label with format hint if available
+            fmt_suffix = ""
+            if opt.format_hint:
+                fmt_suffix = click.style(f" [format: {opt.format_hint}]", dim=True)
+
             if current_value:
                 raw = click.prompt(
-                    f"    {opt.label} [configured — Enter to keep]",
+                    f"    {opt.label} [configured — Enter to keep]{fmt_suffix}",
                     default="",
                     show_default=False,
                     hide_input=True,
                 )
-                value = raw if raw else current_value
+                if raw:
+                    value = raw
+                    click.echo(click.style(f"    Value received: {_mask_secret(value)}", dim=True))
+                else:
+                    value = current_value
+                    click.echo(click.style("    Kept existing value", dim=True))
             elif opt.required:
-                value = click.prompt(f"    {opt.label}", hide_input=True)
+                value = click.prompt(f"    {opt.label}{fmt_suffix}", hide_input=True)
                 if opt.validate_fn:
                     err = opt.validate_fn(value)
                     while err:
                         click.echo(f"    Error: {err}")
-                        value = click.prompt(f"    {opt.label}", hide_input=True)
+                        value = click.prompt(f"    {opt.label}{fmt_suffix}", hide_input=True)
                         err = opt.validate_fn(value)
+                click.echo(click.style(f"    Value received: {_mask_secret(value)}", dim=True))
             else:
                 # Optional secret — empty input accepted (skip)
                 value = click.prompt(
-                    f"    {opt.label} (optional, Enter to skip)",
+                    f"    {opt.label} (optional, Enter to skip){fmt_suffix}",
                     default="",
                     show_default=False,
                     hide_input=True,
@@ -679,7 +694,7 @@ def cmd_init(ctx: click.Context) -> None:
                     while err:
                         click.echo(f"    Error: {err}")
                         value = click.prompt(
-                            f"    {opt.label}",
+                            f"    {opt.label}{fmt_suffix}",
                             default="",
                             show_default=False,
                             hide_input=True,
@@ -687,6 +702,10 @@ def cmd_init(ctx: click.Context) -> None:
                         if not value:
                             break
                         err = opt.validate_fn(value)
+                if value:
+                    click.echo(click.style(f"    Value received: {_mask_secret(value)}", dim=True))
+                else:
+                    click.echo(click.style("    Skipped", dim=True))
 
         elif opt.input_type == "choice":
             if opt.choices_fn:
@@ -713,14 +732,46 @@ def cmd_init(ctx: click.Context) -> None:
 
         elif opt.input_type == "int":
             prompt_default = current_value or (str(default) if default is not None else None)
-            raw = click.prompt(f"    {opt.label}", default=prompt_default, show_default=True)
+            raw = click.prompt(
+                f"    {opt.label}", default=prompt_default, show_default=True, type=int
+            )
             value = str(raw)
+            if value and opt.validate_fn:
+                err = opt.validate_fn(value)
+                while err:
+                    click.echo(f"    Error: {err}")
+                    if hint:
+                        click.echo(click.style(f"    {hint}", dim=True))
+                    raw = click.prompt(
+                        f"    {opt.label}",
+                        default=prompt_default,
+                        show_default=True,
+                        type=int,
+                    )
+                    value = str(raw)
+                    if not value:
+                        break
+                    err = opt.validate_fn(value)
 
         else:  # text
             prompt_default = current_value or (str(default) if default is not None else "") or ""
             value = click.prompt(
                 f"    {opt.label}", default=prompt_default, show_default=bool(prompt_default)
             )
+            if value and opt.validate_fn:
+                err = opt.validate_fn(value)
+                while err:
+                    click.echo(f"    Error: {err}")
+                    if hint:
+                        click.echo(click.style(f"    {hint}", dim=True))
+                    value = click.prompt(
+                        f"    {opt.label}",
+                        default=prompt_default,
+                        show_default=bool(prompt_default),
+                    )
+                    if not value:
+                        break
+                    err = opt.validate_fn(value)
 
         # Only store non-default values (keep config file clean)
         if isinstance(default, bool):
@@ -739,14 +790,23 @@ def cmd_init(ctx: click.Context) -> None:
                 if opt.env_key in collected
             }
         )
+    except pydantic.ValidationError as e:
+        click.echo("\nValidation error:", err=True)
+        for err in e.errors():
+            field = ".".join(str(loc) for loc in err["loc"])
+            click.echo(f"  {field}: {err['msg']}", err=True)
+        click.echo("Config file NOT written. Fix the errors and re-run `summon init`.", err=True)
+        raise SystemExit(1) from e
     except Exception as e:
-        click.echo(f"\nValidation error: {e}", err=True)
+        click.echo(f"\nUnexpected error: {e}", err=True)
         click.echo("Config file NOT written. Fix the errors and re-run `summon init`.", err=True)
         raise SystemExit(1) from e
 
-    # Write config file — strip newlines to prevent injection into .env format
+    # Write config file — merge existing values for hidden options to prevent data loss,
+    # then strip newlines to prevent injection into .env format
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    sanitized = {k: v.replace("\n", "").replace("\r", "") for k, v in collected.items()}
+    merged = {**existing, **collected}
+    sanitized = {k: v.replace("\n", "").replace("\r", "") for k, v in merged.items()}
     output_lines = [f"{k}={v}" for k, v in sanitized.items()]
     config_file.write_text("\n".join(output_lines) + "\n")
     with contextlib.suppress(OSError):

@@ -180,21 +180,35 @@ def store_token(token: str, scopes: str = "", login: str = "") -> Path:
 
 
 def load_token() -> str | None:
-    """Load the GitHub access token from disk.
+    """Load the GitHub access token from disk, falling back to env var.
 
-    Returns the token string, or None if the file is missing or malformed.
+    Priority: OAuth token file > SUMMON_GITHUB_PAT env var.
+    Returns the token string, or None if no token is available.
     Strips CRLF from the token value to prevent header injection.
     """
     token_path = get_github_token_path()
     try:
         data = json.loads(token_path.read_text())
         token = data.get("access_token", "")
-        if not isinstance(token, str) or not token:
-            return None
-        # Strip CRLF — prevents header injection if token is used in HTTP headers
-        return token.replace("\r", "").replace("\n", "")
+        if isinstance(token, str) and token:
+            return token.replace("\r", "").replace("\n", "")
     except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError, TypeError):
-        return None
+        pass
+
+    # Fallback: check SUMMON_GITHUB_PAT env var (for CI/CD and enterprise environments)
+    pat = os.environ.get("SUMMON_GITHUB_PAT", "").strip()
+    if pat:
+        clean = pat.replace("\r", "").replace("\n", "")
+        # Validate known GitHub token formats to catch misconfiguration early
+        valid_prefixes = ("ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_")
+        if not any(clean.startswith(p) for p in valid_prefixes):
+            logger.error(
+                "SUMMON_GITHUB_PAT has unrecognized format (expected ghp_/gho_/github_pat_/...);"
+                " check that this is a GitHub token, not a credential from another provider"
+            )
+        return clean
+
+    return None
 
 
 def remove_token() -> bool:

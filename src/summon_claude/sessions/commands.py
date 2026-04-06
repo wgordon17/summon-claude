@@ -114,19 +114,31 @@ async def _handle_help(args: list[str], _ctx: CommandContext) -> CommandResult: 
         return CommandResult(text="\n".join(lines))
 
     local_names = sorted(n for n, d in COMMAND_ACTIONS.items() if d.handler)
+
+    # Filter plugin skills out of passthrough list — they belong under their plugin
+    plugin_skill_short_names = set()
+    for alias, target in _ALIAS_LOOKUP.items():
+        if ":" in target:
+            plugin_skill_short_names.add(alias)
     passthrough_names = sorted(
         n
         for n, d in COMMAND_ACTIONS.items()
-        if not d.handler and not d.block_reason and ":" not in n
+        if not d.handler
+        and not d.block_reason
+        and ":" not in n
+        and n not in plugin_skill_short_names
     )
 
-    lines = ["*Session* (local): " + ", ".join(f"`!{n}`" for n in local_names)]
+    lines = ["*Session (local):* " + ", ".join(f"`!{n}`" for n in local_names)]
     if passthrough_names:
-        lines.append("*Claude CLI*: " + ", ".join(f"`!{n}`" for n in passthrough_names))
+        lines.append("")
+        lines.append("*Claude CLI:* " + ", ".join(f"`!{n}`" for n in passthrough_names))
     if skill_grouped:
+        lines.append("")
         parts = [f"`{p}` ({len(ss)})" for p, ss in sorted(skill_grouped.items())]
-        lines.append("*Skills*: " + ", ".join(parts))
+        lines.append("*Installed Plugins:* " + ", ".join(parts))
         lines.append("_Use `!help PLUGIN` to list a plugin's skills._")
+    lines.append("")
     lines.append("_Use `!command` to run. `!help COMMAND` for details._")
 
     return CommandResult(text="\n".join(lines))
@@ -245,7 +257,7 @@ async def _handle_summon(args: list[str], _ctx: CommandContext) -> CommandResult
 
 async def _handle_diff(args: list[str], _ctx: CommandContext) -> CommandResult:
     if not args:
-        return CommandResult(text=":warning: Usage: `!diff <file_path>`")
+        return CommandResult(text=None, metadata={"diff_all": True})
     return CommandResult(text=None, metadata={"diff_file": args[0]})
 
 
@@ -411,10 +423,10 @@ COMMAND_ACTIONS: dict[str, CommandDef] = {
     "chrome": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "copy": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY),
     "diff": CommandDef(
-        description="Show git diff for a file changed in this session",
+        description="Show git diff (all changes, or specify a file)",
         handler=_handle_diff,
         max_args=1,
-        argument_hint="<file_path>",
+        argument_hint="[file_path]",
     ),
     "changes": CommandDef(
         description="Show all files changed in this session",

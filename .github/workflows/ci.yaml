@@ -27,7 +27,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --extra all
 
       - name: Lint
         run: make py-lint
@@ -44,7 +44,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --extra all
 
       - name: Type check
         run: make py-typecheck
@@ -60,8 +60,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync --locked
+      - name: Install dependencies (all extras)
+        run: uv sync --locked --extra all
 
       - name: Test
         run: make py-test
@@ -100,8 +100,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        run: uv sync --locked
+      - name: Install dependencies (all extras)
+        run: uv sync --locked --extra all
 
       - name: Slack integration tests
         run: make py-test-slack

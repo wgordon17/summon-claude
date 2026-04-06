@@ -310,7 +310,9 @@ class PermissionHandler:
         # Write gate state
         self._project_root: Path | None = Path(project_root) if project_root else None
         self._safe_dirs: list[str] = [
-            d.strip() for d in config.safe_write_dirs.split(",") if d.strip()
+            str(Path(d.strip()).expanduser())
+            for d in config.safe_write_dirs.split(",")
+            if d.strip()
         ]
         self._in_containment = False
         self._in_worktree = False  # worktree-specific flag for classifier gating
@@ -458,7 +460,7 @@ class PermissionHandler:
             logger.debug("Auto-approving summon MCP tool: %s", tool_name)
             return PermissionResultAllow()
 
-        # 2f. Session-lifetime cached approvals (defense-in-depth:
+        # 2g. Session-lifetime cached approvals (defense-in-depth:
         # GitHub require-approval tools are never session-cached;
         # Google Workspace write tools are never session-cached)
         if (

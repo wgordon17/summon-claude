@@ -42,13 +42,29 @@ class TestFormatUpdateMessage:
     def test_format_message_basic(self):
         """format_update_message produces a box with version info."""
         info = UpdateInfo(current="1.0.0", latest="2.0.0")
-        msg = format_update_message(info)
+        with patch(
+            "summon_claude.cli.config.get_upgrade_command",
+            return_value="uv tool upgrade summon-claude",
+        ):
+            msg = format_update_message(info)
 
         assert "1.0.0 → 2.0.0" in msg
         assert "uv tool upgrade summon-claude" in msg
         assert "summon config set SUMMON_NO_UPDATE_CHECK true" in msg
         assert "┌" in msg and "┐" in msg
         assert "└" in msg and "┘" in msg
+
+    def test_format_message_uses_upgrade_command(self):
+        """format_update_message embeds the result of get_upgrade_command()."""
+        info = UpdateInfo(current="1.0.0", latest="2.0.0")
+        with patch(
+            "summon_claude.cli.config.get_upgrade_command",
+            return_value="brew upgrade summon-claude",
+        ):
+            msg = format_update_message(info)
+
+        assert "brew upgrade summon-claude" in msg
+        assert "uv tool upgrade summon-claude" not in msg
 
     def test_format_message_box_width_adjusts_to_content(self):
         """format_update_message adjusts box width based on longest line."""

@@ -512,3 +512,84 @@ class TestCanvasStoreRestoreWithChannel:
             channel_id="C_EMPTY",
         )
         assert store is None
+
+
+class TestCanvasStoreUpdateTableField:
+    """Tests for update_table_field method (BUG-080)."""
+
+    async def test_updates_status_field(self, canvas_registry):
+        client = _make_mock_client()
+        md = (
+            "# Session Status\n\n"
+            "| Field | Value |\n"
+            "|-------|-------|\n"
+            "| Status | Starting... |\n"
+            "| Model | opus |\n"
+        )
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+            channel_id="C_TEST",
+            markdown=md,
+        )
+        await store.update_table_field("Status", "Active")
+        result = store.read()
+        assert "| Status | Active |" in result
+        assert "Starting..." not in result
+        assert "| Model | opus |" in result
+
+    async def test_no_match_is_noop(self, canvas_registry):
+        client = _make_mock_client()
+        md = "# Title\n\nNo table here.\n"
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+            channel_id="C_TEST",
+            markdown=md,
+        )
+        await store.update_table_field("Status", "Active")
+        assert store.read() == md
+        assert store._dirty is False
+
+    async def test_field_name_with_regex_metacharacters(self, canvas_registry):
+        client = _make_mock_client()
+        md = (
+            "# Info\n\n"
+            "| Field | Value |\n"
+            "|-------|-------|\n"
+            "| Version (Semver) | 1.0.0 |\n"
+            "| Status | OK |\n"
+        )
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+            channel_id="C_TEST",
+            markdown=md,
+        )
+        await store.update_table_field("Version (Semver)", "2.0.0")
+        result = store.read()
+        assert "| Version (Semver) | 2.0.0 |" in result
+        assert "| Status | OK |" in result
+
+    async def test_same_value_leaves_dirty_false(self, canvas_registry):
+        """update_table_field with the same value does not set _dirty."""
+        client = _make_mock_client()
+        md = "# Session Status\n\n| Field | Value |\n|-------|-------|\n| Status | Active |\n"
+        store = CanvasStore(
+            session_id="sess-cv",
+            canvas_id="F_1",
+            client=client,
+            registry=canvas_registry,
+            channel_id="C_TEST",
+            markdown=md,
+        )
+        store._dirty = False
+
+        await store.update_table_field("Status", "Active")
+        assert store._dirty is False

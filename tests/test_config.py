@@ -419,3 +419,45 @@ class TestDiscoverPluginSkills:
         with patch("summon_claude.config.Path.home", return_value=tmp_path):
             results = discover_plugin_skills()
         assert results[0].name == "actual-name"
+
+
+class TestCwdValidators:
+    """Tests for global_pm_cwd and scribe_cwd pydantic field validators."""
+
+    def test_global_pm_cwd_accepts_absolute(self):
+        cfg = _make_config(global_pm_cwd="/tmp/test")
+        assert cfg.global_pm_cwd == "/tmp/test"
+
+    def test_global_pm_cwd_expands_tilde(self):
+        cfg = _make_config(global_pm_cwd="~/test-dir")
+        assert cfg.global_pm_cwd is not None
+        assert cfg.global_pm_cwd.startswith("/")
+        assert "~" not in cfg.global_pm_cwd
+        assert cfg.global_pm_cwd.endswith("/test-dir")
+
+    def test_global_pm_cwd_rejects_relative(self):
+        with pytest.raises(Exception, match="absolute path"):
+            _make_config(global_pm_cwd="relative/path")
+
+    def test_global_pm_cwd_accepts_none(self):
+        cfg = _make_config(global_pm_cwd=None)
+        assert cfg.global_pm_cwd is None
+
+    def test_scribe_cwd_accepts_absolute(self):
+        cfg = _make_config(scribe_cwd="/tmp/scribe")
+        assert cfg.scribe_cwd == "/tmp/scribe"
+
+    def test_scribe_cwd_expands_tilde(self):
+        cfg = _make_config(scribe_cwd="~/scribe-dir")
+        assert cfg.scribe_cwd is not None
+        assert cfg.scribe_cwd.startswith("/")
+        assert "~" not in cfg.scribe_cwd
+        assert cfg.scribe_cwd.endswith("/scribe-dir")
+
+    def test_scribe_cwd_rejects_relative(self):
+        with pytest.raises(Exception, match="absolute path"):
+            _make_config(scribe_cwd="relative/path")
+
+    def test_scribe_cwd_accepts_none(self):
+        cfg = _make_config(scribe_cwd=None)
+        assert cfg.scribe_cwd is None

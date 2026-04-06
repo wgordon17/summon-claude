@@ -292,10 +292,15 @@ def slack_auth(workspace: str) -> None:
     click.echo("The browser will close automatically after detecting your session.")
     click.echo("WARNING: Auth state contains session cookies — treat stored files as secrets.")
 
-    result = asyncio.run(interactive_slack_auth(workspace_url, browser_type))
+    try:
+        result = asyncio.run(interactive_slack_auth(workspace_url, browser_type))
+    except Exception as e:
+        click.echo(f"Slack login failed: {e}", err=True)
+        sys.exit(1)
 
-    click.echo(f"Slack auth saved to {result.state_file}")
-    click.echo(f"  User ID:  {result.user_id or 'not detected'}")
+    identity = result.user_id or "unknown"
+    click.echo(f"Slack authenticated as {identity}.")
+    click.echo(f"Credentials stored in {result.state_file.parent}")
     click.echo(f"  Team ID:  {result.team_id or 'not detected'}")
     click.echo(f"  Channels: {len(result.channels) if result.channels else 0} found")
 

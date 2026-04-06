@@ -345,6 +345,23 @@ def _make_channel_name(prefix: str, session_name: str) -> str:
     return name[:_MAX_CHANNEL_NAME_LEN].lower()
 
 
+def _git_safe_env(resolved_cwd: str) -> dict[str, str]:
+    """Return an env dict safe for git subprocesses (SC-03).
+
+    Scrubs GIT_DIR and GIT_WORK_TREE to prevent git from discovering
+    repositories outside the intended working directory, and sets
+    GIT_CEILING_DIRECTORIES to stop traversal above cwd.
+    """
+    env = dict(os.environ)
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    existing_ceiling = env.get("GIT_CEILING_DIRECTORIES", "")
+    env["GIT_CEILING_DIRECTORIES"] = (
+        f"{existing_ceiling}:{resolved_cwd}" if existing_ceiling else resolved_cwd
+    )
+    return env
+
+
 async def _detect_git(cwd: str) -> tuple[bool, str | None]:
     """Detect whether cwd is inside a git repo and return the current branch.
 
@@ -358,14 +375,7 @@ async def _detect_git(cwd: str) -> tuple[bool, str | None]:
     if not os.path.isabs(cwd) or not os.path.isdir(cwd):  # noqa: ASYNC240, PTH117, PTH112
         return False, None
     resolved = os.path.realpath(cwd)  # noqa: ASYNC240
-    env = dict(os.environ)
-    env.pop("GIT_DIR", None)
-    env.pop("GIT_WORK_TREE", None)
-    # Preserve caller's GIT_CEILING_DIRECTORIES if set; extend with resolved cwd
-    existing_ceiling = env.get("GIT_CEILING_DIRECTORIES", "")
-    env["GIT_CEILING_DIRECTORIES"] = (
-        f"{existing_ceiling}:{resolved}" if existing_ceiling else resolved
-    )
+    env = _git_safe_env(resolved)
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -440,7 +450,7 @@ async def _post_session_header(
         safe_branch = git_branch.replace("`", "'")[:80]
         fields.append({"type": "mrkdwn", "text": f"*Branch:*\n`{safe_branch}`"})
     if session_id:
-        fields.append({"type": "mrkdwn", "text": f"*Session ID:*\n`{session_id[:16]}...`"})
+        fields.append({"type": "mrkdwn", "text": f"*Session ID:*\n`{session_id}`"})
 
     blocks = [
         {
@@ -1060,6 +1070,7 @@ class SummonSession:
             authenticated_at=datetime.now(UTC).isoformat(),
             authenticated_user_id=self._authenticated_user_id,
         )
+        await self._update_canvas_status("Active")
         await registry.log_event(
             "session_active",
             session_id=self._session_id,
@@ -2584,14 +2595,14 @@ class SummonSession:
             logger.info("Captured Claude session ID: %s", claude_sid[:16])
             try:
                 await rt.client.post(
-                    f"Claude session: `{claude_sid[:16]}...`",
+                    f"Claude session: `{claude_sid}`",
                     blocks=[
                         {
                             "type": "context",
                             "elements": [
                                 {
                                     "type": "mrkdwn",
-                                    "text": f":brain: Claude session ID: `{claude_sid[:16]}...`",
+                                    "text": f":brain: Claude session ID: `{claude_sid}`",
                                 }
                             ],
                         }
@@ -2802,6 +2813,10 @@ class SummonSession:
                 timeout=_CLEANUP_TIMEOUT_S,
             )
             self._shutdown_completed = True
+            status_label = {"completed": "Completed", "suspended": "Suspended"}.get(
+                final_status, final_status.title()
+            )
+            await self._update_canvas_status(status_label)
             await asyncio.wait_for(
                 rt.registry.log_event(
                     "session_ended",
@@ -2937,13 +2952,35 @@ class SummonSession:
             except Exception:
                 logger.debug("Canvas Changed Files update failed", exc_info=True)
 
+    async def _update_canvas_status(self, status: str) -> None:
+        """Update the canvas Status field, swallowing errors."""
+        if self._canvas_store:
+            try:
+                await self._canvas_store.update_table_field("Status", status)
+            except Exception:
+                logger.debug("Canvas status update failed", exc_info=True)
+
+    def _display_path(self, full_path: str) -> str:
+        """Compute a human-friendly display path for a file."""
+        try:
+            rel = os.path.relpath(full_path, self._cwd)
+            if not rel.startswith(".."):
+                return rel
+        except ValueError:
+            pass
+        # Outside CWD — try relative to home
+        home = str(Path.home())
+        if full_path.startswith(home + os.sep):
+            return "~/" + full_path[len(home) + 1 :]
+        return full_path
+
     def _render_changed_files_table(self) -> str:
         """Render the Changed Files canvas section as a markdown table."""
         if not self._changed_files:
             return "_No files changed yet._"
         lines = ["| File | Type | +/- |", "|------|------|-----|"]
         for path, change in self._changed_files.items():
-            short = path.rsplit("/", 1)[-1] if "/" in path else path
+            short = self._display_path(path)
             lines.append(
                 f"| `{short}` | {change.change_type} | +{change.additions}/-{change.deletions} |"
             )
@@ -2997,7 +3034,7 @@ class SummonSession:
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "GIT_CEILING_DIRECTORIES": cwd},
+                env=_git_safe_env(cwd),
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             if stdout:
@@ -3031,6 +3068,57 @@ class SummonSession:
                 thread_ts=thread_ts,
             )
 
+    async def _handle_diff_all(self, rt: _SessionRuntime, thread_ts: str | None) -> None:
+        """Handle bare !diff — show combined git diff for all changes."""
+        if not self._is_git_repo:
+            if self._changed_files:
+                await self._post_change_summary(rt, thread_ts=thread_ts)
+            else:
+                await rt.client.post(
+                    "_Not in a git repository. Use `!changes` to see session-tracked changes._",
+                    thread_ts=thread_ts,
+                )
+            return
+
+        cwd = os.path.realpath(self._cwd)  # noqa: ASYNC240
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "diff",
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_git_safe_env(cwd),
+            )
+            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            stdout = stdout_bytes.decode(errors="replace")
+
+            if stdout:
+                if len(stdout) > _MAX_DIFF_UPLOAD_CHARS:
+                    stdout = stdout[:_MAX_DIFF_UPLOAD_CHARS]
+                    await rt.client.post(
+                        f":warning: Diff truncated to {_MAX_DIFF_UPLOAD_CHARS:,} chars.",
+                        thread_ts=thread_ts,
+                    )
+                await rt.client.upload(
+                    content=stdout,
+                    filename="changes.diff",
+                    title="All uncommitted changes",
+                    snippet_type="diff",
+                    thread_ts=thread_ts,
+                )
+            else:
+                msg = "_No uncommitted changes._"
+                if self._changed_files:
+                    msg += " Use `!changes` to see session-tracked file changes."
+                await rt.client.post(msg, thread_ts=thread_ts)
+        except Exception:
+            logger.debug("git diff (all) failed", exc_info=True)
+            await rt.client.post(
+                ":warning: Could not run git diff.",
+                thread_ts=thread_ts,
+            )
+
     async def _post_change_summary(self, rt: _SessionRuntime, thread_ts: str | None = None) -> None:
         """Post a summary of all changed files to the channel."""
         if not self._changed_files:
@@ -3048,7 +3136,7 @@ class SummonSession:
         remaining = 3000 - len(header) - 1  # -1 for the joining newline
         truncated = 0
         for path, change in self._changed_files.items():
-            short = path.rsplit("/", 1)[-1] if "/" in path else path
+            short = self._display_path(path)
             line = (
                 f"\u2022 `{short}` \u2014 {change.change_type} "
                 f"(+{change.additions}/-{change.deletions})"
@@ -3082,7 +3170,7 @@ class SummonSession:
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "GIT_CEILING_DIRECTORIES": cwd},
+                env=_git_safe_env(cwd),
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
             if stdout:
@@ -3379,6 +3467,11 @@ class SummonSession:
                 await self._post_change_summary(rt, thread_ts=thread_ts)
             else:
                 await rt.client.post("_No files changed in this session yet._", thread_ts=thread_ts)
+            return
+
+        # Handle bare !diff — show all uncommitted changes
+        if result.metadata.get("diff_all"):
+            await self._handle_diff_all(rt, thread_ts)
             return
 
         # Handle !diff <file> — show git diff for a specific file
@@ -3885,6 +3978,7 @@ class SummonSession:
                         or result.metadata.get("resume")
                         or result.metadata.get("show_changes")
                         or result.metadata.get("diff_file")
+                        or result.metadata.get("diff_all")
                         or result.metadata.get("standalone")
                     )
                     if standalone_only:

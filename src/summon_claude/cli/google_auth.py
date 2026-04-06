@@ -13,6 +13,7 @@ from typing import Any
 
 import click
 
+from summon_claude.cli.formatting import format_tag
 from summon_claude.config import (
     ACCOUNT_LABEL_RE,
     GOOGLE_SCOPE_PREFIX,
@@ -972,13 +973,15 @@ def _check_google_status(
         from auth.credential_store import LocalDirectoryCredentialStore  # noqa: PLC0415
     except ImportError:
         if not quiet:
-            click.echo(f"{prefix}[INFO] Google: not installed (install summon-claude[google])")
+            tag = format_tag("INFO")
+            click.echo(f"{prefix}{tag} Google: not installed (install summon-claude[google])")
         return None
 
     base_dir = get_google_credentials_dir()
     if not base_dir.exists():
         if not quiet:
-            click.echo(f"{prefix}[INFO] Google: not configured (run `summon auth google setup`)")
+            tag = format_tag("INFO")
+            click.echo(f"{prefix}{tag} Google: not configured (run `summon auth google setup`)")
         return None
 
     if account is not None:
@@ -987,7 +990,7 @@ def _check_google_status(
         if not account_dir.exists():
             if not quiet:
                 click.echo(
-                    f"{prefix}[INFO] Google: account {account!r} not found"
+                    f"{prefix}{format_tag('INFO')} Google: account {account!r} not found"
                     f" (run `summon auth google setup --account {account}`)"
                 )
             return None
@@ -1007,13 +1010,13 @@ def _check_google_status(
                 )
                 if has_client_env:
                     click.echo(
-                        f"{prefix}[INFO] Google: setup complete, run"
+                        f"{prefix}{format_tag('INFO')} Google: setup complete, run"
                         " `summon auth google login` to authenticate"
                     )
                 else:
-                    click.echo(
-                        f"{prefix}[INFO] Google: not configured (run `summon auth google setup`)"
-                    )
+                    tag = format_tag("INFO")
+                    msg = "Google: not configured (run `summon auth google setup`)"
+                    click.echo(f"{prefix}{tag} {msg}")
             return None
         dirs_to_check = [(a.label, base_dir / a.label) for a in discovered]
 
@@ -1023,7 +1026,8 @@ def _check_google_status(
         users = store.list_users()
         if not users:
             if not quiet:
-                click.echo(f"{prefix}[INFO] Google [{acct_label}]: no credentials found")
+                tag = format_tag("INFO")
+                click.echo(f"{prefix}{tag} Google [{acct_label}]: no credentials found")
             all_ok = False
             continue
 
@@ -1031,20 +1035,18 @@ def _check_google_status(
             cred = store.get_credential(user)
             if not cred:
                 if not quiet:
-                    click.echo(
-                        f"{prefix}[FAIL] Google [{acct_label}]: invalid credential file ({user})"
-                    )
+                    tag = format_tag("FAIL")
+                    msg = f"Google [{acct_label}]: invalid credential file ({user})"
+                    click.echo(f"{prefix}{tag} {msg}")
                 all_ok = False
                 continue
 
-            if cred.valid:
-                status = "valid"
-            elif cred.expired and cred.refresh_token:
-                status = "expired (will refresh on next use)"
+            if cred.valid or (cred.expired and cred.refresh_token):
+                status = "authenticated as"
             else:
                 if not quiet:
                     click.echo(
-                        f"{prefix}[FAIL] Google [{acct_label}]: invalid"
+                        f"{prefix}{format_tag('FAIL')} Google [{acct_label}]: invalid"
                         f" — re-run `summon auth google login --account {acct_label}` ({user})"
                     )
                 all_ok = False
@@ -1054,7 +1056,7 @@ def _check_google_status(
                 # Summarise granted access level per service.
                 granted = set(cred.scopes or [])
                 access = _describe_granted_scopes(granted)
-                click.echo(f"{prefix}[PASS] Google [{acct_label}]: {status} ({user})")
+                click.echo(f"{prefix}{format_tag('PASS')} Google [{acct_label}]: {status} {user}")
                 if access:
                     click.echo(f"{prefix}  Access: {access}")
 

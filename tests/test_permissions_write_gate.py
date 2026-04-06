@@ -831,3 +831,125 @@ class TestGetCacheableArg:
         """NotebookEdit uses 'notebook_path' as primary key."""
         result = _get_cacheable_arg("NotebookEdit", {"notebook_path": "/home//user//nb.ipynb"})
         assert result == "/home/user/nb.ipynb"
+
+
+class TestSafeWriteDirsTildeExpansion:
+    """Tests for tilde-prefixed and absolute safe_write_dirs expansion in PermissionHandler.
+
+    Path.expanduser() on POSIX reads os.environ["HOME"] (not Path.home()), so we
+    redirect HOME via monkeypatch.setenv for deterministic expansion in all tests
+    that use tilde paths.
+    """
+
+    def test_tilde_expanded_in_safe_dirs_unit(self, tmp_path: Path, monkeypatch):
+        """_is_in_safe_dir recognises a file under an absolute-expanded tilde path.
+
+        This tests the contract that PermissionHandler.__init__ expands '~' via
+        Path.expanduser(), so _safe_dirs contains absolute paths rather than
+        literal tilde strings.
+        """
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        # Simulate what __init__ produces after expanduser()
+        safe_dir_str = str(Path("~/mysafedir").expanduser())
+        assert safe_dir_str == str(fake_home / "mysafedir")
+
+        # Create the target file under the expanded path
+        expanded_safe = fake_home / "mysafedir"
+        expanded_safe.mkdir()
+        target = expanded_safe / "foo.py"
+        target.touch()
+
+        # _is_in_safe_dir receives absolute expanded strings; project_root is unused
+        # for absolute safe dirs (Path(project_root) / abs_path == abs_path on POSIX)
+        assert _is_in_safe_dir(str(target), [safe_dir_str], tmp_path) is True
+
+    def test_tilde_file_outside_safe_dir_not_matched(self, tmp_path: Path, monkeypatch):
+        """A file outside the expanded tilde dir is not matched."""
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        safe_dir_str = str(Path("~/mysafedir").expanduser())
+        target = fake_home / "otherstuff" / "secret.py"
+        target.parent.mkdir()
+        target.touch()
+
+        assert _is_in_safe_dir(str(target), [safe_dir_str], tmp_path) is False
+
+    def test_handler_init_expands_tilde_in_safe_dirs(self, tmp_path: Path, monkeypatch):
+        """PermissionHandler.__init__ stores expanded absolute paths in _safe_dirs."""
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        handler, _ = _make_handler(safe_write_dirs="~/mysafedir")
+
+        assert len(handler._safe_dirs) == 1
+        assert handler._safe_dirs[0] == str(fake_home / "mysafedir")
+        # Must not contain a literal tilde
+        assert "~" not in handler._safe_dirs[0]
+
+    async def test_write_to_tilde_safe_dir_auto_approved_e2e(self, tmp_path: Path, monkeypatch):
+        """End-to-end: write to a tilde-prefixed safe dir is auto-approved via handle()."""
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        safe_dir = fake_home / "mysafedir"
+        safe_dir.mkdir()
+        target = safe_dir / "foo.py"
+        target.touch()
+
+        handler, client = _make_handler(safe_write_dirs="~/mysafedir")
+        result = await handler.handle("Write", {"file_path": str(target)}, None)
+
+        assert isinstance(result, PermissionResultAllow)
+        client.post_interactive.assert_not_called()
+
+    async def test_write_to_absolute_safe_dir_auto_approved_e2e(self, tmp_path: Path):
+        """End-to-end: write to an absolute safe_write_dirs path is auto-approved."""
+        safe_dir = tmp_path / "opt" / "shared" / "config"
+        safe_dir.mkdir(parents=True)
+        target = safe_dir / "settings.json"
+        target.touch()
+
+        handler, client = _make_handler(safe_write_dirs=str(safe_dir))
+        result = await handler.handle("Write", {"file_path": str(target)}, None)
+
+        assert isinstance(result, PermissionResultAllow)
+        client.post_interactive.assert_not_called()
+
+    async def test_write_outside_absolute_safe_dir_denied(self, tmp_path: Path):
+        """Write outside the absolute safe dir is denied when not in a worktree."""
+        safe_dir = tmp_path / "opt" / "shared" / "config"
+        safe_dir.mkdir(parents=True)
+
+        handler, _ = _make_handler(safe_write_dirs=str(safe_dir))
+        result = await handler.handle(
+            "Write", {"file_path": str(tmp_path / "etc" / "passwd")}, None
+        )
+
+        assert isinstance(result, PermissionResultDeny)
+
+    def test_handler_init_expands_absolute_path_unchanged(self, tmp_path: Path):
+        """An absolute path in safe_write_dirs is stored as-is (no expanduser needed)."""
+        abs_dir = "/opt/shared/config"
+        handler, _ = _make_handler(safe_write_dirs=abs_dir)
+
+        assert len(handler._safe_dirs) == 1
+        assert handler._safe_dirs[0] == abs_dir
+
+    def test_handler_init_multiple_dirs_with_tilde_and_absolute(self, tmp_path: Path, monkeypatch):
+        """Comma-separated mix of tilde and absolute dirs are both expanded correctly."""
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        handler, _ = _make_handler(safe_write_dirs="~/mysafedir,/opt/shared/config")
+
+        assert len(handler._safe_dirs) == 2
+        assert handler._safe_dirs[0] == str(fake_home / "mysafedir")
+        assert handler._safe_dirs[1] == "/opt/shared/config"

@@ -28,6 +28,7 @@ from summon_claude.cli.config import (
     github_auth_cmd,
     github_logout,
 )
+from summon_claude.cli.formatting import format_tag
 from summon_claude.cli.google_auth import (
     _check_google_status,
     google_auth,
@@ -82,11 +83,11 @@ def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912
         jira_err = check_jira_status()
         if jira_err is None:
             if not quiet:
-                click.echo("  [PASS] Jira: authenticated")
+                click.echo(f"  {format_tag('PASS')} Jira: authenticated")
         elif not quiet:
-            click.echo(f"  [FAIL] Jira: {jira_err}")
+            click.echo(f"  {format_tag('FAIL')} Jira: {jira_err}")
     elif not quiet:
-        click.echo("  [INFO] Jira: not configured (run `summon auth jira login`)")
+        click.echo(f"  {format_tag('INFO')} Jira: not configured (run `summon auth jira login`)")
 
     # External Slack
     workspace_config_path = get_workspace_config_path()
@@ -100,18 +101,19 @@ def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912
                 url = re.sub(r"[^\x20-\x7e]", "", workspace.get("url", "unknown"))
             except (json.JSONDecodeError, OSError, AttributeError):
                 click.echo(
-                    "  [FAIL] Slack: workspace config is corrupted"
+                    f"  {format_tag('FAIL')} Slack: workspace config is corrupted"
                     " (re-run `summon auth slack login`)"
                 )
                 url = None
             if url is not None:
                 existing = _check_existing_slack_auth()
                 if existing:
-                    click.echo(f"  [PASS] Slack: authenticated ({url}, {existing['age']})")
+                    age = existing["age"]
+                    click.echo(f"  {format_tag('PASS')} Slack: authenticated ({url}, {age})")
                 else:
-                    click.echo(f"  [FAIL] Slack: auth expired or missing ({url})")
+                    click.echo(f"  {format_tag('FAIL')} Slack: auth expired or missing ({url})")
     elif not quiet:
-        click.echo("  [INFO] Slack: not configured (run `summon auth slack login`)")
+        click.echo(f"  {format_tag('INFO')} Slack: not configured (run `summon auth slack login`)")
 
     if not any_configured and not quiet:
         click.echo()

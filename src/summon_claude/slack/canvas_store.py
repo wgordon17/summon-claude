@@ -87,6 +87,24 @@ class CanvasStore:
             self._dirty = True
         await self._persist()
 
+    async def update_table_field(self, field_name: str, value: str) -> None:
+        """Update a field value in a two-column markdown table row.
+
+        Finds ``| {field_name} | ... |`` and replaces the value cell.
+        Only works for rows with exactly two data columns (field + value).
+        """
+        pattern = re.compile(
+            rf"^\| *{re.escape(field_name)} *\|[^|]*\|",
+            re.MULTILINE,
+        )
+        replacement = f"| {field_name} | {value} |"
+        async with self._write_lock:
+            new_md = pattern.sub(replacement, self._markdown, count=1)
+            if new_md != self._markdown:
+                self._markdown = new_md
+                self._dirty = True
+        await self._persist()
+
     def start_sync(self) -> None:
         """Start the background sync loop."""
         if self._sync_task is None or self._sync_task.done():

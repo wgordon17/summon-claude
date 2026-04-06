@@ -101,8 +101,10 @@ def _write_cache(cache_path: Path, latest_version: str) -> None:
 
 def format_update_message(info: UpdateInfo) -> str:
     """Return a styled box announcing the available update."""
+    from summon_claude.cli.config import get_upgrade_command  # noqa: PLC0415
+
     upgrade_line = f"  Update available: {info.current} → {info.latest}"
-    install_line = "  Run: uv tool upgrade summon-claude"
+    install_line = f"  Run: {get_upgrade_command()}"
     disable_line = "  Disable: summon config set SUMMON_NO_UPDATE_CHECK true"
 
     width = max(len(upgrade_line), len(install_line), len(disable_line)) + 2

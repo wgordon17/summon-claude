@@ -264,6 +264,38 @@ class TestFormatFileReferences:
         assert "unknown" in result
 
 
+class TestGitSafeEnv:
+    """Unit tests for _git_safe_env helper (SC-03)."""
+
+    def test_scrubs_git_dir(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.setenv("GIT_DIR", "/rogue/.git")
+        env = _git_safe_env("/home/user/project")
+        assert "GIT_DIR" not in env
+
+    def test_scrubs_git_work_tree(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.setenv("GIT_WORK_TREE", "/rogue")
+        env = _git_safe_env("/home/user/project")
+        assert "GIT_WORK_TREE" not in env
+
+    def test_sets_ceiling(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.delenv("GIT_CEILING_DIRECTORIES", raising=False)
+        env = _git_safe_env("/home/user/project")
+        assert env["GIT_CEILING_DIRECTORIES"] == "/home/user/project"
+
+    def test_extends_existing_ceiling(self, monkeypatch):
+        from summon_claude.sessions.session import _git_safe_env
+
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", "/existing")
+        env = _git_safe_env("/home/user/project")
+        assert env["GIT_CEILING_DIRECTORIES"] == "/existing:/home/user/project"
+
+
 class TestDetectGit:
     """Unit tests for the _detect_git async helper."""
 
@@ -4556,3 +4588,223 @@ class TestHandleDiffFileNonGit:
             call_kwargs = rt.client.upload.call_args.kwargs
             assert call_kwargs.get("snippet_type") == "diff"
             assert "filetype" not in call_kwargs
+
+
+class TestDisplayPath:
+    """Tests for SummonSession._display_path (BUG-085)."""
+
+    def _make_session_with_cwd(self, cwd: str):
+        """Create a minimal object with _cwd for testing _display_path."""
+        from summon_claude.sessions.session import SummonSession
+
+        # Use __new__ to skip __init__, set only what _display_path needs
+        session = object.__new__(SummonSession)
+        session._cwd = cwd
+        return session
+
+    def test_file_in_cwd(self):
+        s = self._make_session_with_cwd("/home/user/project")
+        assert s._display_path("/home/user/project/foo.py") == "foo.py"
+
+    def test_file_in_cwd_subdirectory(self):
+        s = self._make_session_with_cwd("/home/user/project")
+        assert s._display_path("/home/user/project/src/main.py") == "src/main.py"
+
+    def test_file_outside_cwd_in_home(self):
+        from pathlib import Path
+
+        s = self._make_session_with_cwd("/home/user/project")
+        result = s._display_path(str(Path.home() / "Documents" / "test.txt"))
+        assert result.startswith("~/")
+        assert result.endswith("Documents/test.txt")
+
+    def test_file_outside_home(self):
+        s = self._make_session_with_cwd("/home/user/project")
+        assert s._display_path("/tmp/scratch.txt") == "/tmp/scratch.txt"
+
+    def test_file_is_cwd_itself(self):
+        s = self._make_session_with_cwd("/home/user/project")
+        assert s._display_path("/home/user/project") == "."
+
+
+class TestHandleDiffAll:
+    """Tests for SummonSession._handle_diff_all (bare !diff command)."""
+
+    async def test_non_git_no_tracked_changes_posts_message(self, tmp_path):
+        """Non-git repo with no tracked changes should post 'not in git repository' message."""
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = False
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        await session._handle_diff_all(rt, "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("not in a git repository" in p.lower() for p in posted)
+        rt.client.upload.assert_not_called()
+
+    async def test_non_git_with_tracked_changes_calls_post_change_summary(self, tmp_path):
+        """Non-git repo with tracked changes should call _post_change_summary."""
+        from summon_claude.sessions.types import FileChange
+
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = False
+        change = FileChange(
+            path="src/main.py",
+            change_type="modified",
+            additions=5,
+            deletions=2,
+            timestamp=datetime.now(tz=UTC),
+            turn_number=1,
+        )
+        session._changed_files = {"src/main.py": change}
+        rt = make_rt(AsyncMock())
+
+        with patch.object(session, "_post_change_summary", new_callable=AsyncMock) as mock_summary:
+            await session._handle_diff_all(rt, "thread_1")
+            mock_summary.assert_called_once_with(rt, thread_ts="thread_1")
+
+        rt.client.upload.assert_not_called()
+
+    async def test_git_repo_empty_diff_posts_no_changes_message(self, tmp_path):
+        """Git repo with empty diff output should post 'no uncommitted changes' message."""
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = AsyncMock()
+            mock_proc.communicate.return_value = (b"", b"")
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+
+            await session._handle_diff_all(rt, "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("no uncommitted changes" in p.lower() for p in posted)
+        rt.client.upload.assert_not_called()
+
+    async def test_git_repo_nonempty_diff_uploads_with_snippet_type_diff(self, tmp_path):
+        """Git repo with non-empty diff should upload file with snippet_type='diff'."""
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = AsyncMock()
+            mock_proc.communicate.return_value = (
+                b"diff --git a/f b/f\n+added line",
+                b"",
+            )
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+
+            await session._handle_diff_all(rt, "thread_1")
+
+        rt.client.upload.assert_called_once()
+        call_kwargs = rt.client.upload.call_args.kwargs
+        assert call_kwargs.get("snippet_type") == "diff"
+
+    async def test_git_subprocess_exception_posts_warning(self, tmp_path):
+        """git subprocess failure should post a warning, not crash."""
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        with patch("asyncio.create_subprocess_exec", side_effect=OSError("git not found")):
+            await session._handle_diff_all(rt, "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("could not run git diff" in p.lower() for p in posted)
+
+    async def test_large_diff_truncated_and_warning_posted(self, tmp_path):
+        """Diff exceeding _MAX_DIFF_UPLOAD_CHARS should be truncated with a warning."""
+        from summon_claude.sessions import session as session_mod
+
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        big_diff = "x" * 200
+        with (
+            patch.object(session_mod, "_MAX_DIFF_UPLOAD_CHARS", 100),
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+        ):
+            mock_proc = AsyncMock()
+            mock_proc.communicate.return_value = (big_diff.encode(), b"")
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+
+            await session._handle_diff_all(rt, "thread_1")
+
+        # Warning about truncation should be posted
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("truncated" in p.lower() for p in posted)
+        # Upload should still happen with truncated content
+        rt.client.upload.assert_called_once()
+        uploaded = rt.client.upload.call_args.kwargs.get("content", "")
+        assert len(uploaded) == 100
+
+    async def test_diff_all_timeout_posts_warning(self, tmp_path):
+        """Timeout from asyncio.wait_for should be caught and post a warning."""
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = AsyncMock()
+            mock_proc.communicate.side_effect = TimeoutError()
+            mock_exec.return_value = mock_proc
+
+            await session._handle_diff_all(rt, "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("could not run git diff" in p.lower() for p in posted)
+
+
+class TestRunSessionCanvasException:
+    """Canvas update_table_field failure in _update_canvas_status must not propagate."""
+
+    async def test_canvas_failure_does_not_block_activation(self, tmp_path):
+        session = make_session(cwd=str(tmp_path))
+
+        mock_canvas = AsyncMock()
+        mock_canvas.update_table_field = AsyncMock(side_effect=RuntimeError("canvas API down"))
+        session._canvas_store = mock_canvas
+
+        # Call the production method — exception must be swallowed
+        await session._update_canvas_status("Active")
+
+        mock_canvas.update_table_field.assert_awaited_once_with("Status", "Active")
+
+
+class TestShutdownCanvasException:
+    """Canvas update_table_field failure in _shutdown must not block shutdown."""
+
+    async def test_canvas_failure_does_not_block_shutdown(self, tmp_path):
+        session = make_session(cwd=str(tmp_path))
+        session._shutdown_completed = False
+        session._total_turns = 1
+        session._total_cost = 0.0
+
+        mock_canvas = AsyncMock()
+        mock_canvas.update_table_field = AsyncMock(side_effect=RuntimeError("canvas API down"))
+        session._canvas_store = mock_canvas
+
+        mock_registry = AsyncMock()
+        mock_registry.get_session = AsyncMock(return_value={"status": "active"})
+        mock_registry.update_status = AsyncMock()
+        mock_registry.log_event = AsyncMock()
+        rt = make_rt(mock_registry)
+
+        # Patch _post_disconnect_message to avoid Slack calls
+        with patch.object(session, "_post_disconnect_message", new_callable=AsyncMock):
+            await session._shutdown(rt)
+
+        assert session._shutdown_completed is True
+        mock_registry.log_event.assert_awaited_once()

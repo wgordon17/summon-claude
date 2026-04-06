@@ -14,6 +14,7 @@ from pathlib import Path
 
 import click
 
+from summon_claude.cli.formatting import format_tag
 from summon_claude.config import (
     _BOOL_FALSE,
     _BOOL_TRUE,
@@ -274,16 +275,24 @@ async def github_auth_cmd() -> None:
     from summon_claude.github_auth import GitHubAuthError, run_device_flow  # noqa: PLC0415
 
     def _print_device_code(user_code: str, verification_uri: str) -> None:
-        safe_uri = re.sub(r"[^\x20-\x7e]", "", verification_uri)
-        safe_code = re.sub(r"[^\x20-\x7e]", "", user_code)
+        # Strip ANSI escape sequences first, then non-printable chars
+        safe_uri = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", verification_uri)
+        safe_uri = re.sub(r"[^\x20-\x7e]", "", safe_uri)
+        safe_code = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", user_code)
+        safe_code = re.sub(r"[^\x20-\x7e]", "", safe_code)
         click.echo(f"Visit {safe_uri} and enter code: {safe_code}")
         click.echo("Verify the authorization page shows 'summon-claude' as the app name.")
+        click.launch(safe_uri)
         click.echo("Waiting for GitHub authorization...")
 
     try:
         result = await run_device_flow(on_code=_print_device_code)
         login = re.sub(r"[^a-zA-Z0-9-]", "", result.login) or "unknown"
-        click.echo(f"Authenticated as {login}. Token saved to {result.token_path}.")
+        cred_dir = result.token_path.parent
+        click.echo(f"GitHub authenticated as {login}.")
+        click.echo(f"Credentials stored in {cred_dir}")
+        click.echo()
+        click.echo("GitHub MCP tools will be available on next session start.")
     except aiohttp.ClientError as e:
         click.echo(f"Network error during GitHub auth: {e}", err=True)
         sys.exit(1)
@@ -319,26 +328,47 @@ def _check_github_status(*, prefix: str = "", quiet: bool = False) -> bool | Non
     token = load_token()
     if not token:
         if not quiet:
-            click.echo(f"{prefix}[INFO] GitHub: not configured (run `summon auth github login`)")
+            click.echo(
+                f"{prefix}{format_tag('INFO')} GitHub: not configured"
+                " (run `summon auth github login`)"
+            )
         return None
 
     try:
         result = asyncio.run(validate_token(token))
     except (OSError, aiohttp.ClientError, GitHubAuthError):
         if not quiet:
-            click.echo(f"{prefix}[WARN] GitHub: token found (validation skipped — network error)")
+            click.echo(
+                f"{prefix}{format_tag('WARN')} GitHub: token found"
+                " (validation skipped — network error)"
+            )
         return True
 
     if result is None:
         if not quiet:
-            click.echo(f"{prefix}[FAIL] GitHub: token invalid — run `summon auth github login`")
+            click.echo(
+                f"{prefix}{format_tag('FAIL')} GitHub: token invalid"
+                " — run `summon auth github login`"
+            )
         return False
 
     if not quiet:
         login = re.sub(r"[^a-zA-Z0-9-]", "", result["login"]) or "unknown"
         scopes = re.sub(r"[^\x20-\x7e]", "", result["scopes"])
-        click.echo(f"{prefix}[PASS] GitHub: authenticated as {login} (scopes: {scopes})")
+        click.echo(
+            f"{prefix}{format_tag('PASS')} GitHub: authenticated as {login} (scopes: {scopes})"
+        )
     return True
+
+
+def get_upgrade_command() -> str:
+    """Detect install method from sys.executable and return the upgrade command."""
+    exe = sys.executable or ""
+    if "/Cellar/" in exe or "/homebrew/" in exe:
+        return "brew upgrade summon-claude"
+    if "/.local/pipx/venvs/" in exe:
+        return "pipx upgrade summon-claude"
+    return "uv tool upgrade summon-claude"
 
 
 async def _check_db(db_path: Path) -> tuple[int, str, int, int]:
@@ -393,9 +423,11 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
     if cli_status.found:
         if not quiet:
             version_str = f" ({cli_status.version})" if cli_status.version else ""
-            click.echo(f"  [PASS] Claude CLI found{version_str}")
+            click.echo(f"  {format_tag('PASS')} Claude CLI found{version_str}")
     else:
-        click.echo("  [FAIL] Claude CLI not found — install from https://claude.ai/code")
+        click.echo(
+            f"  {format_tag('FAIL')} Claude CLI not found — install from https://claude.ai/code"
+        )
         all_pass = False
 
     # Parse the config file into a dict
@@ -407,9 +439,9 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         present = bool(values.get(key))
         if present:
             if not quiet:
-                click.echo(f"  [PASS] {key} is set")
+                click.echo(f"  {format_tag('PASS')} {key} is set")
         else:
-            click.echo(f"  [FAIL] {key} is missing")
+            click.echo(f"  {format_tag('FAIL')} {key} is missing")
             all_pass = False
 
     # Token format
@@ -420,25 +452,25 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
     if bot_token:
         if bot_token.startswith("xoxb-"):
             if not quiet:
-                click.echo("  [PASS] Bot token format is valid (xoxb-)")
+                click.echo(f"  {format_tag('PASS')} Bot token format is valid (xoxb-)")
         else:
-            click.echo("  [FAIL] Bot token must start with 'xoxb-'")
+            click.echo(f"  {format_tag('FAIL')} Bot token must start with 'xoxb-'")
             all_pass = False
 
     if app_token:
         if app_token.startswith("xapp-"):
             if not quiet:
-                click.echo("  [PASS] App token format is valid (xapp-)")
+                click.echo(f"  {format_tag('PASS')} App token format is valid (xapp-)")
         else:
-            click.echo("  [FAIL] App token must start with 'xapp-'")
+            click.echo(f"  {format_tag('FAIL')} App token must start with 'xapp-'")
             all_pass = False
 
     if signing_secret:
         if re.match(r"^[0-9a-f]+$", signing_secret):
             if not quiet:
-                click.echo("  [PASS] Signing secret format looks valid (hex)")
+                click.echo(f"  {format_tag('PASS')} Signing secret format looks valid (hex)")
         else:
-            click.echo("  [FAIL] Signing secret should be a hex string")
+            click.echo(f"  {format_tag('FAIL')} Signing secret should be a hex string")
             all_pass = False
 
     # Pydantic validation — catches @field_validator rules (effort, quiet_hours,
@@ -458,9 +490,9 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
                 }
             )
             if not quiet:
-                click.echo("  [PASS] Config values pass validation")
+                click.echo(f"  {format_tag('PASS')} Config values pass validation")
         except Exception as e:
-            click.echo(f"  [FAIL] Config validation: {e}")
+            click.echo(f"  {format_tag('FAIL')} Config validation: {e}")
             all_pass = False
 
     # DB writable
@@ -470,12 +502,12 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         db_path.touch()
         if os.access(db_path, os.W_OK):
             if not quiet:
-                click.echo(f"  [PASS] DB path is writable: {db_path}")
+                click.echo(f"  {format_tag('PASS')} DB path is writable: {db_path}")
         else:
-            click.echo(f"  [FAIL] DB path is not writable: {db_path}")
+            click.echo(f"  {format_tag('FAIL')} DB path is not writable: {db_path}")
             all_pass = False
     except OSError as e:
-        click.echo(f"  [FAIL] DB path error: {e}")
+        click.echo(f"  {format_tag('FAIL')} DB path error: {e}")
         all_pass = False
 
     # Schema version, integrity, and row counts
@@ -485,32 +517,35 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         # Schema version
         if version == CURRENT_SCHEMA_VERSION:
             if not quiet:
-                click.echo(f"  [PASS] Schema version {version} (current)")
+                click.echo(f"  {format_tag('PASS')} Schema version {version} (current)")
         elif version > CURRENT_SCHEMA_VERSION:
+            upgrade_cmd = get_upgrade_command()
             click.echo(
-                f"  [WARN] Schema version {version} is ahead of this release"
-                f" (expects {CURRENT_SCHEMA_VERSION}) — upgrade summon-claude"
+                f"  {format_tag('WARN')} Schema version {version} is ahead of this release"
+                f" (expects {CURRENT_SCHEMA_VERSION}) — run `{upgrade_cmd}`"
             )
         else:
             # Should not happen — _connect() auto-migrates
-            click.echo(f"  [FAIL] Schema version {version} (expected {CURRENT_SCHEMA_VERSION})")
+            tag = format_tag("FAIL")
+            click.echo(f"  {tag} Schema version {version} (expected {CURRENT_SCHEMA_VERSION})")
             all_pass = False
 
         # Integrity
         if integrity == "ok":
             if not quiet:
-                click.echo("  [PASS] Database integrity OK")
+                click.echo(f"  {format_tag('PASS')} Database integrity OK")
         else:
-            click.echo(f"  [FAIL] Database integrity error: {integrity}")
+            click.echo(f"  {format_tag('FAIL')} Database integrity error: {integrity}")
             all_pass = False
 
         # Row counts (informational only)
         if not quiet:
-            click.echo(f"  [INFO] Sessions: {sessions_count}, Audit log: {audit_count}")
+            tag = format_tag("INFO")
+            click.echo(f"  {tag} Sessions: {sessions_count}, Audit log: {audit_count}")
 
     except Exception:
         logger.debug("Database validation error", exc_info=True)
-        click.echo("  [FAIL] Database validation error")
+        click.echo(f"  {format_tag('FAIL')} Database validation error")
         all_pass = False
 
     # Slack API reachable + scope verification (optional, best-effort)
@@ -522,7 +557,8 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
             resp = client.auth_test()
             if resp["ok"]:
                 if not quiet:
-                    click.echo(f"  [PASS] Slack API reachable (team: {resp.get('team')})")
+                    tag = format_tag("PASS")
+                    click.echo(f"  {tag} Slack API reachable (team: {resp.get('team')})")
                 # Check bot scopes via x-oauth-scopes response header.
                 # Header name casing varies by HTTP library, so do a
                 # case-insensitive lookup.
@@ -532,8 +568,9 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
                     granted = {s.strip() for s in granted_str.split(",") if s.strip()}
                     missing = _REQUIRED_SLACK_SCOPES - granted
                     if missing:
+                        tag = format_tag("FAIL")
                         click.echo(
-                            f"  [FAIL] Slack bot missing scopes: {', '.join(sorted(missing))}"
+                            f"  {tag} Slack bot missing scopes: {', '.join(sorted(missing))}"
                         )
                         click.echo(
                             "  Update at: api.slack.com/apps → your app"
@@ -541,15 +578,15 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
                         )
                         all_pass = False
                     elif not quiet:
-                        click.echo(
-                            f"  [PASS] Slack bot scopes:"
-                            f" all {len(_REQUIRED_SLACK_SCOPES)} required scopes granted"
-                        )
+                        tag = format_tag("PASS")
+                        n = len(_REQUIRED_SLACK_SCOPES)
+                        click.echo(f"  {tag} Slack bot scopes: all {n} required scopes granted")
             else:
-                click.echo(f"  [FAIL] Slack API auth.test failed: {resp.get('error')}")
+                tag = format_tag("FAIL")
+                click.echo(f"  {tag} Slack API auth.test failed: {resp.get('error')}")
                 all_pass = False
         except Exception as e:
-            click.echo(f"  [WARN] Slack API check skipped: {e}")
+            click.echo(f"  {format_tag('WARN')} Slack API check skipped: {e}")
 
     # GitHub OAuth (optional, with connectivity check)
     github_result = _check_github_status(prefix="  ", quiet=quiet)
@@ -575,13 +612,26 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
             if accounts
             else "workspace-mcp (Google)"
         )
-        extras = [
-            (label, bin_exists and len(accounts) > 0),
-            ("playwright (Slack browser)", is_extra_installed("playwright")),
-        ]
-        for label, installed in extras:
-            status = "installed" if installed else "not installed"
-            click.echo(f"  [INFO] {label}: {status}")
+        gmcp_status = "installed" if bin_exists and len(accounts) > 0 else "not installed"
+        click.echo(f"  {format_tag('INFO')} {label}: {gmcp_status}")
+
+        # Playwright — check auth state, not just pip importability
+        if is_extra_installed("playwright"):
+            from summon_claude.cli.slack_auth import _check_existing_slack_auth  # noqa: PLC0415
+
+            existing = _check_existing_slack_auth()
+            if existing:
+                click.echo(
+                    f"  {format_tag('INFO')} playwright (Slack browser):"
+                    f" authenticated ({existing.get('age', 'unknown')})"
+                )
+            else:
+                click.echo(
+                    f"  {format_tag('INFO')} playwright (Slack browser):"
+                    " installed, not authenticated"
+                )
+        else:
+            click.echo(f"  {format_tag('INFO')} playwright (Slack browser): not installed")
 
     # Event health check — only when daemon is running
     from summon_claude.daemon import is_daemon_running  # noqa: PLC0415
@@ -599,19 +649,19 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
 
             if healthy is True:
                 if not quiet:
-                    click.echo("\r  [PASS] Event health: OK")
+                    click.echo(f"\r  {format_tag('PASS')} Event health: OK")
             elif healthy is None:
                 if not quiet:
-                    click.echo(f"\r  [INFO] Event health: {details}")
+                    click.echo(f"\r  {format_tag('INFO')} Event health: {details}")
             else:
-                click.echo(f"\r  [FAIL] Event health: {details}")
+                click.echo(f"\r  {format_tag('FAIL')} Event health: {details}")
                 if remediation_url and not quiet:
                     click.echo(f"         Fix at: {remediation_url}")
                 all_pass = False
         except Exception as e:
-            click.echo(f"\r  [WARN] Event health check failed: {e}")
+            click.echo(f"\r  {format_tag('WARN')} Event health check failed: {e}")
     elif not quiet:
-        click.echo("  [INFO] Event health: skipped (daemon not running)")
+        click.echo(f"  {format_tag('INFO')} Event health: skipped (daemon not running)")
 
     # Feature inventory — surface external flows so users know they exist
     if not quiet:
@@ -626,12 +676,12 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         jira_err = check_jira_status()
         if jira_err is None:
             if not quiet:
-                click.echo("  [PASS] Jira credentials valid")
+                click.echo(f"  {format_tag('PASS')} Jira credentials valid")
         else:
-            click.echo(f"  [FAIL] Jira: {jira_err}")
+            click.echo(f"  {format_tag('FAIL')} Jira: {jira_err}")
             all_pass = False
     elif not quiet:
-        click.echo("  [INFO] Jira: not configured (optional)")
+        click.echo(f"  {format_tag('INFO')} Jira: not configured (optional)")
 
     return all_pass
 
@@ -639,28 +689,32 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
 def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> None:
     """Print discoverable status of external setup flows."""
     project_count: int | None = None
+    has_workflow = False
+    db_ok = False
 
     try:
         has_workflow, has_hooks, project_count = asyncio.run(_check_features(db_path))
+        db_ok = True
 
         # Projects — the primary workflow
         if project_count:
-            click.echo(f"  [PASS] Projects: {project_count} registered")
+            click.echo(f"  {format_tag('PASS')} Projects: {project_count} registered")
         else:
-            click.echo("  [INFO] Projects: none registered (summon project add)")
+            click.echo(f"  {format_tag('INFO')} Projects: none registered (summon project add)")
 
         if has_workflow:
-            click.echo("  [PASS] Workflow instructions: configured")
+            click.echo(f"  {format_tag('PASS')} Workflow instructions: configured")
         else:
-            click.echo("  [INFO] Workflow instructions: not set (summon project workflow set)")
+            tag = format_tag("INFO")
+            click.echo(f"  {tag} Workflow instructions: not set (summon project workflow set)")
 
         if has_hooks:
-            click.echo("  [PASS] Lifecycle hooks: configured")
+            click.echo(f"  {format_tag('PASS')} Lifecycle hooks: configured")
         else:
-            click.echo("  [INFO] Lifecycle hooks: not set (summon hooks set)")
+            click.echo(f"  {format_tag('INFO')} Lifecycle hooks: not set (summon hooks set)")
 
     except Exception:
-        logging.getLogger(__name__).debug("Feature inventory DB error", exc_info=True)
+        logger.debug("Feature inventory DB error", exc_info=True)
 
     # Hook bridge — check settings.json for summon-owned entries
     has_bridge = False
@@ -675,31 +729,59 @@ def _print_feature_inventory(db_path: Path, config_values: dict[str, str]) -> No
             for entry in hooks_section.get(hook_type, [])
         )
         if has_bridge:
-            click.echo("  [PASS] Hook bridge: installed")
+            click.echo(f"  {format_tag('PASS')} Hook bridge: installed")
         else:
-            click.echo("  [INFO] Hook bridge: not installed (summon hooks install)")
+            click.echo(f"  {format_tag('INFO')} Hook bridge: not installed (summon hooks install)")
     except Exception:
-        logging.getLogger(__name__).debug("Hook bridge check error", exc_info=True)
+        logger.debug("Hook bridge check error", exc_info=True)
 
     # Scribe → Google auth nudge
     scribe_on = config_values.get("SUMMON_SCRIBE_ENABLED", "").lower() in _BOOL_TRUE
+    has_creds = False
     if scribe_on:
         try:
             google_dir = get_google_credentials_dir()
             has_creds = google_dir.exists() and any(google_dir.iterdir())
         except OSError:
-            has_creds = False
+            pass
         if not has_creds:
-            click.echo(
-                "  [INFO] Scribe enabled but Google not configured (summon auth google setup)"
-            )
+            tag = format_tag("INFO")
+            msg = "Scribe enabled but Google not configured (summon auth google setup)"
+            click.echo(f"  {tag} {msg}")
 
-    # Getting started nudge (only when count is confirmed 0, not on DB failure)
-    if project_count == 0:
-        click.echo()
-        click.echo(click.style("Getting started:", bold=True))
-        click.echo("  summon project add <path>           Register a project directory")
-        click.echo("  summon project workflow set          Set workflow instructions")
+    # Dynamic "Next steps" — only uncompleted items
+    next_steps: list[tuple[str, str]] = []
+
+    # Auth commands
+    from summon_claude.github_auth import load_token  # noqa: PLC0415
+
+    if not load_token():
+        next_steps.append(("summon auth github login", "Authenticate with GitHub"))
+    if scribe_on:
+        if not has_creds:
+            next_steps.append(("summon auth google setup", "Set up Google OAuth"))
+        from summon_claude.cli.slack_auth import _check_existing_slack_auth  # noqa: PLC0415
+
+        if not _check_existing_slack_auth():
+            next_steps.append(("summon auth slack login", "Authenticate Slack browser"))
+
+    # Project commands — only show when DB state is known
+    if db_ok:
+        if project_count == 0:
+            next_steps.append(("summon project add <path>", "Register a project directory"))
+            next_steps.append(("summon project up", "Start PM agents for all projects"))
+        if not has_workflow:
+            next_steps.append(("summon project workflow set", "Set workflow instructions"))
         if not has_bridge:
-            click.echo("  summon hooks install                Install Claude Code hook bridge")
-        click.echo("  summon project up                   Start PM agents for all projects")
+            next_steps.append(("summon hooks install", "Install Claude Code hook bridge"))
+    else:
+        next_steps.append(
+            ("summon doctor --submit", "DB unavailable — diagnose with summon doctor")
+        )
+
+    if next_steps:
+        click.echo()
+        click.echo(click.style("Next steps:", bold=True))
+        cmd_col = 36
+        for cmd, desc in next_steps:
+            click.echo(f"  {cmd:<{cmd_col}}{desc}")

@@ -651,7 +651,8 @@ class SummonConfig(BaseSettings):
     permission_debounce_ms: int = 2000
 
     # Write gate — directories where writes are allowed without entering containment
-    safe_write_dirs: str = ""  # comma-separated relative paths (e.g. "hack/,.dev/")
+    # comma-separated paths, relative to project root or absolute (e.g. "hack/,.dev/")
+    safe_write_dirs: str = ""
 
     # Content display
     max_inline_chars: int = 2500
@@ -778,9 +779,21 @@ class SummonConfig(BaseSettings):
     @field_validator("global_pm_cwd")
     @classmethod
     def validate_global_pm_cwd(cls, v: str | None) -> str | None:
-        """CWD must be absolute when explicitly set."""
-        if v is not None and not Path(v).is_absolute():
-            raise ValueError("SUMMON_GLOBAL_PM_CWD must be an absolute path")
+        """CWD must be absolute when explicitly set. Expands ~ to home dir."""
+        if v is not None:
+            v = str(Path(v).expanduser())
+            if not Path(v).is_absolute():
+                raise ValueError("SUMMON_GLOBAL_PM_CWD must be an absolute path")
+        return v
+
+    @field_validator("scribe_cwd")
+    @classmethod
+    def validate_scribe_cwd(cls, v: str | None) -> str | None:
+        """CWD must be absolute when explicitly set. Expands ~ to home dir."""
+        if v is not None:
+            v = str(Path(v).expanduser())
+            if not Path(v).is_absolute():
+                raise ValueError("SUMMON_SCRIBE_CWD must be an absolute path")
         return v
 
     @field_validator("scribe_slack_browser")
@@ -966,6 +979,7 @@ class ConfigOption:
     choices_fn: Callable[[], list[str]] | None = None
     visible: Callable[[dict[str, str]], bool] | None = None
     validate_fn: Callable[[str], str | None] | None = None
+    format_hint: str | None = None  # Short format pattern shown before secret prompts
 
 
 @functools.cache
@@ -1110,6 +1124,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
             "Find at: api.slack.com/apps → your app → OAuth & Permissions → Bot User OAuth Token"
         ),
         validate_fn=lambda v: None if v.startswith("xoxb-") else "Must start with xoxb-",
+        format_hint="xoxb-...",
     ),
     ConfigOption(
         field_name="slack_app_token",
@@ -1121,6 +1136,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         required=True,
         help_hint="Find at: api.slack.com/apps → your app → Basic Information → App-Level Tokens",
         validate_fn=lambda v: None if v.startswith("xapp-") else "Must start with xapp-",
+        format_hint="xapp-...",
     ),
     ConfigOption(
         field_name="slack_signing_secret",
@@ -1136,6 +1152,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
             if not v
             else (None if re.match(r"^[0-9a-f]+$", v) else "Must be a hex string")
         ),
+        format_hint="hex string, 32 chars",
     ),
     # Session Defaults
     ConfigOption(
@@ -1172,7 +1189,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         label="Enable Scribe",
         help_text="Enable the background scribe agent (auto-detected from Google/Slack)",
         input_type="flag",
-        help_hint="Background agent that monitors Slack/Google and provides context to sessions",
+        help_hint=(
+            "Background agent that monitors notifications,"
+            " triages by importance, and posts daily summaries"
+        ),
     ),
     ConfigOption(
         field_name="scribe_scan_interval_minutes",
@@ -1189,9 +1209,13 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_CWD",
         group="Scribe",
         label="Scribe Working Directory",
-        help_text="Working directory for the scribe agent (default: XDG data dir)",
+        help_text="Working directory for the scribe agent",
         input_type="text",
         visible=_scribe_enabled,
+        help_hint=f"Default: {get_data_dir() / 'scribe'}. Does not need to be a git repo.",
+        validate_fn=lambda v: (
+            None if not v or Path(v).expanduser().is_absolute() else "Must be an absolute path"
+        ),
     ),
     ConfigOption(
         field_name="scribe_model",
@@ -1210,6 +1234,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Comma-separated keywords that raise message importance (e.g. urgent,deadline)",
         input_type="text",
         visible=_scribe_enabled,
+        help_hint=(
+            "Comma-separated words/phrases the scribe always flags as important"
+            " (triggers @mention). Default: urgent, action required, deadline"
+        ),
     ),
     ConfigOption(
         field_name="scribe_quiet_hours",
@@ -1220,6 +1248,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         input_type="text",
         visible=_scribe_enabled,
         validate_fn=_validate_quiet_hours,
+        help_hint="24-hour format, e.g. 22:00-07:00 for 10pm-7am. Leave empty to disable.",
     ),
     # Scribe Google
     ConfigOption(
@@ -1258,7 +1287,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         label="Monitored Slack Channels",
         help_text="Comma-separated Slack channel IDs for the scribe collector",
         input_type="text",
-        visible=_scribe_slack_enabled,
+        visible=lambda _config: False,  # Hidden from init — use `summon auth slack channels`
     ),
     # Global PM
     ConfigOption(
@@ -1276,11 +1305,14 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_GLOBAL_PM_CWD",
         group="Global PM",
         label="Global PM Working Directory",
-        help_text="Working directory for the Global PM (default: XDG data dir)",
+        help_text="Working directory for the Global PM",
         input_type="text",
         advanced=True,
+        help_hint=f"Default: {get_data_dir() / 'global-pm'}. Does not need to be a git repo.",
         validate_fn=lambda v: (
-            None if not v or Path(v).is_absolute() else "Must be an absolute path"
+            None
+            if not v or Path(v).expanduser().is_absolute()
+            else "Must be an absolute path (~ is expanded)"
         ),
     ),
     ConfigOption(
@@ -1298,10 +1330,11 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         field_name="max_inline_chars",
         env_key="SUMMON_MAX_INLINE_CHARS",
         group="Display",
-        label="Max Inline Chars",
-        help_text="Maximum characters to display inline before uploading as a file",
+        label="Max Inline Thinking Chars",
+        help_text="Thinking content longer than this is uploaded as a file instead of inline",
         input_type="int",
         advanced=True,
+        help_hint="Sensible range: 500-10000. Default 2500.",
     ),
     # Behavior
     ConfigOption(
@@ -1322,15 +1355,18 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         input_type="flag",
         advanced=True,
     ),
-    # Permissions
     ConfigOption(
         field_name="safe_write_dirs",
         env_key="SUMMON_SAFE_WRITE_DIRS",
-        group="Permissions",
+        group="Behavior",
         label="Safe Write Directories",
         help_text="Comma-separated dirs where writes are always allowed (e.g. hack/)",
         input_type="text",
         advanced=True,
+        help_hint=(
+            "Comma-separated paths relative to project root"
+            " (e.g. hack/,.dev/). Absolute paths also work."
+        ),
     ),
     # Thinking
     ConfigOption(
