@@ -1178,28 +1178,28 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             "get_workflow_instructions",
             (
                 "Retrieve workflow instructions for a project or the global defaults. "
-                "project_name: project name to look up (optional). "
+                "project: project name or project_id to look up (optional, accepts either). "
                 "If omitted, returns global default instructions. "
                 "If provided, returns effective instructions for that project "
                 "(project-specific override if set, otherwise global defaults)."
             ),
             {
                 "type": "object",
-                "properties": {"project_name": {"type": "string"}},
+                "properties": {"project": {"type": "string"}},
                 "required": [],
             },
         )
         async def get_workflow_instructions(args: dict) -> dict:
-            project_name = args.get("project_name")
+            project_ref = (args.get("project") or "").strip() or None
             try:
-                if project_name:
-                    project = await registry.get_project(project_name)
+                if project_ref:
+                    project = await registry.get_project(project_ref)
                     if not project:
                         return {
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": f"Error: project '{project_name}' not found.",
+                                    "text": f"Error: project '{project_ref}' not found.",
                                 }
                             ],
                             "is_error": True,
@@ -1223,20 +1223,22 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                             }
                         ]
                     }
+                marked = validate_agent_output(instructions)[0]
                 return {
                     "content": [
                         {
                             "type": "text",
-                            "text": f"[Source: {source}]\n\n{instructions}",
+                            "text": f"[Source: {source}]\n\n{marked}",
                         }
                     ]
                 }
             except Exception as e:
+                logger.warning("get_workflow_instructions failed: %s", e)
                 return {
                     "content": [
                         {
                             "type": "text",
-                            "text": f"Error retrieving workflow instructions: {e}",
+                            "text": "Error retrieving workflow instructions.",
                         }
                     ],
                     "is_error": True,

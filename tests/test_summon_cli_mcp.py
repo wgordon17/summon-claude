@@ -1305,7 +1305,7 @@ class TestGetWorkflowInstructions:
 
     async def test_project_override(self, gpm_tools_with_workflows):
         tools, _ = gpm_tools_with_workflows
-        result = await tools["get_workflow_instructions"].handler({"project_name": "test-proj"})
+        result = await tools["get_workflow_instructions"].handler({"project": "test-proj"})
         assert not result.get("is_error")
         text = result["content"][0]["text"]
         assert "project-specific" in text.lower()
@@ -1328,7 +1328,7 @@ class TestGetWorkflowInstructions:
                 scheduler=make_scheduler(),
             )
         }
-        result = await tools["get_workflow_instructions"].handler({"project_name": "fallback-proj"})
+        result = await tools["get_workflow_instructions"].handler({"project": "fallback-proj"})
         assert not result.get("is_error")
         text = result["content"][0]["text"]
         assert "global default" in text.lower()
@@ -1336,7 +1336,7 @@ class TestGetWorkflowInstructions:
 
     async def test_project_not_found(self, gpm_tools_with_workflows):
         tools, _ = gpm_tools_with_workflows
-        result = await tools["get_workflow_instructions"].handler({"project_name": "nonexistent"})
+        result = await tools["get_workflow_instructions"].handler({"project": "nonexistent"})
         assert result.get("is_error") is True
         assert "not found" in result["content"][0]["text"]
 
@@ -1413,7 +1413,7 @@ class TestGetWorkflowInstructions:
                 scheduler=make_scheduler(),
             )
         }
-        result = await tools["get_workflow_instructions"].handler({"project_name": "token-proj"})
+        result = await tools["get_workflow_instructions"].handler({"project": "token-proj"})
         assert not result.get("is_error")
         text = result["content"][0]["text"]
         assert "Global rules." in text
@@ -1443,4 +1443,4 @@ class TestGetWorkflowInstructions:
         }
         result = await tools["get_workflow_instructions"].handler({})
         assert result.get("is_error") is True
-        assert "Error retrieving workflow instructions" in result["content"][0]["text"]
+        assert "Error retrieving workflow instructions." in result["content"][0]["text"]

@@ -356,9 +356,9 @@ Retrieve workflow instructions for a project or the global defaults. Only availa
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `project_name` | string | No | — | Project name to look up. If omitted, returns global default instructions. |
+| `project` | string | No | — | Project name or project_id to look up (accepts either). If omitted, returns global default instructions. |
 
-**Returns:** `[Source: project-specific|global default]\n\n<instructions>`, or "No workflow instructions configured." when none are set.
+**Returns:** `[Source: project-specific|global default]\n\n<instructions>`, or "No workflow instructions configured." when none are set. Instruction content is passed through output validation.
 
 **Notes:** Uses `registry.get_project()` for indexed name/ID lookup. The source label distinguishes between project-specific overrides and global fallback. `$INCLUDE_GLOBAL` tokens in project instructions are expanded by the underlying `get_effective_workflow()` call.
 
