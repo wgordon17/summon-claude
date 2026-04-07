@@ -624,17 +624,20 @@ def cmd_init(ctx: click.Context) -> None:
 
         from summon_claude.cli.model_cache import (  # noqa: PLC0415
             cache_sdk_models,
+            load_cached_models,
             query_sdk_models,
         )
 
-        click.echo("  Discovering available models...", nl=False)
-        sdk_result = asyncio.run(query_sdk_models())
-        if sdk_result is not None:
-            sdk_models, sdk_cli_version = sdk_result
-            cache_sdk_models(sdk_models, sdk_cli_version)
-            click.echo(" done")
-        else:
-            click.echo(" skipped (CLI not authenticated)")
+        cached = load_cached_models()
+        if cached is None:
+            click.echo("  Discovering available models...", nl=False)
+            sdk_result = asyncio.run(query_sdk_models())
+            if sdk_result is not None:
+                sdk_models, sdk_cli_version = sdk_result
+                cache_sdk_models(sdk_models, sdk_cli_version)
+                click.echo(" done")
+            else:
+                click.echo(" skipped (CLI not authenticated)")
 
     # Collect values via prompts
     collected: dict[str, str] = {}

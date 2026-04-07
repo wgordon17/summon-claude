@@ -492,7 +492,7 @@ class TestCmdInit:
 
         assert result.exit_code == 0, f"Init failed: {result.output}"
         content = config_file.read_text()
-        assert "my-fine-tuned-model" in content
+        assert "SUMMON_DEFAULT_MODEL=my-fine-tuned-model" in content
 
     def test_init_model_discovery_success(self, tmp_path):
         """When query_sdk_models succeeds, cache_sdk_models is called with the model list."""
@@ -523,6 +523,10 @@ class TestCmdInit:
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
             patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
             patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=(sdk_models, "1.0.0"),
@@ -563,6 +567,10 @@ class TestCmdInit:
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
             patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
             patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,

@@ -1142,20 +1142,15 @@ def get_model_choices() -> list[str]:
 def _warn_unrecognized_model(value: str) -> str | None:
     """Soft-validate a model string; warn but never block.
 
-    Returns None always. Emits a click.echo warning if value is not in
-    get_model_choices() (excluding sentinels) AND does not prefix-match
-    any key in CONTEXT_WINDOW_SIZES.
+    Returns None always. Emits a click.echo warning if value does not
+    prefix-match any key in CONTEXT_WINDOW_SIZES (the canonical known-model set).
     """
     try:
         import click  # noqa: PLC0415
 
         from summon_claude.sessions.context import CONTEXT_WINDOW_SIZES  # noqa: PLC0415
 
-        sentinels = {"other", "default (auto)"}
-        known = {c for c in get_model_choices() if c not in sentinels}
-        in_choices = value in known
-        prefix_match = any(value.startswith(key) for key in CONTEXT_WINDOW_SIZES)
-        if not in_choices and not prefix_match:
+        if not any(value.startswith(prefix) for prefix in CONTEXT_WINDOW_SIZES):
             click.echo(f"Warning: '{value}' is not a recognized model. It will be used as-is.")
     except Exception:
         logger.debug("Failed to warn unrecognized model", exc_info=True)

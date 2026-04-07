@@ -219,7 +219,8 @@ def config_set(key: str, value: str, override: str | None = None) -> None:
                 sys.exit(1)
         elif option.choices:
             choices = list(option.choices)
-        # Block UI-only sentinels on options with validate_fn (model options).
+        # Sentinel values ("other", "default (auto)") are UI-only choices from get_model_choices().
+        # Block them for options with validate_fn (model fields) — others don't use sentinels.
         _sentinels = {"other", "default (auto)"}
         if value in _sentinels and choices and option.validate_fn:
             click.echo(
