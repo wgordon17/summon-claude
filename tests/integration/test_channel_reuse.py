@@ -15,6 +15,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
+from conftest import make_test_config
 
 from summon_claude.config import SummonConfig
 from summon_claude.event_dispatcher import EventDispatcher, SessionHandle
@@ -26,7 +27,6 @@ from summon_claude.sessions.session import (
     _make_channel_name,
 )
 from summon_claude.slack.client import SlackClient
-from tests.integration.conftest import slack_retry
 
 if TYPE_CHECKING:
     from tests.integration.conftest import SlackTestHarness
@@ -37,16 +37,15 @@ if TYPE_CHECKING:
 
 def _make_config(harness: SlackTestHarness) -> SummonConfig:
     """Build a SummonConfig from test harness credentials."""
-    return SummonConfig.model_validate(
-        {
-            "slack_bot_token": harness.bot_token,
-            "slack_app_token": harness.app_token,
-            "slack_signing_secret": harness.signing_secret,
-            "default_model": "claude-sonnet-4-20250514",
-            "channel_prefix": "test",
-            "permission_debounce_ms": 10,
-            "max_inline_chars": 2500,
-        }
+    return SummonConfig(
+        slack_bot_token=harness.bot_token,
+        slack_app_token=harness.app_token,
+        slack_signing_secret=harness.signing_secret,
+        default_model="claude-sonnet-4-20250514",
+        channel_prefix="test",
+        permission_debounce_ms=10,
+        max_inline_chars=2500,
+        _env_file=None,
     )
 
 
@@ -105,7 +104,7 @@ class TestReuseArchivedChannel:
     async def test_reuse_archived_channel_unarchives(self, slack_harness, fresh_channel, registry):
         """_reuse_channel on an archived channel unarchives it."""
         # Archive the channel first (with rate-limit retry)
-        await slack_retry(slack_harness.client.conversations_archive, channel=fresh_channel)
+        await slack_harness.client.conversations_archive(channel=fresh_channel)
 
         config = _make_config(slack_harness)
         options = SessionOptions(cwd="/tmp/test", name="unarchive-test", channel_id=fresh_channel)
@@ -145,7 +144,7 @@ class TestReuseArchivedChannel:
         await registry.update_channel_claude_session(fresh_channel, "claude-sid-abc")
 
         # Archive the channel (with rate-limit retry)
-        await slack_retry(slack_harness.client.conversations_archive, channel=fresh_channel)
+        await slack_harness.client.conversations_archive(channel=fresh_channel)
 
         config = _make_config(slack_harness)
         options = SessionOptions(cwd="/tmp/test", name="canvas-test", channel_id=fresh_channel)
@@ -170,7 +169,7 @@ class TestReuseArchivedChannel:
 
     async def test_reuse_archived_channel_can_post(self, slack_harness, fresh_channel, registry):
         """After unarchiving via _reuse_channel, posting messages works."""
-        await slack_retry(slack_harness.client.conversations_archive, channel=fresh_channel)
+        await slack_harness.client.conversations_archive(channel=fresh_channel)
 
         config = _make_config(slack_harness)
         options = SessionOptions(cwd="/tmp/test", name="post-test", channel_id=fresh_channel)
@@ -249,7 +248,7 @@ class TestHandleArchivedChannel:
         await registry.update_channel_canvas(channel_id, "F_CANVAS_OLD", "# Old Canvas")
         await registry.update_channel_claude_session(channel_id, "claude-old-sid")
 
-        await slack_retry(slack_harness.client.conversations_archive, channel=channel_id)
+        await slack_harness.client.conversations_archive(channel=channel_id)
 
         config = _make_config(slack_harness)
         options = SessionOptions(cwd="/tmp/test", name="handle-arch-test")
@@ -301,7 +300,7 @@ class TestHandleArchivedChannel:
         await registry.update_channel_canvas(channel_id, "F_CANVAS_MIGRATE", "# Canvas To Migrate")
         await registry.update_channel_claude_session(channel_id, "claude-migrate-sid")
 
-        await slack_retry(slack_harness.client.conversations_archive, channel=channel_id)
+        await slack_harness.client.conversations_archive(channel=channel_id)
 
         config = _make_config(slack_harness)
         options = SessionOptions(cwd="/tmp/test", name="replace-test")
@@ -499,16 +498,11 @@ class TestResumeValidation:
 
         Caller must set XDG_DATA_HOME before calling.
         """
-        config = SummonConfig.model_validate(
-            {
-                "slack_bot_token": "xoxb-fake",
-                "slack_app_token": "xapp-fake",
-                "slack_signing_secret": "abc123def456",
-                "default_model": "claude-sonnet-4-20250514",
-                "channel_prefix": "test",
-                "permission_debounce_ms": 10,
-                "max_inline_chars": 2500,
-            }
+        config = make_test_config(
+            default_model="claude-sonnet-4-20250514",
+            channel_prefix="test",
+            permission_debounce_ms=10,
+            max_inline_chars=2500,
         )
         return SessionManager(
             config=config,
@@ -1005,16 +999,11 @@ class TestMessageInjection:
 
     @staticmethod
     def _make_local_config() -> SummonConfig:
-        return SummonConfig.model_validate(
-            {
-                "slack_bot_token": "xoxb-fake",
-                "slack_app_token": "xapp-fake",
-                "slack_signing_secret": "abc123def456",
-                "default_model": "claude-sonnet-4-20250514",
-                "channel_prefix": "test",
-                "permission_debounce_ms": 10,
-                "max_inline_chars": 2500,
-            }
+        return make_test_config(
+            default_model="claude-sonnet-4-20250514",
+            channel_prefix="test",
+            permission_debounce_ms=10,
+            max_inline_chars=2500,
         )
 
     async def test_inject_message_enqueues(self):

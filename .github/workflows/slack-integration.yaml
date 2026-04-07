@@ -1,0 +1,81 @@
+# Post-merge only — Slack secrets are scoped to the slack-integration-testing
+# environment and unavailable on PR branches. Own concurrency group prevents
+# overlapping runs from exhausting Slack API rate limits.
+name: Slack Integration Tests
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slack-integration-tests
+  cancel-in-progress: true
+
+jobs:
+  slack-integration:
+    name: Slack Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: slack-integration-testing
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7.3.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (all extras)
+        run: uv sync --locked --extra all
+
+      - name: Slack integration tests
+        # exec makes pytest the top-level process so it receives SIGINT on
+        # cancel-in-progress, giving pytest_sessionfinish a chance to archive
+        # test channels before the runner sends SIGKILL (~7.5s grace period).
+        run: exec uv run pytest tests/integration/ -v -m slack -n0
+        env:
+          SUMMON_TEST_SLACK_BOT_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_BOT_TOKEN }}
+          SUMMON_TEST_SLACK_APP_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_APP_TOKEN }}
+          SUMMON_TEST_SLACK_SIGNING_SECRET: ${{ secrets.SUMMON_TEST_SLACK_SIGNING_SECRET }}
+
+      - name: Doc bash tests
+        if: hashFiles('tests/docs/test_bash_codeblocks.py') != ''
+        run: uv run pytest tests/docs/test_bash_codeblocks.py -v -m docs -n0
+        env:
+          SUMMON_TEST_SLACK_BOT_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_BOT_TOKEN }}
+          SUMMON_TEST_SLACK_APP_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_APP_TOKEN }}
+          SUMMON_TEST_SLACK_SIGNING_SECRET: ${{ secrets.SUMMON_TEST_SLACK_SIGNING_SECRET }}
+
+      - name: Cleanup orphaned test channels
+        if: cancelled() || failure()
+        run: |
+          uv run python -c "
+          import asyncio, contextlib, os
+          from slack_sdk.http_retry.builtin_async_handlers import AsyncRateLimitErrorRetryHandler
+          from slack_sdk.web.async_client import AsyncWebClient
+          token = os.environ.get('SUMMON_TEST_SLACK_BOT_TOKEN', '')
+          if not token:
+              raise SystemExit(0)
+          client = AsyncWebClient(token=token, retry_handlers=[AsyncRateLimitErrorRetryHandler(max_retry_count=2)])
+          async def cleanup():
+              cursor = None
+              while True:
+                  resp = await client.conversations_list(
+                      types='private_channel', limit=200, cursor=cursor,
+                      exclude_archived=True,
+                  )
+                  for ch in resp.get('channels', []):
+                      name = ch.get('name', '')
+                      if '-integ-' in name:
+                          with contextlib.suppress(Exception):
+                              await client.conversations_archive(channel=ch['id'])
+                  cursor = resp.get('response_metadata', {}).get('next_cursor')
+                  if not cursor:
+                      break
+          asyncio.run(cleanup())
+          "
+        env:
+          SUMMON_TEST_SLACK_BOT_TOKEN: ${{ secrets.SUMMON_TEST_SLACK_BOT_TOKEN }}

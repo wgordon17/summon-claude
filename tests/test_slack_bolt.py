@@ -8,6 +8,7 @@ from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from conftest import make_test_config
 
 from summon_claude.config import SummonConfig
 from summon_claude.event_dispatcher import EventDispatcher
@@ -20,16 +21,6 @@ from summon_claude.slack.bolt import (
 )
 
 
-def make_config(**overrides) -> SummonConfig:
-    defaults = {
-        "slack_bot_token": "xoxb-test-token",
-        "slack_app_token": "xapp-test-token",
-        "slack_signing_secret": "abc123def456",
-    }
-    defaults.update(overrides)
-    return SummonConfig.model_validate(defaults)
-
-
 def _mock_app() -> MagicMock:
     app = MagicMock()
     app.command = MagicMock(return_value=lambda f: f)
@@ -40,7 +31,7 @@ def _mock_app() -> MagicMock:
 
 def _make_router(config: SummonConfig | None = None, dispatcher=None):
     """Return a BoltRouter with all Slack SDK constructors patched out."""
-    cfg = config or make_config()
+    cfg = config or make_test_config()
     if dispatcher is None:
         dispatcher = MagicMock()
         dispatcher.dispatch_message = AsyncMock()
@@ -252,7 +243,7 @@ class TestBoltRouterLifecycle:
 
 class TestBoltRouterReconnect:
     async def test_reconnect_creates_new_app(self):
-        cfg = make_config()
+        cfg = make_test_config()
         mock_a1, mock_a2 = _mock_app(), _mock_app()
         mock_h1, mock_h2 = AsyncMock(), AsyncMock()
         mock_dispatcher = MagicMock()
@@ -685,7 +676,7 @@ class TestHealthMonitorWithProbe:
 class TestEventFailureCallback:
     async def test_event_failure_callback_fires_on_event_pipeline_failure(self):
         """event_failure_callback fires when diagnostic is events_disabled."""
-        cfg = make_config()
+        cfg = make_test_config()
         mock_dispatcher = MagicMock()
         mock_dispatcher.all_channel_ids = MagicMock(return_value=[])
 
@@ -728,7 +719,7 @@ class TestEventFailureCallback:
 
     async def test_event_failure_callback_not_fired_on_slack_down(self):
         """event_failure_callback should NOT fire when diagnostic is slack_down."""
-        cfg = make_config()
+        cfg = make_test_config()
         mock_dispatcher = MagicMock()
         mock_dispatcher.all_channel_ids = MagicMock(return_value=[])
 
@@ -776,7 +767,7 @@ class TestEventFailureCallback:
 
 class TestBoltRouterReconnectWithProbe:
     async def test_reconnect_re_registers_ws_listener(self):
-        cfg = make_config()
+        cfg = make_test_config()
         mock_a1, mock_a2 = _mock_app(), _mock_app()
         mock_h1, mock_h2 = AsyncMock(), AsyncMock()
         mock_h1.client = MagicMock()

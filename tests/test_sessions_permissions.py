@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+from conftest import make_test_config
 
 from helpers import make_mock_slack_client
-from summon_claude.config import SummonConfig
 from summon_claude.sessions.permissions import (
     _GITHUB_MCP_AUTO_APPROVE,
     _GITHUB_MCP_AUTO_APPROVE_PREFIXES,
@@ -29,14 +29,7 @@ from summon_claude.slack.router import ThreadRouter
 
 def make_config(debounce_ms=10):
     """Build a minimal SummonConfig with fast debounce for tests."""
-    return SummonConfig.model_validate(
-        {
-            "slack_bot_token": "xoxb-t",
-            "slack_app_token": "xapp-t",
-            "slack_signing_secret": "abcdef",
-            "permission_debounce_ms": debounce_ms,
-        }
-    )
+    return make_test_config(permission_debounce_ms=debounce_ms)
 
 
 def make_handler(debounce_ms=10, authenticated_user_id="U_TEST"):

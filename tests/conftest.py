@@ -18,38 +18,17 @@ from summon_claude.sessions.scheduler import SessionScheduler
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _isolate_summon_config():
-    """Prevent SummonConfig from reading real env vars or .env files.
+def _isolate_summon_env():
+    """Strip SUMMON_* env vars (except SUMMON_TEST_*) for the entire test session.
 
-    Two leak vectors:
-      1. SUMMON_* env vars in the developer's shell
-      2. .env / config.env files on disk (pydantic-settings reads env_file at init)
-
-    This fixture clears both at session scope and sets sensible defaults
-    for required fields, so bare ``SummonConfig()`` works in any test.
+    Prevents local config (SUMMON_DEFAULT_MODEL, SUMMON_CHANNEL_PREFIX, etc.)
+    from leaking into SummonConfig construction via pydantic-settings env reading.
+    SUMMON_TEST_* vars are preserved for integration tests.
     """
-    stashed = {
-        k: os.environ.pop(k)
-        for k in list(os.environ)
-        if k.startswith("SUMMON_") and not k.startswith("SUMMON_TEST_")
-    }
-    original_env_file = SummonConfig.model_config.get("env_file")
-    try:
-        SummonConfig.model_config["env_file"] = ()
-        # Set sensible defaults for required fields so bare SummonConfig() works
-        os.environ["SUMMON_SLACK_BOT_TOKEN"] = "xoxb-test-token"
-        os.environ["SUMMON_SLACK_APP_TOKEN"] = "xapp-test-token"
-        os.environ["SUMMON_SLACK_SIGNING_SECRET"] = "abc123def456"
-        yield
-    finally:
-        SummonConfig.model_config["env_file"] = original_env_file
-        for k in (
-            "SUMMON_SLACK_BOT_TOKEN",
-            "SUMMON_SLACK_APP_TOKEN",
-            "SUMMON_SLACK_SIGNING_SECRET",
-        ):
-            os.environ.pop(k, None)
-        os.environ.update(stashed)
+    keys = [k for k in os.environ if k.startswith("SUMMON_") and not k.startswith("SUMMON_TEST_")]
+    saved = {k: os.environ.pop(k) for k in keys}
+    yield
+    os.environ.update(saved)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -131,6 +110,21 @@ async def registry(temp_db_path: Path) -> SessionRegistry:
 def make_scheduler() -> SessionScheduler:
     """Create a minimal SessionScheduler for tests."""
     return SessionScheduler(asyncio.Queue(maxsize=100), asyncio.Event())
+
+
+def make_test_config(**overrides) -> SummonConfig:
+    """Create a SummonConfig with valid defaults, isolated from env vars and .env files.
+
+    The session-scoped ``_isolate_summon_env`` fixture strips SUMMON_* env vars,
+    but pydantic-settings also reads .env files. ``_env_file=None`` suppresses that.
+    """
+    defaults = {
+        "slack_bot_token": "xoxb-test-token",
+        "slack_app_token": "xapp-test-token",
+        "slack_signing_secret": "abc123def456",
+    }
+    defaults.update(overrides)
+    return SummonConfig(**defaults, _env_file=None)
 
 
 # ---------------------------------------------------------------------------

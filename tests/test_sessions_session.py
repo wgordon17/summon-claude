@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from claude_agent_sdk import AssistantMessage, TextBlock
+from conftest import make_test_config
 
 from summon_claude.config import SummonConfig
 from summon_claude.sessions.auth import SessionAuth
@@ -39,16 +40,13 @@ from summon_claude.slack.client import MessageRef, SlackClient, redact_secrets
 
 def make_config(**overrides) -> SummonConfig:
     defaults = {
-        "slack_bot_token": "xoxb-test-token",
-        "slack_app_token": "xapp-test-token",
-        "slack_signing_secret": "abc123def456",
         "default_model": "claude-opus-4-6",
         "channel_prefix": "summon",
         "permission_debounce_ms": 10,
         "max_inline_chars": 2500,
     }
     defaults.update(overrides)
-    return SummonConfig.model_validate(defaults)
+    return make_test_config(**defaults)
 
 
 def make_options(**overrides) -> SessionOptions:

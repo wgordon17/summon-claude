@@ -33,7 +33,6 @@ from summon_claude.sessions.session import (
 )
 from summon_claude.slack.canvas_store import CanvasStore
 from summon_claude.slack.client import SlackClient
-from tests.integration.conftest import slack_retry
 
 if TYPE_CHECKING:
     from tests.integration.conftest import SlackTestHarness
@@ -42,16 +41,15 @@ pytestmark = [pytest.mark.slack]
 
 
 def _config(harness: SlackTestHarness) -> SummonConfig:
-    return SummonConfig.model_validate(
-        {
-            "slack_bot_token": harness.bot_token,
-            "slack_app_token": harness.app_token,
-            "slack_signing_secret": harness.signing_secret,
-            "default_model": "claude-sonnet-4-20250514",
-            "channel_prefix": "test",
-            "permission_debounce_ms": 10,
-            "max_inline_chars": 2500,
-        }
+    return SummonConfig(
+        slack_bot_token=harness.bot_token,
+        slack_app_token=harness.app_token,
+        slack_signing_secret=harness.signing_secret,
+        default_model="claude-sonnet-4-20250514",
+        channel_prefix="test",
+        permission_debounce_ms=10,
+        max_inline_chars=2500,
+        _env_file=None,
     )
 
 
@@ -125,7 +123,7 @@ class TestResumeEndToEnd:
         await registry.update_status(
             "e2e-original", "completed", ended_at="2026-03-20T12:00:00+00:00"
         )
-        await slack_retry(slack_harness.client.conversations_archive, channel=channel_id)
+        await slack_harness.client.conversations_archive(channel=channel_id)
         info = await slack_harness.client.conversations_info(channel=channel_id)
         assert info["channel"]["is_archived"] is True
 

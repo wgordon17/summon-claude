@@ -342,6 +342,7 @@ class TestChannelPrefixValidation:
             slack_app_token="xapp-test",
             slack_signing_secret="abc123",
             channel_prefix="my-team",
+            _env_file=None,
         )
         assert cfg.channel_prefix == "my-team"
 
@@ -352,6 +353,7 @@ class TestChannelPrefixValidation:
                 slack_app_token="xapp-test",
                 slack_signing_secret="abc123",
                 channel_prefix="MyTeam",
+                _env_file=None,
             )
 
     def test_invalid_prefix_spaces(self):
@@ -361,6 +363,7 @@ class TestChannelPrefixValidation:
                 slack_app_token="xapp-test",
                 slack_signing_secret="abc123",
                 channel_prefix="my team",
+                _env_file=None,
             )
 
     def test_invalid_prefix_empty(self):
@@ -370,6 +373,7 @@ class TestChannelPrefixValidation:
                 slack_app_token="xapp-test",
                 slack_signing_secret="abc123",
                 channel_prefix="",
+                _env_file=None,
             )
 
 
@@ -381,6 +385,7 @@ class TestSigningSecretValidation:
             slack_bot_token="xoxb-test",
             slack_app_token="xapp-test",
             slack_signing_secret="abcdef012345",
+            _env_file=None,
         )
         assert cfg.slack_signing_secret == "abcdef012345"
 
@@ -390,6 +395,7 @@ class TestSigningSecretValidation:
                 slack_bot_token="xoxb-test",
                 slack_app_token="xapp-test",
                 slack_signing_secret="not-hex-value",
+                _env_file=None,
             )
 
     def test_empty_passes_validator(self):
@@ -398,6 +404,7 @@ class TestSigningSecretValidation:
             slack_bot_token="xoxb-test",
             slack_app_token="xapp-test",
             slack_signing_secret="",
+            _env_file=None,
         )
         assert cfg.slack_signing_secret == ""
 

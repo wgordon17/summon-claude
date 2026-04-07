@@ -11,26 +11,16 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from conftest import make_test_config
 
-from summon_claude.config import SummonConfig
-from summon_claude.daemon import recv_msg, send_msg
+from summon_claude.daemon import send_msg
 from summon_claude.sessions.auth import SessionAuth
-from summon_claude.sessions.manager import _GRACE_SECONDS, SessionManager
+from summon_claude.sessions.manager import SessionManager
 from summon_claude.sessions.session import SessionOptions
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def make_config(**overrides) -> SummonConfig:
-    defaults = {
-        "slack_bot_token": "xoxb-test",
-        "slack_app_token": "xapp-test",
-        "slack_signing_secret": "abc123def456",
-    }
-    defaults.update(overrides)
-    return SummonConfig.model_validate(defaults)
 
 
 def make_options(**overrides) -> SessionOptions:
@@ -83,7 +73,7 @@ def _make_manager(
     stub_session: _StubSession | None = None,
 ) -> tuple[SessionManager, MagicMock, MagicMock]:
     """Return (manager, mock_provider, mock_dispatcher) with SummonSession patched."""
-    cfg = make_config()
+    cfg = make_test_config()
     mock_provider = MagicMock()
     mock_provider.post_message = AsyncMock()
     mock_provider.chat_postMessage = AsyncMock()
@@ -726,7 +716,7 @@ class TestControlAPI:
 class TestCreateSessionWithSpawnToken:
     async def test_valid_spawn_token_creates_session(self):
         """create_session_with_spawn_token creates a pre-authenticated session."""
-        config = make_config()
+        config = make_test_config()
         web_client = MagicMock()
         web_client.auth_test = AsyncMock(return_value={"user_id": "BBOT"})
         dispatcher = MagicMock()
@@ -763,7 +753,7 @@ class TestCreateSessionWithSpawnToken:
 
     async def test_cwd_enforced_from_spawn_token(self):
         """The session must use the spawn token's cwd, not the caller's."""
-        config = make_config()
+        config = make_test_config()
         web_client = MagicMock()
         web_client.auth_test = AsyncMock(return_value={"user_id": "BBOT"})
         dispatcher = MagicMock()
@@ -795,7 +785,7 @@ class TestCreateSessionWithSpawnToken:
         await mgr.shutdown()
 
     async def test_invalid_spawn_token_raises(self):
-        config = make_config()
+        config = make_test_config()
         web_client = MagicMock()
         dispatcher = MagicMock()
         mgr = SessionManager(config, web_client, "BBOT", dispatcher)
@@ -816,7 +806,7 @@ class TestCreateSessionWithSpawnToken:
 
     async def test_invalid_spawn_token_does_not_cancel_grace_timer(self):
         """An invalid spawn token must not cancel the daemon grace timer."""
-        config = make_config()
+        config = make_test_config()
         web_client = MagicMock()
         dispatcher = MagicMock()
         mgr = SessionManager(config, web_client, "BBOT", dispatcher)
@@ -843,7 +833,7 @@ class TestCreateSessionWithSpawnToken:
 
     async def test_rejected_token_logs_audit_event(self):
         """Failed spawn token verification must log a spawn_token_rejected audit event."""
-        config = make_config()
+        config = make_test_config()
         web_client = MagicMock()
         dispatcher = MagicMock()
         mgr = SessionManager(config, web_client, "BBOT", dispatcher)
@@ -870,7 +860,7 @@ class TestCreateSessionWithSpawnToken:
 
     async def test_successful_token_logs_consumed_audit_event(self):
         """Successful spawn token must log spawn_token_consumed with parent details."""
-        config = make_config()
+        config = make_test_config()
         web_client = MagicMock()
         web_client.auth_test = AsyncMock(return_value={"user_id": "BBOT"})
         dispatcher = MagicMock()
