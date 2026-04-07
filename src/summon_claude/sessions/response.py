@@ -429,7 +429,7 @@ class ResponseStreamer:
                 )
         # Suppress redundant :x: Tool error for denied tools — the denial label
         # on the tool use block already communicates the outcome.
-        if block.tool_use_id in self._turn.denied_tool_use_ids:
+        if block.tool_use_id in self._turn.denied_tool_use_ids and block.is_error:
             return
         await self._post_tool_result(block, parent_id)
         # No _set_status — thread post auto-clears "Running {tool}...",
