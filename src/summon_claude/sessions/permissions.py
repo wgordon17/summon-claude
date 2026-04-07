@@ -187,7 +187,12 @@ _PERMISSION_TIMEOUT_S = 600  # 10 minutes
 
 @dataclass(frozen=True, slots=True)
 class ApprovalInfo:
-    """Describes how a tool use was approved, for display in Slack."""
+    """Describes how a tool use was approved, for display in Slack.
+
+    ``label`` is rendered unsanitized into mrkdwn italic ``_(label)_``.
+    Callers MUST use only module-level ``_LABEL_*`` constants or
+    format strings with regex-validated ``user_id`` (``[A-Z0-9]+``).
+    """
 
     label: str  # Human-readable label, e.g. "auto-allowed"
     reason: str | None = None  # Optional detail (classifier reason, user name)
@@ -196,7 +201,7 @@ class ApprovalInfo:
 
 _LABEL_AUTO_ALLOWED = "auto-allowed"
 _LABEL_WITHIN_PROJECT = "within project"
-_LABEL_SESSION_CACHED = "approved for session"
+_LABEL_SESSION_CACHED = "session-cached"
 _LABEL_AUTO_MODE = "auto-mode"
 _LABEL_BLOCKED_AUTO_MODE = "blocked"
 _LABEL_SDK_ALLOWED = "sdk-allowed"
@@ -210,6 +215,14 @@ class ApprovalBridge:
     Two-sided rendezvous: handles both "streamer registers first"
     and "handler resolves first" orderings via FIFO queues keyed
     by tool name.
+
+    FIFO invariant: correctness requires the SDK to deliver
+    ``can_use_tool`` callbacks in the same order as ``ToolUseBlock``
+    events in the message stream. Keyed by ``tool_name`` (not
+    ``tool_use_id``) because the SDK's ``can_use_tool`` signature
+    does not expose ``tool_use_id`` (confirmed absent in SDK 0.1.48).
+    If the SDK ever reorders same-name callbacks, labels could be
+    misattributed (cosmetic, not a security issue).
     """
 
     def __init__(self) -> None:
@@ -531,6 +544,7 @@ class PermissionHandler:
                 logger.debug("Auto-approving Google Workspace read tool: %s", tool_name)
                 self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
                 return PermissionResultAllow()
+            # Bridge resolved by handle_action (HITL), not here.
             logger.info("Google Workspace write tool requires approval: %s", tool_name)
             return await self._request_approval(tool_name, input_data, context)
 
@@ -1093,8 +1107,11 @@ class PermissionHandler:
         if msg_ts:
             await self._router.client.delete_message(msg_ts)
 
-        # Resolve bridge for each tool in the batch
+        # Resolve bridge for each tool in the batch.
+        # Defense-in-depth: sanitize user_id for mrkdwn <@mention> even
+        # though handle_action already verified user_id == authenticated_user_id.
         if not re.fullmatch(r"[A-Z0-9]+", user_id):
+            logger.warning("user_id %r failed mrkdwn sanitization regex", user_id)
             user_id = "unknown"
         tool_names_list = self._batch.tool_names.get(batch_id, [])
         for name in tool_names_list:

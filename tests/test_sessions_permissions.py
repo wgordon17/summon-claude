@@ -1633,7 +1633,7 @@ class TestApprovalBridgeResolution:
         assert fut.result().label == "auto-allowed"
 
     async def test_session_cache_resolves_bridge(self):
-        """Session-cached tool resolves bridge with 'approved for session'."""
+        """Session-cached tool resolves bridge with 'session-cached'."""
         from summon_claude.sessions.permissions import ApprovalBridge
 
         bridge = ApprovalBridge()
@@ -1643,7 +1643,7 @@ class TestApprovalBridgeResolution:
         assert isinstance(result, PermissionResultAllow)
         fut = bridge.create_future("Agent")
         assert fut.done()
-        assert fut.result().label == "approved for session"
+        assert fut.result().label == "session-cached"
 
     async def test_sdk_deny_resolves_bridge(self):
         """SDK deny resolves bridge with denial label."""
