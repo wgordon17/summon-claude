@@ -1420,6 +1420,7 @@ class TestGetWorkflowInstructions:
         assert "Before." in text
         assert "After." in text
         assert "$INCLUDE_GLOBAL" not in text
+        assert "project-specific" in text.lower()
 
     async def test_registry_error_returns_error(self, populated_registry):
         """Registry exception is caught and returned as error."""
