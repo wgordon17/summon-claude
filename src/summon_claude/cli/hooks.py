@@ -113,7 +113,7 @@ def _read_state() -> dict:
     try:
         data = json.loads(_STATE_FILE.read_text())
         return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except Exception:
         return {}
 
 
