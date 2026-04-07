@@ -221,6 +221,20 @@ async def _async_collect_mcp_tools() -> list:
         )
         tools.extend(cli_tools)
 
+        # GPM-only tools (get_workflow_instructions etc.)
+        gpm_tools = create_summon_cli_mcp_tools(
+            registry=reg,
+            session_id="test-doc-gpm",
+            authenticated_user_id="U_TEST",
+            channel_id="C_TEST",
+            cwd="/tmp/test",
+            scheduler=make_scheduler(),
+            is_pm=True,
+            is_global_pm=True,
+        )
+        gpm_only = {t.name for t in gpm_tools} - {t.name for t in cli_tools}
+        tools.extend(t for t in gpm_tools if t.name in gpm_only)
+
         # summon-canvas tools — reuse registry
         canvas_tools = create_canvas_mcp_tools(
             canvas_store=AsyncMock(),

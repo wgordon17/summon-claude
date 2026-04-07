@@ -350,6 +350,20 @@ Update the pinned status message in the PM channel. Only available when the PM s
 
 ---
 
+#### `get_workflow_instructions`
+
+Retrieve workflow instructions for a project or the global defaults. Only available to the Global PM session (`is_global_pm=True`).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `project_name` | string | No | — | Project name to look up. If omitted, returns global default instructions. |
+
+**Returns:** `[Source: project-specific|global default]\n\n<instructions>`, or "No workflow instructions configured." when none are set.
+
+**Notes:** Uses `registry.get_project()` for indexed name/ID lookup. The source label distinguishes between project-specific overrides and global fallback. `$INCLUDE_GLOBAL` tokens in project instructions are expanded by the underlying `get_effective_workflow()` call.
+
+---
+
 ## summon-canvas
 
 Provides canvas read/write operations for sessions with a `CanvasStore`. Available to all sessions (not just PM) when a canvas exists for the session's Slack channel.
