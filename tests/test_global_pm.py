@@ -589,3 +589,110 @@ class TestGlobalPMScanPrompt:
     def test_gpm_scan_prompt_workflow_compliance(self):
         result = build_global_pm_scan_prompt()
         assert "get_workflow_instructions" in result
+
+
+# ---------------------------------------------------------------------------
+# T9: Scan timer tests
+# ---------------------------------------------------------------------------
+
+
+class TestScanTimer:
+    @pytest.mark.asyncio
+    async def test_scan_timer_injects_messages(self):
+        """Scan timer injects synthetic events into the queue."""
+        import asyncio
+
+        from summon_claude.sessions.scheduler import SessionScheduler
+
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        ev = asyncio.Event()
+        scheduler = SessionScheduler(q, ev)
+
+        # Use a one-shot job with a cron that fires immediately (every minute)
+        job = await scheduler.create(
+            cron_expr="* * * * *",
+            prompt="test scan",
+            recurring=False,
+            internal=True,
+        )
+        assert job.internal is True
+
+        # Wait briefly for the job to fire (next minute boundary, or immediately
+        # if we're at second 0). Use a short timeout to avoid hanging.
+        try:
+            event = await asyncio.wait_for(q.get(), timeout=65)
+            assert event.get("_synthetic") is True
+            assert "test scan" in event["text"]
+        finally:
+            ev.set()
+            scheduler.cancel_all()
+
+    @pytest.mark.asyncio
+    async def test_scan_timer_respects_shutdown(self):
+        """Timer stops when shutdown event is set."""
+        import asyncio
+
+        from summon_claude.sessions.scheduler import SessionScheduler
+
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        ev = asyncio.Event()
+        scheduler = SessionScheduler(q, ev)
+
+        await scheduler.create(
+            cron_expr="* * * * *",
+            prompt="should not fire",
+            recurring=True,
+            internal=True,
+        )
+        # Set shutdown immediately
+        ev.set()
+        # Give task a moment to notice
+        await asyncio.sleep(0.1)
+        # Queue should be empty — job should have exited without firing
+        assert q.empty()
+        scheduler.cancel_all()
+
+    @pytest.mark.asyncio
+    async def test_scan_timer_drops_on_full_queue(self):
+        """When queue is full, timer logs warning and drops event."""
+        import asyncio
+
+        from summon_claude.sessions.scheduler import SessionScheduler
+
+        q: asyncio.Queue = asyncio.Queue(maxsize=1)
+        # Pre-fill the queue
+        q.put_nowait({"text": "filler"})
+        ev = asyncio.Event()
+        scheduler = SessionScheduler(q, ev)
+
+        job = await scheduler.create(
+            cron_expr="* * * * *",
+            prompt="overflow test",
+            recurring=False,
+            internal=True,
+        )
+
+        # Wait for job to attempt firing (up to 65s)
+        try:
+            await asyncio.wait_for(
+                asyncio.ensure_future(self._wait_for_job_done(job)),
+                timeout=65,
+            )
+        except TimeoutError:
+            pass  # Job may still be waiting
+        finally:
+            ev.set()
+            scheduler.cancel_all()
+
+        # Queue should still have exactly 1 item (the filler, not the overflow)
+        assert q.qsize() == 1
+        filler = q.get_nowait()
+        assert filler["text"] == "filler"
+
+    @staticmethod
+    async def _wait_for_job_done(job) -> None:
+        """Poll until the job's task is done."""
+        import asyncio as _asyncio
+
+        while job.task and not job.task.done():
+            await _asyncio.sleep(0.1)

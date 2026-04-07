@@ -1310,6 +1310,8 @@ class TestGetWorkflowInstructions:
         text = result["content"][0]["text"]
         assert "project-specific" in text.lower()
         assert "Use TDD for this project." in text
+        # Global defaults must NOT bleed through when project has its own instructions
+        assert "Always run tests." not in text
 
     async def test_project_fallback_to_global(self, populated_registry):
         """Project with no override falls back to global."""
