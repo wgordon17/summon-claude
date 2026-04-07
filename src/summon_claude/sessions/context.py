@@ -51,6 +51,78 @@ CONTEXT_WINDOW_SIZES: dict[str, int] = {
 
 DEFAULT_CONTEXT_WINDOW = _200K
 
+# Runtime overlay: populated by reconcile_context_window_sizes() for models
+# not in CONTEXT_WINDOW_SIZES. Module-global so it accumulates across calls.
+_runtime_context_sizes: dict[str, int] = {}
+
+# CONTEXT_WINDOW_SIZES prefixes that should NOT trigger stale-entry warnings.
+# Includes catch-all family prefixes and backward-compat 3.x entries kept
+# intentionally. Suppression uses prefix matching (key.startswith(s)).
+_SUPPRESS_STALE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "claude-opus-4",
+        "claude-sonnet-4",
+        "claude-haiku-4",
+        "claude-3-7-sonnet",
+        "claude-3-5-sonnet",
+        "claude-3-5-haiku",
+        "claude-3-opus",
+        "claude-3-sonnet",
+        "claude-3-haiku",
+    }
+)
+
+
+def reconcile_context_window_sizes(sdk_models: list[dict[str, str]]) -> None:
+    """Compare SDK model list against CONTEXT_WINDOW_SIZES and update overlay.
+
+    - Unknown models (no prefix match in CONTEXT_WINDOW_SIZES) get added to
+      _runtime_context_sizes with DEFAULT_CONTEXT_WINDOW.
+    - Stale CONTEXT_WINDOW_SIZES prefixes (no matching SDK model) are logged
+      at INFO level unless suppressed by _SUPPRESS_STALE_PREFIXES.
+    - Safe to call multiple times: additive/idempotent.
+    """
+    model_values: list[str] = []
+    for m in sdk_models:
+        val = m.get("value")
+        if val:
+            model_values.append(val)
+
+    # Detect unknown models and add to runtime overlay.
+    for model_value in model_values:
+        matched = any(model_value.startswith(prefix) for prefix in CONTEXT_WINDOW_SIZES)
+        if not matched:
+            if len(model_value) > 200:
+                logger.warning(
+                    "Skipping oversized model_value in reconcile_context_window_sizes: %d chars",
+                    len(model_value),
+                )
+                continue
+            if len(_runtime_context_sizes) >= 500:
+                logger.warning(
+                    "_runtime_context_sizes cap reached (500 entries); skipping %r",
+                    model_value,
+                )
+                continue
+            _runtime_context_sizes[model_value] = DEFAULT_CONTEXT_WINDOW
+            logger.info(
+                "Model %s has no CONTEXT_WINDOW_SIZES mapping; using default %d",
+                model_value,
+                DEFAULT_CONTEXT_WINDOW,
+            )
+
+    # Detect stale CONTEXT_WINDOW_SIZES prefixes.
+    for prefix in CONTEXT_WINDOW_SIZES:
+        suppressed = any(prefix.startswith(s) for s in _SUPPRESS_STALE_PREFIXES)
+        if suppressed:
+            continue
+        has_match = any(mv.startswith(prefix) for mv in model_values)
+        if not has_match:
+            logger.info(
+                "CONTEXT_WINDOW_SIZES prefix %r has no matching SDK models — may be deprecated",
+                prefix,
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class ContextUsage:
@@ -81,10 +153,16 @@ def compute_context_usage(usage: dict[str, Any] | None, model: str | None) -> Co
         # Claude Code appends "[1m]" to the model ID when 1M context is active.
         is_1m = "[1m]" in model
         base_model = model.replace("[1m]", "")
+        matched = False
         for prefix, size in CONTEXT_WINDOW_SIZES.items():
             if base_model.startswith(prefix):
                 context_window = size
+                matched = True
                 break
+        if not matched:
+            runtime_size = _runtime_context_sizes.get(base_model)
+            if runtime_size is not None:
+                context_window = runtime_size
         if is_1m and any(base_model.startswith(p) for p in _1M_CAPABLE_PREFIXES):
             context_window = _1M
     pct = (total / context_window) * 100 if context_window > 0 else 0.0
