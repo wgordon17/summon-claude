@@ -640,3 +640,22 @@ class TestShowThinkingSummariesManagement:
         # Uninstall should not remove it either (not in managed state)
         settings = _read_settings(tmp_path)
         assert settings.get("showThinkingSummaries") is False
+
+    def test_uninstall_managed_settings_only_no_empty_hooks_injected(self, tmp_path):
+        """Uninstalling managed settings without hooks doesn't inject empty hooks key."""
+        _invoke_install(tmp_path)
+
+        # Manually remove hook entries so only managed settings remain
+        settings = _read_settings(tmp_path)
+        del settings["hooks"]
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.write_text(json.dumps(settings))
+
+        with _patch_paths(tmp_path):
+            from summon_claude.cli.hooks import uninstall_hooks
+
+            uninstall_hooks()
+
+        final = _read_settings(tmp_path)
+        assert "showThinkingSummaries" not in final
+        assert "hooks" not in final

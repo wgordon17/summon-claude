@@ -268,7 +268,8 @@ def uninstall_hooks() -> None:
             click.echo(f"Removed managed setting: {key}")
 
     if changed:
-        settings["hooks"] = hooks_section
+        if hooks_changed:
+            settings["hooks"] = hooks_section
         _write_settings(settings)
         if hooks_changed:
             click.echo("Removed summon hook entries from ~/.claude/settings.json.")
