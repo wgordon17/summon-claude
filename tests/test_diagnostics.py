@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from conftest import make_test_config
 
 from summon_claude.config import SummonConfig
 from summon_claude.diagnostics import (
@@ -493,12 +494,12 @@ class TestSlackCheck:
         assert result.status == "skip"
 
     async def test_skip_no_token(self, check: SlackCheck) -> None:
-        config = SummonConfig(slack_bot_token="")
+        config = make_test_config(slack_bot_token="")
         result = await check.run(config)
         assert result.status == "skip"
 
     async def test_auth_test_pass(self, check: SlackCheck) -> None:
-        config = SummonConfig()
+        config = make_test_config()
         mock_client = MagicMock()
         mock_client.auth_test.return_value = {
             "ok": True,
@@ -515,7 +516,7 @@ class TestSlackCheck:
         assert "test-team" not in result.message
 
     async def test_auth_test_fail(self, check: SlackCheck) -> None:
-        config = SummonConfig()
+        config = make_test_config()
         mock_client = MagicMock()
         mock_client.auth_test.return_value = {
             "ok": False,
@@ -531,7 +532,7 @@ class TestSlackCheck:
     async def test_slack_api_error(self, check: SlackCheck) -> None:
         from slack_sdk.errors import SlackApiError
 
-        config = SummonConfig()
+        config = make_test_config()
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.get.return_value = "invalid_auth"
@@ -544,7 +545,7 @@ class TestSlackCheck:
         assert "slack api error" in result.message.lower()
 
     async def test_slack_timeout(self, check: SlackCheck) -> None:
-        config = SummonConfig()
+        config = make_test_config()
         mock_client = MagicMock()
         mock_client.auth_test.side_effect = TimeoutError
         with patch("slack_sdk.WebClient", return_value=mock_client):
@@ -553,7 +554,7 @@ class TestSlackCheck:
         assert "timed out" in result.message.lower()
 
     async def test_slack_generic_exception(self, check: SlackCheck) -> None:
-        config = SummonConfig()
+        config = make_test_config()
         mock_client = MagicMock()
         mock_client.auth_test.side_effect = ConnectionError("network down")
         with patch("slack_sdk.WebClient", return_value=mock_client):
@@ -631,12 +632,12 @@ class TestWorkspaceMcpCheck:
         assert result.status == "skip"
 
     async def test_skip_scribe_disabled(self, check: WorkspaceMcpCheck) -> None:
-        config = SummonConfig(scribe_enabled=False, scribe_google_enabled=False)
+        config = make_test_config(scribe_enabled=False, scribe_google_enabled=False)
         result = await check.run(config)
         assert result.status == "skip"
 
     async def test_binary_not_found(self, check: WorkspaceMcpCheck) -> None:
-        config = SummonConfig(scribe_enabled=True, scribe_google_enabled=True)
+        config = make_test_config(scribe_enabled=True, scribe_google_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = False
         with (
@@ -651,7 +652,7 @@ class TestWorkspaceMcpCheck:
         assert "not found" in result.message.lower()
 
     async def test_binary_found_no_creds(self, check: WorkspaceMcpCheck, tmp_path: Path) -> None:
-        config = SummonConfig(scribe_enabled=True, scribe_google_enabled=True)
+        config = make_test_config(scribe_enabled=True, scribe_google_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = True
         creds_dir = tmp_path / "nonexistent_creds"
@@ -665,7 +666,7 @@ class TestWorkspaceMcpCheck:
     async def test_binary_found_service_detection_fails(
         self, check: WorkspaceMcpCheck, tmp_path: Path
     ) -> None:
-        config = SummonConfig(scribe_enabled=True, scribe_google_enabled=True)
+        config = make_test_config(scribe_enabled=True, scribe_google_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = True
         creds_dir = tmp_path / "creds"
@@ -688,7 +689,7 @@ class TestWorkspaceMcpCheck:
     async def test_per_account_exception_warns(
         self, check: WorkspaceMcpCheck, tmp_path: Path
     ) -> None:
-        config = SummonConfig(scribe_enabled=True, scribe_google_enabled=True)
+        config = make_test_config(scribe_enabled=True, scribe_google_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = True
         creds_dir = tmp_path / "creds"
@@ -713,7 +714,7 @@ class TestWorkspaceMcpCheck:
     async def test_pass_with_accounts_and_services(
         self, check: WorkspaceMcpCheck, tmp_path: Path
     ) -> None:
-        config = SummonConfig(scribe_enabled=True, scribe_google_enabled=True)
+        config = make_test_config(scribe_enabled=True, scribe_google_enabled=True)
         mock_bin = MagicMock(spec=Path)
         mock_bin.exists.return_value = True
         creds_dir = tmp_path / "creds"

@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from summon_claude.slack.client import ZZZ_PREFIX, SlackClient, make_zzz_name
-from tests.integration.conftest import slack_retry
 
 pytestmark = [pytest.mark.slack]
 
@@ -26,8 +25,7 @@ class TestZzzRenameRoundTrip:
 
         # Rename to zzz-
         zzz_name = make_zzz_name(original_name)
-        resp = await slack_retry(
-            slack_harness.client.conversations_rename,
+        resp = await slack_harness.client.conversations_rename(
             channel=fresh_channel,
             name=zzz_name,
         )
@@ -38,8 +36,7 @@ class TestZzzRenameRoundTrip:
         assert info["channel"]["name"] == zzz_name
 
         # Restore original name
-        resp = await slack_retry(
-            slack_harness.client.conversations_rename,
+        resp = await slack_harness.client.conversations_rename(
             channel=fresh_channel,
             name=original_name,
         )
@@ -51,14 +48,12 @@ class TestZzzRenameRoundTrip:
         original_name = info["channel"]["name"]
 
         zzz_name = make_zzz_name(original_name)
-        await slack_retry(
-            slack_harness.client.conversations_rename,
+        await slack_harness.client.conversations_rename(
             channel=fresh_channel,
             name=zzz_name,
         )
         # Second rename to same name — should not error
-        resp = await slack_retry(
-            slack_harness.client.conversations_rename,
+        resp = await slack_harness.client.conversations_rename(
             channel=fresh_channel,
             name=zzz_name,
         )
@@ -85,25 +80,23 @@ class TestZzzRenameRoundTrip:
 
         # Rename to zzz-
         zzz_name = make_zzz_name(original_name)
-        await slack_retry(
-            slack_harness.client.conversations_rename,
+        await slack_harness.client.conversations_rename(
             channel=fresh_channel,
             name=zzz_name,
         )
 
         # Archive
-        await slack_retry(slack_harness.client.conversations_archive, channel=fresh_channel)
+        await slack_harness.client.conversations_archive(channel=fresh_channel)
 
         # Unarchive
-        await slack_retry(slack_harness.client.conversations_unarchive, channel=fresh_channel)
+        await slack_harness.client.conversations_unarchive(channel=fresh_channel)
 
         # Should still have zzz- name
         info = await slack_harness.client.conversations_info(channel=fresh_channel)
         assert info["channel"]["name"] == zzz_name
 
         # Restore
-        resp = await slack_retry(
-            slack_harness.client.conversations_rename,
+        resp = await slack_harness.client.conversations_rename(
             channel=fresh_channel,
             name=original_name,
         )
@@ -122,8 +115,7 @@ class TestZzzMakeZzzName:
         assert zzz_name.startswith(ZZZ_PREFIX)
         assert len(zzz_name) <= 80
 
-        resp = await slack_retry(
-            slack_harness.client.conversations_rename,
+        resp = await slack_harness.client.conversations_rename(
             channel=fresh_channel,
             name=zzz_name,
         )

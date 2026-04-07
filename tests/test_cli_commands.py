@@ -1245,6 +1245,7 @@ class TestInitPydanticValidationError:
                 slack_bot_token="bad",
                 slack_app_token="bad",
                 slack_signing_secret="not-hex",
+                _env_file=None,
             )
             real_error = None
         except pydantic.ValidationError as exc:

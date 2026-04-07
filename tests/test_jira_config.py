@@ -22,7 +22,7 @@ def _make_config(**kwargs) -> SummonConfig:
         "slack_signing_secret": "abcd1234",
     }
     defaults.update(kwargs)
-    return SummonConfig(**defaults)
+    return SummonConfig(**defaults, _env_file=None)
 
 
 # ---------------------------------------------------------------------------

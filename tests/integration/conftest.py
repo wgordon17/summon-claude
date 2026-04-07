@@ -22,12 +22,17 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
+from slack_sdk.http_retry.async_handler import AsyncRetryHandler
+from slack_sdk.http_retry.builtin_async_handlers import (
+    AsyncRateLimitErrorRetryHandler,
+    AsyncServerErrorRetryHandler,
+)
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.sessions.registry import SessionRegistry
@@ -35,17 +40,12 @@ from summon_claude.slack.client import SlackClient
 from summon_claude.slack.router import ThreadRouter
 
 
-async def slack_retry[T](fn: Callable[..., Awaitable[T]], *args: object, **kwargs: object) -> T:
-    """Retry a Slack API call on rate-limit (429) errors, up to 5 times with backoff."""
-    for attempt in range(5):
-        try:
-            return await fn(*args, **kwargs)
-        except Exception as e:
-            if "ratelimited" in str(e) and attempt < 4:
-                await asyncio.sleep(5 * (attempt + 1))
-                continue
-            raise
-    raise RuntimeError("unreachable")  # pragma: no cover
+def _retry_handlers() -> list[AsyncRetryHandler]:
+    """SDK retry handlers matching production config (bolt.py) with higher rate-limit budget."""
+    return [
+        AsyncRateLimitErrorRetryHandler(max_retry_count=3),
+        AsyncServerErrorRetryHandler(max_retry_count=1),
+    ]
 
 
 # Load .env file so credentials are available for local runs
@@ -89,7 +89,10 @@ class SlackTestHarness:
     @property
     def client(self) -> AsyncWebClient:
         if self._client is None:
-            self._client = AsyncWebClient(token=self._bot_token)
+            self._client = AsyncWebClient(
+                token=self._bot_token,
+                retry_handlers=_retry_handlers(),
+            )
         return self._client
 
     @property
@@ -332,7 +335,7 @@ def pytest_sessionfinish(session, exitstatus):
     token = os.environ.get("SUMMON_TEST_SLACK_BOT_TOKEN")
     if not token:
         return
-    client = AsyncWebClient(token=token)
+    client = AsyncWebClient(token=token, retry_handlers=_retry_handlers())
 
     async def _cleanup():
         for cid in _channels_to_cleanup:

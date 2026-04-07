@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from tests.integration.conftest import slack_retry
+from tests.integration.conftest import _channels_to_cleanup
 
 pytestmark = [pytest.mark.slack]
 
@@ -22,14 +22,14 @@ class TestArchiveUnarchive:
 
     async def test_archive_then_info_shows_archived(self, slack_harness, fresh_channel):
         """conversations_info returns is_archived=True after archiving."""
-        await slack_retry(slack_harness.client.conversations_archive, channel=fresh_channel)
+        await slack_harness.client.conversations_archive(channel=fresh_channel)
         info = await slack_harness.client.conversations_info(channel=fresh_channel)
         assert info["channel"]["is_archived"] is True
 
     async def test_unarchive_restores_channel(self, slack_harness, fresh_channel):
         """Unarchiving a channel makes it active again."""
-        await slack_retry(slack_harness.client.conversations_archive, channel=fresh_channel)
-        await slack_retry(slack_harness.client.conversations_unarchive, channel=fresh_channel)
+        await slack_harness.client.conversations_archive(channel=fresh_channel)
+        await slack_harness.client.conversations_unarchive(channel=fresh_channel)
         info = await slack_harness.client.conversations_info(channel=fresh_channel)
         assert info["channel"]["is_archived"] is False
 
@@ -40,8 +40,8 @@ class TestArchiveUnarchive:
         a member since it created the channel. Verify the channel is usable
         by posting a message after an archive/unarchive cycle.
         """
-        await slack_retry(slack_harness.client.conversations_archive, channel=fresh_channel)
-        await slack_retry(slack_harness.client.conversations_unarchive, channel=fresh_channel)
+        await slack_harness.client.conversations_archive(channel=fresh_channel)
+        await slack_harness.client.conversations_unarchive(channel=fresh_channel)
         resp = await slack_harness.client.chat_postMessage(
             channel=fresh_channel, text="Post-unarchive message"
         )
@@ -59,11 +59,12 @@ class TestChannelNameReclaim:
         name_taken. This validates why _handle_archived_channel falls back to
         the -resumed suffix when the same-name creation fails.
         """
-        name = f"reclaim-{int(time.time())}"[:80]
+        name = f"reclaim-integ-{int(time.time())}"[:80]
         resp = await slack_harness.client.conversations_create(name=name, is_private=True)
         original_id = resp["channel"]["id"]
+        _channels_to_cleanup.append(original_id)
 
-        await slack_retry(slack_harness.client.conversations_archive, channel=original_id)
+        await slack_harness.client.conversations_archive(channel=original_id)
 
         # Attempting same name → name_taken (private channels don't release names)
         with pytest.raises(Exception, match="name_taken"):
@@ -74,6 +75,7 @@ class TestChannelNameReclaim:
             name=f"{name}-resumed", is_private=True
         )
         replacement_id = resp2["channel"]["id"]
+        _channels_to_cleanup.append(replacement_id)
         assert replacement_id != original_id
 
         await slack_harness.cleanup_channels([original_id, replacement_id])
@@ -84,9 +86,10 @@ class TestChannelNameReclaim:
         This validates that the retry logic in _create_channel and the
         -resumed suffix fallback in _handle_archived_channel are necessary.
         """
-        name = f"taken-{int(time.time())}"[:80]
+        name = f"taken-integ-{int(time.time())}"[:80]
         resp = await slack_harness.client.conversations_create(name=name, is_private=True)
         active_id = resp["channel"]["id"]
+        _channels_to_cleanup.append(active_id)
 
         with pytest.raises(Exception, match="name_taken"):
             await slack_harness.client.conversations_create(name=name, is_private=True)

@@ -6,6 +6,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+from conftest import make_test_config
 
 from summon_claude.config import (
     PluginSkill,
@@ -18,78 +19,78 @@ from summon_claude.config import (
 
 def _make_config(**overrides) -> SummonConfig:
     """Create a SummonConfig with test defaults; override any field via kwargs."""
-    return SummonConfig(**overrides)
+    return make_test_config(**overrides)
 
 
 class TestSummonConfigDefaults:
     def test_default_model(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         assert cfg.default_model is None
 
     def test_default_model_can_be_set(self):
-        cfg = _make_config(default_model="claude-opus-4-6")
+        cfg = make_test_config(default_model="claude-opus-4-6")
         assert cfg.default_model == "claude-opus-4-6"
 
     def test_default_channel_prefix(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         assert cfg.channel_prefix == "summon"
 
     def test_default_permission_debounce(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         assert cfg.permission_debounce_ms == 2000
 
     def test_default_max_inline_chars(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         assert cfg.max_inline_chars == 2500
 
     def test_default_effort(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         assert cfg.default_effort == "high"
 
     def test_default_effort_can_be_set(self):
-        cfg = _make_config(default_effort="low")
+        cfg = make_test_config(default_effort="low")
         assert cfg.default_effort == "low"
 
     def test_default_effort_all_valid_values(self):
         for level in ("low", "medium", "high", "max"):
-            cfg = _make_config(default_effort=level)
+            cfg = make_test_config(default_effort=level)
             assert cfg.default_effort == level
 
     def test_default_effort_rejects_invalid(self):
         with pytest.raises(ValueError, match="SUMMON_DEFAULT_EFFORT"):
-            _make_config(default_effort="ultra")
+            make_test_config(default_effort="ultra")
 
 
 class TestSummonConfigValidate:
     def test_valid_config_passes(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         cfg.validate()  # should not raise
 
     def test_missing_bot_token_raises(self):
-        cfg = _make_config(slack_bot_token="")
+        cfg = make_test_config(slack_bot_token="")
         with pytest.raises(ValueError, match="SUMMON_SLACK_BOT_TOKEN"):
             cfg.validate()
 
     def test_invalid_bot_token_prefix_raises(self):
         with pytest.raises(ValueError, match="xoxb-"):
-            _make_config(slack_bot_token="xoxp-wrong-prefix")
+            make_test_config(slack_bot_token="xoxp-wrong-prefix")
 
     def test_missing_app_token_raises(self):
-        cfg = _make_config(slack_app_token="")
+        cfg = make_test_config(slack_app_token="")
         with pytest.raises(ValueError, match="SUMMON_SLACK_APP_TOKEN"):
             cfg.validate()
 
     def test_invalid_app_token_prefix_raises(self):
         with pytest.raises(ValueError, match="xapp-"):
-            _make_config(slack_app_token="xoxb-wrong-prefix")
+            make_test_config(slack_app_token="xoxb-wrong-prefix")
 
     def test_missing_signing_secret_raises(self):
-        cfg = _make_config(slack_signing_secret="")
+        cfg = make_test_config(slack_signing_secret="")
         with pytest.raises(ValueError, match="SUMMON_SLACK_SIGNING_SECRET"):
             cfg.validate()
 
     def test_multiple_errors_reported_together(self):
-        cfg = _make_config(slack_bot_token="", slack_signing_secret="")
+        cfg = make_test_config(slack_bot_token="", slack_signing_secret="")
         with pytest.raises(ValueError) as exc_info:
             cfg.validate()
         msg = str(exc_info.value)
@@ -99,12 +100,12 @@ class TestSummonConfigValidate:
 
 class TestGitHubMCPConfig:
     def test_github_mcp_config_returns_none_when_no_token(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         with patch("summon_claude.github_auth.load_token", return_value=None):
             assert cfg.github_mcp_config() is None
 
     def test_github_mcp_config_returns_dict_when_token_exists(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         with patch("summon_claude.github_auth.load_token", return_value="gho_test123"):
             result = cfg.github_mcp_config()
         assert result is not None
@@ -113,7 +114,7 @@ class TestGitHubMCPConfig:
         assert result["headers"]["Authorization"] == "Bearer gho_test123"
 
     def test_github_mcp_config_dict_structure(self):
-        cfg = _make_config()
+        cfg = make_test_config()
         with patch("summon_claude.github_auth.load_token", return_value="gho_xyz"):
             result = cfg.github_mcp_config()
         assert set(result.keys()) == {"type", "url", "headers"}
@@ -154,7 +155,7 @@ class TestSecretFieldsHiddenFromRepr:
     """Sensitive fields must not appear in repr() or str() output."""
 
     def test_repr_hides_secrets(self):
-        cfg = _make_config()
+        cfg = make_test_config(github_pat="ghp_shouldntsee")
         r = repr(cfg)
         assert "xoxb-test-token" not in r
         assert "xapp-test-token" not in r
