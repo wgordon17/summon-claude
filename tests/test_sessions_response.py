@@ -1434,3 +1434,165 @@ class TestStreamerHealthTrackerIntegration:
         await streamer._handle_tool_result_block(
             ToolResultBlock(tool_use_id="tu_1", content="err", is_error=True), None
         )
+
+
+class TestApprovalVisibility:
+    """Tests for approval label rendering on tool use messages."""
+
+    async def test_tool_use_with_auto_allowed_label(self):
+        """Pre-resolved bridge with 'auto-allowed' renders label on tool use."""
+        from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
+
+        bridge = ApprovalBridge()
+        bridge.resolve("Read", ApprovalInfo(label="auto-allowed"))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        # Find the context block with the tool use text
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert "_(auto-allowed)_" in text
+        assert ":hammer_and_wrench:" in text
+
+    async def test_tool_use_with_classifier_label_and_reason(self):
+        """Classifier approval renders label with reason."""
+        from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
+
+        bridge = ApprovalBridge()
+        bridge.resolve("Bash", ApprovalInfo(label="auto-mode", reason="local file edit"))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Bash", {"command": "git status"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert "_(auto-mode: local file edit)_" in text
+
+    async def test_denied_tool_uses_denial_emoji(self):
+        """Denied tool uses :no_entry_sign: emoji instead of :hammer_and_wrench:."""
+        from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
+
+        bridge = ApprovalBridge()
+        bridge.resolve("Write", ApprovalInfo(label="denied by <@U123>", is_denial=True))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Write", {"file_path": "/tmp/test.py"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert ":no_entry_sign:" in text
+        assert ":hammer_and_wrench:" not in text
+
+    async def test_no_bridge_fallback(self):
+        """Streamer without bridge posts tool use immediately with no label."""
+        streamer, router, client = make_streamer()
+        assert streamer._bridge is None
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert ":hammer_and_wrench:" in text
+        assert "_(" not in text  # No label suffix
+
+    async def test_bridge_timeout_posts_without_label(self):
+        """On bridge timeout, tool use posts without label (graceful degradation)."""
+        from summon_claude.sessions.permissions import ApprovalBridge
+
+        bridge = ApprovalBridge()
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        # Patch asyncio.wait_for to raise TimeoutError immediately
+        timeout_patch = patch(
+            "summon_claude.sessions.response.asyncio.wait_for",
+            side_effect=asyncio.TimeoutError,
+        )
+        with timeout_patch:
+            await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert ":hammer_and_wrench:" in text
+        assert "_(" not in text  # No label
+
+    async def test_subagent_tool_skips_bridge(self):
+        """Subagent tool calls (parent_id != None) skip bridge, post immediately."""
+        from summon_claude.sessions.permissions import ApprovalBridge
+
+        bridge = ApprovalBridge()
+        bridge.create_future = MagicMock()
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        # parent_id is set — subagent context
+        router._subagent_threads = {"parent_123": "thread_ts"}
+        await streamer._handle_tool_use_block(block, "parent_123")
+
+        bridge.create_future.assert_not_called()
+
+    async def test_denied_tool_result_suppressed(self):
+        """Denied tool results (is_error=True) are suppressed — no :x: Tool error."""
+        from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
+
+        bridge = ApprovalBridge()
+        bridge.resolve("Write", ApprovalInfo(label="denied", is_denial=True))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        tool_block = ToolUseBlock(id="tu_deny", name="Write", input={"file_path": "/f"})
+
+        await streamer._handle_tool_use_block(tool_block, None)
+        client.post.reset_mock()
+
+        result_block = ToolResultBlock(
+            tool_use_id="tu_deny",
+            content="Denied by user in Slack",
+            is_error=True,
+        )
+        await streamer._handle_tool_result_block(result_block, None)
+
+        # post should NOT have been called for the denied result
+        client.post.assert_not_called()
+
+    async def test_approved_tool_result_not_suppressed(self):
+        """Approved tool results are posted normally."""
+        from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
+
+        bridge = ApprovalBridge()
+        bridge.resolve("Read", ApprovalInfo(label="auto-allowed"))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        tool_block = ToolUseBlock(id="tu_ok", name="Read", input={"file_path": "/f"})
+
+        await streamer._handle_tool_use_block(tool_block, None)
+        client.post.reset_mock()
+
+        result_block = ToolResultBlock(
+            tool_use_id="tu_ok",
+            content="file content here",
+            is_error=False,
+        )
+        await streamer._handle_tool_result_block(result_block, None)
+
+        # post SHOULD have been called for the approved result
+        client.post.assert_called()

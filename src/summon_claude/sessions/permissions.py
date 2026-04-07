@@ -26,8 +26,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import uuid
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -181,6 +182,81 @@ _JIRA_MCP_AUTO_APPROVE_EXACT = frozenset(
 
 _PERMISSION_TIMEOUT_S = 600  # 10 minutes
 
+# --- Approval visibility ---
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalInfo:
+    """Describes how a tool use was approved, for display in Slack."""
+
+    label: str  # Human-readable label, e.g. "auto-allowed"
+    reason: str | None = None  # Optional detail (classifier reason, user name)
+    is_denial: bool = False  # True when the decision is a denial or block
+
+
+_LABEL_AUTO_ALLOWED = "auto-allowed"
+_LABEL_WITHIN_PROJECT = "within project"
+_LABEL_SESSION_CACHED = "approved for session"
+_LABEL_AUTO_MODE = "auto-mode"
+_LABEL_BLOCKED_AUTO_MODE = "blocked"
+_LABEL_SDK_ALLOWED = "sdk-allowed"
+_LABEL_SDK_DENIED = "denied by policy"
+_LABEL_DENIED = "denied"
+
+
+class ApprovalBridge:
+    """Bridges PermissionHandler decisions to ResponseStreamer.
+
+    Two-sided rendezvous: handles both "streamer registers first"
+    and "handler resolves first" orderings via FIFO queues keyed
+    by tool name.
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict[str, deque[asyncio.Future[ApprovalInfo]]] = defaultdict(deque)
+        self._resolved: dict[str, deque[ApprovalInfo]] = defaultdict(deque)
+
+    def create_future(self, tool_name: str) -> asyncio.Future[ApprovalInfo]:
+        """Called by streamer when ToolUseBlock arrives. Returns a Future to await."""
+        resolved = self._resolved.get(tool_name)
+        if resolved:
+            info = resolved.popleft()
+            if not resolved:
+                del self._resolved[tool_name]
+            fut: asyncio.Future[ApprovalInfo] = asyncio.get_running_loop().create_future()
+            fut.set_result(info)
+            return fut
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[tool_name].append(fut)
+        return fut
+
+    def resolve(self, tool_name: str, info: ApprovalInfo) -> None:
+        """Called by permission handler when approval decision is made."""
+        pending = self._pending.get(tool_name)
+        if pending:
+            fut = pending.popleft()
+            if not pending:
+                del self._pending[tool_name]
+            if not fut.done():
+                fut.set_result(info)
+        else:
+            self._resolved[tool_name].append(info)
+
+    def clear(self) -> None:
+        """Cancel all pending Futures and reset bridge state.
+
+        Called at the start of each new turn (from stream_with_flush) to
+        prevent stale Futures from a prior aborted turn (!stop) or
+        compaction restart being resolved by the next turn's permission handler.
+        """
+        for deque_ in self._pending.values():
+            for fut in deque_:
+                if not fut.done():
+                    fut.cancel()
+        self._pending.clear()
+        self._resolved.clear()
+
+
 # Tools that write to the filesystem — gated until containment is active.
 # MultiEdit is included defensively even though it's not currently in
 # the codebase (harmless if unused).
@@ -302,9 +378,11 @@ class PermissionHandler:
         project_root: str = "",
         classifier: SummonAutoClassifier | None = None,
         classifier_configured: bool = False,
+        bridge: ApprovalBridge | None = None,
     ) -> None:
         self._router = router
         self._authenticated_user_id = authenticated_user_id
+        self._bridge = bridge
         self._debounce_ms = config.permission_debounce_ms
 
         # Write gate state
@@ -380,7 +458,20 @@ class PermissionHandler:
         if enabled and self._classifier is not None:
             self._classifier.reset_counters()
 
-    async def handle(  # noqa: PLR0912
+    def _resolve_approval(
+        self,
+        tool_name: str,
+        label: str,
+        reason: str | None = None,
+        *,
+        is_denial: bool = False,
+    ) -> None:
+        """Resolve the bridge Future with an ApprovalInfo for this tool."""
+        if self._bridge is not None:
+            info = ApprovalInfo(label=label, reason=reason, is_denial=is_denial)
+            self._bridge.resolve(tool_name, info)
+
+    async def handle(  # noqa: PLR0912, PLR0915
         self,
         tool_name: str,
         input_data: dict[str, Any],
@@ -389,7 +480,17 @@ class PermissionHandler:
         """Main entry point for the can_use_tool callback."""
         # 0. Intercept AskUserQuestion — route to Slack interactive UI
         if tool_name == "AskUserQuestion":
-            return await self._handle_ask_user_question(input_data)
+            result = await self._handle_ask_user_question(input_data)
+            if isinstance(result, PermissionResultAllow):
+                self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
+            else:
+                self._resolve_approval(
+                    tool_name,
+                    _LABEL_DENIED,
+                    reason="question failed",
+                    is_denial=True,
+                )
+            return result
 
         # 0b. Write gate — enforce read-only default until containment is active.
         # Handles: SDK deny, safe-dir bypass, containment check, CWD containment.
@@ -400,11 +501,13 @@ class PermissionHandler:
 
         # 1. Check SDK suggestions for deny — always honor denials unconditionally
         if _sdk_suggests_deny(context, tool_name):
+            self._resolve_approval(tool_name, _LABEL_SDK_DENIED, is_denial=True)
             return PermissionResultDeny(message="Denied by permission rules")
 
         # 2. Static auto-approve list is the primary gate for allowing tools
         if tool_name in _AUTO_APPROVE_TOOLS:
             logger.debug("Auto-approving tool: %s", tool_name)
+            self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
             return PermissionResultAllow()
 
         # 2b. Restricted GitHub MCP tools always require Slack approval —
@@ -418,6 +521,7 @@ class PermissionHandler:
             _GITHUB_MCP_AUTO_APPROVE_PREFIXES
         ):
             logger.debug("Auto-approving GitHub MCP tool: %s", tool_name)
+            self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
             return PermissionResultAllow()
 
         # 2d. Google Workspace MCP (workspace-mcp): read-only tools auto-approved,
@@ -425,6 +529,7 @@ class PermissionHandler:
         if tool_name.startswith(_GOOGLE_MCP_PREFIX):
             if _is_google_read_tool(tool_name):
                 logger.debug("Auto-approving Google Workspace read tool: %s", tool_name)
+                self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
                 return PermissionResultAllow()
             logger.info("Google Workspace write tool requires approval: %s", tool_name)
             return await self._request_approval(tool_name, input_data, context)
@@ -435,19 +540,33 @@ class PermissionHandler:
             # 2e-i: Hard deny write tools and fetchAtlassian (checked FIRST)
             if tool_name in _JIRA_MCP_HARD_DENY:
                 logger.info("Jira MCP write tool hard-denied: %s", tool_name)
+                self._resolve_approval(
+                    tool_name,
+                    _LABEL_DENIED,
+                    reason="read-only mode",
+                    is_denial=True,
+                )
                 return PermissionResultDeny(
                     message="Jira write operations are not permitted (read-only mode)"
                 )
             # 2e-ii: Auto-approve read-only tools by prefix
             if tool_name.startswith(_JIRA_MCP_AUTO_APPROVE_PREFIXES):
                 logger.debug("Auto-approving Jira MCP tool: %s", tool_name)
+                self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
                 return PermissionResultAllow()
             # 2e-iii: Auto-approve read-only tools by exact name
             if tool_name in _JIRA_MCP_AUTO_APPROVE_EXACT:
                 logger.debug("Auto-approving Jira MCP tool (exact): %s", tool_name)
+                self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
                 return PermissionResultAllow()
             # 2e-iv: Unknown Jira tool — fail closed (hard deny)
             logger.warning("Unknown Jira MCP tool denied (fail-closed): %s", tool_name)
+            self._resolve_approval(
+                tool_name,
+                _LABEL_DENIED,
+                reason="read-only mode",
+                is_denial=True,
+            )
             return PermissionResultDeny(
                 message=f"Unknown Jira MCP tool '{tool_name}' denied (fail-closed)"
             )
@@ -458,6 +577,7 @@ class PermissionHandler:
         # the session's permissions.
         if tool_name.startswith(_SUMMON_MCP_AUTO_APPROVE_PREFIXES):
             logger.debug("Auto-approving summon MCP tool: %s", tool_name)
+            self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
             return PermissionResultAllow()
 
         # 2g. Session-lifetime cached approvals (defense-in-depth:
@@ -469,6 +589,7 @@ class PermissionHandler:
             and not _is_google_write_tool(tool_name)
         ):
             logger.debug("Session-approved tool: %s", tool_name)
+            self._resolve_approval(tool_name, _LABEL_SESSION_CACHED)
             return PermissionResultAllow()
 
         # 2h. Per-argument cache — exact match on full arg (Bash command,
@@ -483,6 +604,7 @@ class PermissionHandler:
             and cacheable_arg in self._session_approved_tool_args.get(tool_name, set())
         ):
             logger.debug("Session-approved %s arg: %s", tool_name, cacheable_arg)
+            self._resolve_approval(tool_name, _LABEL_SESSION_CACHED)
             return PermissionResultAllow()
 
         # 2i. Auto-mode classifier (only active after worktree entry)
@@ -497,9 +619,16 @@ class PermissionHandler:
             if classify_result.decision == "allow":
                 logger.info("Classifier approved %s", tool_name)
                 self._recent_approved.append(tool_name)
+                self._resolve_approval(tool_name, _LABEL_AUTO_MODE, reason=classify_result.reason)
                 return PermissionResultAllow()
             if classify_result.decision == "block":
                 logger.info("Classifier blocked %s: %s", tool_name, classify_result.reason)
+                self._resolve_approval(
+                    tool_name,
+                    _LABEL_BLOCKED_AUTO_MODE,
+                    reason=classify_result.reason,
+                    is_denial=True,
+                )
                 # Generic message — don't leak classifier reasoning to outer Claude
                 return PermissionResultDeny(message="Blocked by auto-mode policy")
             if classify_result.decision == "fallback_exceeded":
@@ -525,6 +654,7 @@ class PermissionHandler:
         # principle as the GitHub deny-list overriding SDK suggestions.
         _write_gated_fallthrough = tool_name in _WRITE_GATED_TOOLS and self._write_access_granted
         if _sdk_suggests_allow(context, tool_name) and not _write_gated_fallthrough:
+            self._resolve_approval(tool_name, _LABEL_SDK_ALLOWED)
             return PermissionResultAllow()
 
         # 4. Request user approval via Slack
@@ -667,22 +797,36 @@ class PermissionHandler:
         """
         # 1. SDK deny — always honored unconditionally (before any allow path)
         if _sdk_suggests_deny(context, tool_name):
+            self._resolve_approval(tool_name, _LABEL_SDK_DENIED, is_denial=True)
             return PermissionResultDeny(message="Denied by permission rules")
 
         # 2. Safe-dir bypass: takes precedence over containment requirement
         file_path = _extract_file_path(tool_name, input_data)
         if file_path and _is_in_safe_dir(file_path, self._safe_dirs, self._project_root):
             logger.debug("Safe-dir write allowed: %s → %s", tool_name, file_path)
+            self._resolve_approval(tool_name, _LABEL_AUTO_ALLOWED)
             return PermissionResultAllow()
 
         # 3. No containment active: hard deny
         if not self._in_containment:
             logger.info("Write gate: denying %s (no active containment)", tool_name)
             if self._is_git_repo:
+                self._resolve_approval(
+                    tool_name,
+                    _LABEL_DENIED,
+                    reason="write gate",
+                    is_denial=True,
+                )
                 return PermissionResultDeny(
                     message="Write access requires a worktree. "
                     "Use EnterWorktree to create an isolated copy first."
                 )
+            self._resolve_approval(
+                tool_name,
+                _LABEL_DENIED,
+                reason="write gate",
+                is_denial=True,
+            )
             return PermissionResultDeny(
                 message="Write access requires a supported working directory. "
                 "Start a session in a project directory."
@@ -711,6 +855,7 @@ class PermissionHandler:
         # 5. Gate approved — CWD containment for file-targeting tools
         if file_path and self._is_within_containment(file_path):
             logger.debug("Write within containment: %s → %s", tool_name, file_path)
+            self._resolve_approval(tool_name, _LABEL_WITHIN_PROJECT)
             return PermissionResultAllow()
 
         # 6. Outside CWD or Bash → fall through to arg cache (step 2f) or HITL (step 4)
@@ -748,6 +893,7 @@ class PermissionHandler:
                 await req.result_event.wait()
         except TimeoutError:
             logger.warning("Permission request timed out for tool %s", tool_name)
+            self._resolve_approval(tool_name, _LABEL_DENIED, reason="timed out", is_denial=True)
             await self._post_timeout_message()
             timeout_min = _PERMISSION_TIMEOUT_S // 60
             return PermissionResultDeny(
@@ -784,6 +930,13 @@ class PermissionHandler:
                 await batch_event.wait()
         except TimeoutError:
             approved = False
+            for req in batch.values():
+                self._resolve_approval(
+                    req.tool_name,
+                    _LABEL_DENIED,
+                    reason="timed out",
+                    is_denial=True,
+                )
             msg_ts = self._batch.message_ts.pop(batch_id, None)
             if msg_ts:
                 await self._router.client.delete_message(msg_ts)
@@ -871,6 +1024,8 @@ class PermissionHandler:
             logger.error("Failed to post permission message: %s", e)
             # Auto-deny if we can't post
             self._batch.decisions[batch_id] = False
+            for name in self._batch.tool_names.get(batch_id, []):
+                self._resolve_approval(name, _LABEL_DENIED, reason="internal error", is_denial=True)
             if batch_id in self._batch.events:
                 self._batch.events[batch_id].set()
 
@@ -938,22 +1093,23 @@ class PermissionHandler:
         if msg_ts:
             await self._router.client.delete_message(msg_ts)
 
-        # Post a persistent confirmation to the turn thread
-        # (include tool names since the interactive message is now deleted)
-        tool_names = self._batch.tool_names.get(batch_id, [])
-        tool_inputs = self._batch.tool_inputs.get(batch_id, [])
-        tool_list = (
-            _format_tool_list(tool_names, tool_inputs, is_session_approve)
-            if tool_names
-            else "tools"
+        # Resolve bridge for each tool in the batch
+        if not re.fullmatch(r"[A-Z0-9]+", user_id):
+            user_id = "unknown"
+        tool_names_list = self._batch.tool_names.get(batch_id, [])
+        for name in tool_names_list:
+            if approved and is_session_approve:
+                self._resolve_approval(name, f"approved for session by <@{user_id}>")
+            elif approved:
+                self._resolve_approval(name, f"approved by <@{user_id}>")
+            else:
+                self._resolve_approval(name, f"denied by <@{user_id}>", is_denial=True)
+
+        logger.info(
+            "Permission %s: %s",
+            "approved" if approved else "denied",
+            ", ".join(tool_names_list) if tool_names_list else "tools",
         )
-        session_suffix = " for session" if is_session_approve else ""
-        status_text = ":white_check_mark: Approved" if approved else ":x: Denied"
-        try:
-            msg = f"{status_text}{session_suffix}: {tool_list}"
-            await self._router.post_to_active_thread(msg)
-        except Exception as e:
-            logger.warning("Failed to post permission confirmation: %s", e)
 
         # Signal the waiting batch
         if batch_id in self._batch.events:
@@ -1372,30 +1528,6 @@ def _build_ask_user_blocks(request_id: str, questions: list[dict]) -> list[dict]
         )
 
     return blocks
-
-
-def _format_tool_list(
-    tool_names: list[str],
-    tool_inputs: list[dict[str, Any]],
-    show_args: bool,
-) -> str:
-    """Format a human-readable tool list for confirmation messages.
-
-    When *show_args* is True (approve-for-session), write-gated tools
-    include their primary argument as a preview.  Display is truncated for
-    readability; the actual cache (``_get_cacheable_arg``) stores the full
-    untruncated value.
-    """
-    parts: list[str] = []
-    for i, name in enumerate(tool_names):
-        if show_args and name in _WRITE_GATED_TOOLS and i < len(tool_inputs):
-            arg = get_tool_primary_arg(name, tool_inputs[i])
-            if arg:
-                safe_arg = sanitize_for_mrkdwn(arg, 80)
-                parts.append(f"`{name}`: `{safe_arg}`")
-                continue
-        parts.append(f"`{name}`")
-    return ", ".join(parts)
 
 
 def _format_request_summary(req: PendingRequest) -> str:

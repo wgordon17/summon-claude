@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -31,10 +31,13 @@ from claude_agent_sdk import (
 from summon_claude.sessions.context import ContextUsage
 from summon_claude.sessions.mcp_health import McpHealthTracker
 from summon_claude.sessions.types import ChangeType, FileChange
-from summon_claude.slack.client import redact_secrets
+from summon_claude.slack.client import redact_secrets, sanitize_for_mrkdwn
 from summon_claude.slack.formatting import snippet_type_for_extension
 from summon_claude.slack.markdown_split import split_markdown
 from summon_claude.slack.router import ThreadRouter
+
+if TYPE_CHECKING:
+    from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,8 @@ class _TurnState:
     pending_worktree_names: dict[str, str] = field(default_factory=dict)
     # Track tool_use_id → tool name for health tracker
     tool_names: dict[str, str] = field(default_factory=dict)
+    # Track denied tool_use_ids to suppress redundant :x: Tool error messages
+    denied_tool_use_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -195,6 +200,7 @@ class ResponseStreamer:
         on_file_change: Callable[[FileChange], Awaitable[None]] | None = None,
         on_worktree_entered: Callable[[str], None] | None = None,
         mcp_health: McpHealthTracker | None = None,
+        bridge: ApprovalBridge | None = None,
     ) -> None:
         self._router = router
         self._user_id = user_id
@@ -203,6 +209,7 @@ class ResponseStreamer:
         self._on_file_change = on_file_change
         self._on_worktree_entered = on_worktree_entered
         self._mcp_health = mcp_health
+        self._bridge = bridge
 
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
@@ -288,6 +295,8 @@ class ResponseStreamer:
         saved_snippet = self._turn.user_snippet
         saved_thread_ts = self._turn.turn_thread_ts
         self._turn = _TurnState(user_snippet=saved_snippet, turn_thread_ts=saved_thread_ts)
+        if self._bridge is not None:
+            self._bridge.clear()
         result: ResultMessage | None = None
         stop_flush = asyncio.Event()
 
@@ -378,7 +387,22 @@ class ResponseStreamer:
             wt_name = (block.input or {}).get("name", "")
             self._turn.pending_worktree_names[block.id] = wt_name
 
-        await self._post_tool_use(block, parent_id)
+        # Await approval before posting — skip bridge for subagent tool calls.
+        # The SDK may not invoke can_use_tool for tools in Task subagent messages
+        # (parent_id != None). If the callback is never called, the Future would
+        # never resolve, causing a 660s hang.
+        approval: ApprovalInfo | None = None
+        if self._bridge is not None and parent_id is None:
+            try:
+                fut = self._bridge.create_future(block.name)
+                approval = await asyncio.wait_for(fut, timeout=660.0)
+            except TimeoutError:
+                logger.warning("Approval bridge timeout for %s — posting without label", block.name)
+
+        if approval is not None and approval.is_denial:
+            self._turn.denied_tool_use_ids.add(block.id)
+
+        await self._post_tool_use(block, parent_id, approval=approval)
         # Set status AFTER posting — thread post auto-clears any previous status,
         # so this persists during actual tool execution until the result arrives.
         await self._set_status(f"Running {block.name}...")
@@ -397,6 +421,10 @@ class ResponseStreamer:
                 await self._mcp_health.record_tool_result(
                     tool_name, is_error=block.is_error, error_content=error_text
                 )
+        # Suppress redundant :x: Tool error for denied tools — the denial label
+        # on the tool use block already communicates the outcome.
+        if block.tool_use_id in self._turn.denied_tool_use_ids:
+            return
         await self._post_tool_result(block, parent_id)
         # No _set_status — thread post auto-clears "Running {tool}...",
         # and the next block (tool use or text) arrives quickly.
@@ -521,12 +549,17 @@ class ResponseStreamer:
         for chunk in chunks:
             await self._router.post_to_subagent_thread(tool_use_id, chunk)
 
-    async def _post_tool_use(self, block: ToolUseBlock, parent_id: str | None = None) -> None:
+    async def _post_tool_use(
+        self,
+        block: ToolUseBlock,
+        parent_id: str | None = None,
+        approval: ApprovalInfo | None = None,
+    ) -> None:
         """Post a tool use context block to the appropriate thread."""
         tool_name = block.name
         input_data = block.input or {}
         summary = _format_tool_summary(tool_name, input_data)
-        blocks = self._make_tool_use_blocks(tool_name, summary, input_data)
+        blocks = self._make_tool_use_blocks(tool_name, summary, input_data, approval=approval)
         if parent_id:
             await self._router.post_to_subagent_thread(
                 parent_id, f"Tool: {tool_name}", blocks=blocks
@@ -608,15 +641,31 @@ class ResponseStreamer:
         tool_name: str,
         summary: str,
         input_data: dict[str, Any],  # noqa: ARG002
+        approval: ApprovalInfo | None = None,
     ) -> list[dict[str, Any]]:
         """Build Block Kit blocks for a tool use context message."""
+        # Build approval label suffix
+        label_suffix = ""
+        if approval is not None:
+            if approval.reason:
+                safe_reason = sanitize_for_mrkdwn(approval.reason, 60).replace("_", " ")
+                approval_text = f"{approval.label}: {safe_reason}"
+            else:
+                approval_text = approval.label
+            label_suffix = f" _({approval_text})_"
+
+        is_denied = approval is not None and approval.is_denial
+        emoji = ":no_entry_sign:" if is_denied else ":hammer_and_wrench:"
+        separator = " " if summary else ""
+        text = f"{emoji} *{tool_name}*{separator}{summary}{label_suffix}"
+
         return [
             {
                 "type": "context",
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f":hammer_and_wrench: *{tool_name}* {summary}",
+                        "text": text,
                     }
                 ],
             }

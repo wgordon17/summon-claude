@@ -71,7 +71,7 @@ from summon_claude.sessions.context import (
     get_last_step_usage,
     reconcile_context_window_sizes,
 )
-from summon_claude.sessions.permissions import PermissionHandler
+from summon_claude.sessions.permissions import ApprovalBridge, PermissionHandler
 from summon_claude.sessions.prompts import (
     build_global_pm_scan_prompt,
     build_global_pm_system_prompt,
@@ -538,6 +538,7 @@ class _SessionRuntime:
     registry: SessionRegistry
     client: SlackClient
     permission_handler: PermissionHandler
+    bridge: ApprovalBridge | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +1209,7 @@ class SummonSession:
                 f"Session {self._session_id}: cannot build runtime without authenticated_user_id"
             )
         classifier = SummonAutoClassifier(self._config, cwd=self._cwd)
+        bridge = ApprovalBridge()
         permission_handler = PermissionHandler(
             router,
             self._config,
@@ -1215,6 +1217,7 @@ class SummonSession:
             project_root=self._cwd,
             classifier=classifier,
             classifier_configured=self._config.auto_classifier_enabled,
+            bridge=bridge,
         )
         if not is_git:
             permission_handler.notify_containment_active(
@@ -1226,6 +1229,7 @@ class SummonSession:
             registry=registry,
             client=client,
             permission_handler=permission_handler,
+            bridge=bridge,
         )
 
         # Register SessionHandle with the EventDispatcher so events are routed here
@@ -2039,6 +2043,7 @@ class SummonSession:
             on_file_change=self._on_file_change,
             on_worktree_entered=rt.permission_handler.notify_entered_worktree,
             mcp_health=mcp_health_tracker,
+            bridge=rt.bridge,
         )
 
         # Disable auto-compaction — we handle compaction via !compact
