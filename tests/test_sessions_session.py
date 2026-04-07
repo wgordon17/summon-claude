@@ -3938,6 +3938,52 @@ class TestChannelScopeWiring:
         result = await _session_channel_scope()
         assert result == {"C_REGULAR"}
 
+    async def test_channel_resolver_updates_dynamically(self):
+        """PM resolver reflects new children when the underlying DB changes."""
+        mock_registry = AsyncMock()
+        # First call: 1 child
+        # Second call: 2 children (new spawn)
+        mock_registry.get_child_channels = AsyncMock(
+            side_effect=[{"C_CHILD1"}, {"C_CHILD1", "C_CHILD2"}]
+        )
+        _own_cid = "C_PPM"
+        _sid = "ppm-dyn"
+        _owner = "U_OWNER"
+        _reg = mock_registry
+
+        async def _pm_channel_scope() -> set[str]:
+            channels = {_own_cid}
+            if _owner:
+                channels |= await _reg.get_child_channels(_sid, _owner)
+            return channels
+
+        # First call — 1 child
+        result1 = await _pm_channel_scope()
+        assert result1 == {"C_PPM", "C_CHILD1"}
+
+        # Second call — new child appears dynamically
+        result2 = await _pm_channel_scope()
+        assert result2 == {"C_PPM", "C_CHILD1", "C_CHILD2"}
+
+    async def test_read_history_rejects_unauthorized_channel(self):
+        """slack_read_history rejects access to channels not in the resolver."""
+        from summon_claude.slack.mcp import create_summon_mcp_tools
+
+        mock_client = AsyncMock()
+        mock_client.channel_id = "C_OWN"
+
+        async def _restricted_scope() -> set[str]:
+            return {"C_OWN"}
+
+        tools = {
+            t.name: t
+            for t in create_summon_mcp_tools(mock_client, allowed_channels=_restricted_scope)
+        }
+        result = await tools["slack_read_history"].handler({"channel": "C_FORBIDDEN"})
+        assert result["is_error"] is True
+        # Channel ID should NOT leak in the error message
+        assert "C_FORBIDDEN" not in result["content"][0]["text"]
+
 
 # ---------------------------------------------------------------------------
 # zzz- channel rename: _rename_channel_disconnected
