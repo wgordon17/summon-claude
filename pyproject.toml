@@ -69,6 +69,7 @@ dev = [
     "workspace-mcp==1.14.2",
     "pytest-markdown-docs>=0.9.2",
     "python-dotenv>=1.0",
+    "playwright>=1.40",
 ]
 docs = [
     "mkdocs-material>=9.7,<10",

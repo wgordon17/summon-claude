@@ -2457,6 +2457,7 @@ slack-browser = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "playwright" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -2499,6 +2500,7 @@ provides-extras = ["all", "google", "slack-browser"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "playwright", specifier = ">=1.40" },
     { name = "pyright", specifier = "==1.1.408" },
     { name = "pytest", specifier = "==9.0.2" },
     { name = "pytest-asyncio", specifier = "==1.3.0" },

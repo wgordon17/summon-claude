@@ -168,6 +168,10 @@ def _normalize_workspace(workspace: str) -> str:
 
     # Already a full URL
     if workspace.startswith("https://"):
+        parsed = urlparse(workspace)
+        if "@" in (parsed.netloc or ""):
+            click.echo("Workspace URL must not contain credentials.", err=True)
+            sys.exit(1)
         return workspace.rstrip("/")
 
     # Bare name or domain — strip trailing slashes
@@ -298,13 +302,17 @@ def slack_auth(workspace: str) -> None:
         click.echo(f"Slack login failed: {e}", err=True)
         sys.exit(1)
 
+    effective_url = result.resolved_url or workspace_url
+
     identity = result.user_id or "unknown"
     click.echo(f"Slack authenticated as {identity}.")
     click.echo(f"Credentials stored in {result.state_file.parent}")
     click.echo(f"  Team ID:  {result.team_id or 'not detected'}")
     click.echo(f"  Channels: {len(result.channels) if result.channels else 0} found")
+    if result.resolved_url and result.resolved_url.rstrip("/") != workspace_url.rstrip("/"):
+        click.echo(f"  Resolved: {result.resolved_url} (redirected from {workspace_url})")
 
-    _save_workspace_config(result, workspace_url, browser_type)
+    _save_workspace_config(result, effective_url, browser_type)
 
 
 def _save_workspace_config(
@@ -313,6 +321,15 @@ def _save_workspace_config(
     browser_type: str,
 ) -> None:
     """Save workspace metadata and prompt for user ID and channels."""
+    # Defense-in-depth: validate URL before persisting to config
+    parsed = urlparse(workspace_url)
+    if not (
+        parsed.scheme == "https"
+        and parsed.netloc.endswith(".slack.com")
+        and "@" not in parsed.netloc
+    ):
+        raise ValueError(f"Refusing to save invalid workspace URL: {workspace_url!r}")
+
     # User ID
     if result.user_id:
         click.echo(f"Auto-detected user ID: {result.user_id}")

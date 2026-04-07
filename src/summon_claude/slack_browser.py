@@ -77,7 +77,7 @@ def _resolve_client_url(workspace_url: str, state_file: Path) -> str:
 
     # Extract team IDs from localConfig_v2 in app.slack.com localStorage
     for origin in state.get("origins", []):
-        if "app.slack.com" not in origin.get("origin", ""):
+        if origin.get("origin") not in {"https://app.slack.com", "https://slack.com"}:
             continue
         for item in origin.get("localStorage", []):
             if item.get("name") != "localConfig_v2":
@@ -464,7 +464,8 @@ async (workspaceUrl) => {
 
         return result;
     } catch(e) {
-        return {error: e.message || String(e)};
+        const msg = String(e.message || e).replace(/xox[a-z]-[a-zA-Z0-9-]+/g, '[TOKEN]');
+        return {error: msg};
     }
 }"""
 
@@ -540,6 +541,44 @@ async def _extract_user_id(page, workspace_url: str = "") -> str | None:  # type
     return None
 
 
+async def _resolve_workspace_url_from_page(page, team_id: str) -> str | None:  # type: ignore[no-untyped-def]
+    """Extract the resolved workspace URL from a live Playwright page's localStorage.
+
+    Polls ``localConfig_v2.teams[team_id].url`` with a timeout, matching by
+    team ID key (more direct than URL matching since we already have the team ID
+    from the ``/client/{TEAM_ID}`` URL path).
+    """
+    import time  # noqa: PLC0415
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    deadline = time.monotonic() + _USER_ID_POLL_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            teams = await page.evaluate("""() => {
+                try {
+                    const lc = JSON.parse(localStorage.getItem('localConfig_v2') || '{}');
+                    return lc.teams || {};
+                } catch(e) { return {}; }
+            }""")
+            url = (teams.get(team_id) or {}).get("url")
+            if url:
+                parsed = urlparse(url)
+                if (
+                    parsed.scheme == "https"
+                    and parsed.netloc.endswith(".slack.com")
+                    and "@" not in parsed.netloc  # reject userinfo (user:pass@host)
+                ):
+                    return f"https://{parsed.netloc}"
+                logger.warning("Rejected resolved URL with unexpected domain: %s", parsed.netloc)
+                return None
+        except Exception as exc:
+            if "closed" in str(exc).lower():
+                return None
+            logger.debug("localStorage poll error (retrying): %s", exc)
+        await asyncio.sleep(0.5)
+    return None
+
+
 @dataclass
 class SlackAuthResult:
     """Result of interactive Slack authentication."""
@@ -548,6 +587,7 @@ class SlackAuthResult:
     user_id: str | None = None
     channels: list[dict[str, str]] | None = None  # [{"id": "C...", "name": "..."}]
     team_id: str | None = None  # Enterprise Grid team/org ID from /client/ URL
+    resolved_url: str | None = None  # Actual workspace URL after Enterprise Grid redirect
 
 
 async def _extract_channels(page, workspace_url: str = "") -> list[dict[str, str]]:  # type: ignore[no-untyped-def]
@@ -566,13 +606,15 @@ async def _extract_channels(page, workspace_url: str = "") -> list[dict[str, str
     try:
         result = await page.evaluate(_CHANNELS_JS, workspace_url)
         if isinstance(result, dict) and "error" in result:
-            logger.info("Channel API extraction error: %s, trying DOM fallback", result["error"])
+            safe_err = re.sub(r"xox[a-z]-[a-zA-Z0-9-]+", "[TOKEN]", str(result["error"]))
+            logger.info("Channel API extraction error: %s, trying DOM fallback", safe_err)
         elif isinstance(result, list) and len(result) > 0:
             return result
         else:
             logger.info("Channel API extraction returned empty, trying DOM fallback")
     except Exception as exc:
-        logger.info("Channel API extraction failed (%s), trying DOM fallback", exc)
+        safe_exc = re.sub(r"xox[a-z]-[a-zA-Z0-9-]+", "[TOKEN]", str(exc))
+        logger.info("Channel API extraction failed (%s), trying DOM fallback", safe_exc)
 
     # Fallback: scrape channel names from the sidebar DOM
     try:
@@ -582,7 +624,7 @@ async def _extract_channels(page, workspace_url: str = "") -> list[dict[str, str
         return []
 
 
-async def interactive_slack_auth(
+async def interactive_slack_auth(  # noqa: PLR0915
     workspace_url: str,
     browser_type: str = "chrome",
 ) -> SlackAuthResult:
@@ -623,21 +665,53 @@ async def interactive_slack_auth(
         context = await browser.new_context()
         page = await context.new_page()
 
+        # Multi-page tracking for Enterprise Grid new-tab navigation
+        extra_pages: list = []
+        auth_done = asyncio.Event()
+        auth_page_ref: list = [None]  # mutable ref for closures
+        monitor_tasks: list[asyncio.Task] = []
+
+        async def _monitor_page(target) -> None:  # type: ignore[no-untyped-def]
+            """Wait for a single page to reach /client/."""
+            try:
+                await target.wait_for_url("**/client/**", timeout=0, wait_until="commit")
+                auth_page_ref[0] = target
+                auth_done.set()
+            except Exception as exc:
+                logger.debug("Page monitor ended for %s: %s", target.url, exc)
+
+        def _on_new_page(new_page) -> None:  # type: ignore[no-untyped-def]
+            extra_pages.append(new_page)
+            task = asyncio.create_task(_monitor_page(new_page))
+            monitor_tasks.append(task)
+
+        context.on("page", _on_new_page)
+
         await page.goto(workspace_url, wait_until="domcontentloaded")
 
+        # Capture post-redirect URL (Enterprise Grid redirects to *.enterprise.slack.com)
+        redirected_url = page.url
+        if redirected_url != workspace_url:
+            logger.info("Redirected to %s", redirected_url)
+
         # Auto-focus the email input on the login page.
-        # On macOS Apple Silicon, headed-mode Chrome steals focus to the
-        # address bar (playwright#31252). bring_to_front() + click() is
-        # the only combo that reliably transfers OS-level focus.
-        try:
-            await page.bring_to_front()
-            email_input = page.locator(
-                'input[placeholder*="@"], input[type="email"], '
-                'input[name="email"], input[data-qa="signin_email_input"]'
-            ).first
-            await email_input.click(timeout=3000)
-        except Exception as exc:
-            logger.debug("No email input to focus: %s", exc)
+        # Skip for Enterprise Grid workspace pickers — avoids the 3s timeout
+        # on email_input.click() when there's no login form.
+        if ".enterprise.slack.com" not in redirected_url:
+            try:
+                await page.bring_to_front()
+                email_input = page.locator(
+                    'input[placeholder*="@"], input[type="email"], '
+                    'input[name="email"], input[data-qa="signin_email_input"]'
+                ).first
+                await email_input.click(timeout=3000)
+            except Exception as exc:
+                logger.debug("No email input to focus: %s", exc)
+        else:
+            logger.info(
+                "Workspace picker detected at %s — complete login in the browser",
+                redirected_url,
+            )
 
         logger.info(
             "Waiting for Slack login at %s (timeout %ds) ...",
@@ -645,49 +719,76 @@ async def interactive_slack_auth(
             _AUTH_TIMEOUT_S,
         )
 
-        # Wait for authenticated state — URL contains /client/ after login.
-        # Use wait_until="commit" — Slack's SPA may never fire "load".
+        # Start monitoring the original page
+        monitor_tasks.append(asyncio.create_task(_monitor_page(page)))
+
+        # Wait for ANY page to reach /client/
+        timed_out = False
         try:
-            await page.wait_for_url(
-                "**/client/**",
-                timeout=_AUTH_TIMEOUT_S * 1000,
-                wait_until="commit",
-            )
-        except Exception as exc:
+            await asyncio.wait_for(auth_done.wait(), timeout=_AUTH_TIMEOUT_S)
+        except TimeoutError:
+            timed_out = True
+        finally:
+            # Stop accepting new pages before cancelling existing monitors
+            with contextlib.suppress(Exception):
+                context.remove_listener("page", _on_new_page)
+            # Cancel all monitor tasks BEFORE closing the browser to avoid
+            # noisy page-closed exceptions from monitors on closed pages
+            for t in monitor_tasks:
+                t.cancel()
+            await asyncio.gather(*monitor_tasks, return_exceptions=True)
+
+        if timed_out:
+            all_pages = [page, *extra_pages]
+            page_urls = [p.url for p in all_pages]
             await browser.close()
-            # Playwright raises its own TimeoutError (not asyncio.TimeoutError).
-            # Convert timeout to a clean message; re-raise all others as-is.
-            from playwright.async_api import TimeoutError as PlaywrightTimeout  # noqa: PLC0415
+            raise TimeoutError(
+                f"Slack login not completed within {_AUTH_TIMEOUT_S}s. "
+                f"Expected URL containing /client/. "
+                f"Open pages: {', '.join(page_urls)}"
+            )
 
-            if isinstance(exc, PlaywrightTimeout):
-                raise TimeoutError(
-                    f"Slack login not completed within {_AUTH_TIMEOUT_S}s for {workspace_url}"
-                ) from exc
-            raise
+        auth_page = auth_page_ref[0] or page  # fallback should never happen
 
-        logger.info("Authenticated at %s", page.url)
+        # Validate auth_page landed on a Slack domain (defense-in-depth
+        # against a rogue tab navigating to a /client/-matching URL)
+        from urllib.parse import urlparse  # noqa: PLC0415
+
+        _auth_parsed = urlparse(auth_page.url)
+        if not _auth_parsed.netloc.endswith(".slack.com"):
+            await browser.close()
+            raise RuntimeError(
+                f"Authenticated page is not on a Slack domain: {_auth_parsed.netloc}"
+            )
+
+        logger.info("Authenticated at %s", auth_page.url)
 
         # Extract team ID from the /client/ URL.
         # URL format: https://app.slack.com/client/{TEAM_ID}/{CHANNEL_ID}
         team_id: str | None = None
-        client_match = re.search(r"/client/([A-Z0-9]+)", page.url)
+        client_match = re.search(r"/client/([A-Z0-9]+)", auth_page.url)
         if client_match:
             team_id = client_match.group(1)
             logger.info("Detected team ID: %s", team_id)
+
+        resolved_url = (
+            await _resolve_workspace_url_from_page(auth_page, team_id) if team_id else None
+        )
+        effective_url = resolved_url or workspace_url
 
         # Extract user ID and channels in parallel.
         # User ID polls localStorage; channels wait for sidebar DOM
         # then call APIs + scrape. No dependency between them.
         async def _get_channels() -> list[dict[str, str]]:
             with contextlib.suppress(Exception):
-                await page.wait_for_selector(
+                await auth_page.wait_for_selector(
                     '[data-qa^="channel_sidebar_name_"]',
                     timeout=5000,
                 )
-            return await _extract_channels(page, workspace_url)
+            return await _extract_channels(auth_page, effective_url)
 
         user_id, channels = await asyncio.gather(
-            _extract_user_id(page, workspace_url),
+            _extract_user_id(auth_page, effective_url),
             _get_channels(),
         )
 
@@ -703,4 +804,5 @@ async def interactive_slack_auth(
         user_id=user_id,
         channels=channels,
         team_id=team_id,
+        resolved_url=resolved_url,
     )
