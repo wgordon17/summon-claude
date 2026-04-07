@@ -113,7 +113,7 @@ def _read_state() -> dict:
     try:
         data = json.loads(_STATE_FILE.read_text())
         return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return {}
 
 
@@ -209,7 +209,10 @@ def install_hooks() -> None:
     if "showThinkingSummaries" not in settings:
         settings["showThinkingSummaries"] = True
         state = _read_state()
-        managed: list[str] = state.setdefault("managed_settings", [])
+        managed = state.get("managed_settings")
+        if not isinstance(managed, list):
+            managed = []
+            state["managed_settings"] = managed
         if "showThinkingSummaries" not in managed:
             managed.append("showThinkingSummaries")
         _write_state(state)

@@ -532,10 +532,9 @@ class TestShowThinkingSummariesManagement:
         settings = _read_settings(tmp_path)
         assert settings.get("showThinkingSummaries") is False
 
+        # When key already exists, install must not create a state file tracking it
         state_file = tmp_path / ".claude" / "hooks" / ".summon-state.json"
-        if state_file.exists():
-            state = json.loads(state_file.read_text())
-            assert "showThinkingSummaries" not in state.get("managed_settings", [])
+        assert not state_file.exists()
 
     def test_uninstall_removes_managed_show_thinking_summaries(self, tmp_path):
         """uninstall_hooks removes showThinkingSummaries when it is managed."""
