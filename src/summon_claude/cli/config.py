@@ -301,7 +301,11 @@ def config_set(key: str, value: str, override: str | None = None) -> None:
     if not updated:
         new_lines.append(f"{key}={value}")
 
-    config_file.write_text("\n".join(new_lines) + "\n")
+    old_umask = os.umask(0o177)
+    try:
+        config_file.write_text("\n".join(new_lines) + "\n")
+    finally:
+        os.umask(old_umask)
     try:
         fd = os.open(str(config_file), os.O_RDONLY)
         try:

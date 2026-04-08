@@ -328,6 +328,48 @@ class TestClearMechanism:
         written = parse_env_file(config_file)
         assert "SUMMON_SCRIBE_CWD" not in written
 
+    def test_clear_removes_int_field(self, tmp_path):
+        """Typing 'clear' at an optional int prompt removes the key from config."""
+        config_file = tmp_path / "config.env"
+        write_env_file(
+            config_file,
+            {
+                "SUMMON_SLACK_BOT_TOKEN": "xoxb-old",
+                "SUMMON_SLACK_APP_TOKEN": "xapp-old",
+                "SUMMON_SLACK_SIGNING_SECRET": "abc123",
+                "SUMMON_SCRIBE_ENABLED": "true",
+                "SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES": "10",
+            },
+        )
+
+        inputs = (
+            "\n".join(
+                [
+                    "",  # bot token (keep)
+                    "",  # app token (keep)
+                    "",  # signing secret (keep)
+                    "",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "y",  # scribe_enabled
+                    "clear",  # scan_interval — clear it
+                    "",  # scribe_cwd
+                    "",  # scribe_model
+                    "",  # scribe_importance_keywords
+                    "",  # scribe_quiet_hours
+                    *["n"] * 5,  # extra for conditional sub-options
+                    "n",  # advanced settings
+                ]
+            )
+            + "\n"
+        )
+        result = _run_init(config_file, inputs)
+
+        assert result.exit_code == 0, result.output
+        assert "Cleared" in result.output
+        written = parse_env_file(config_file)
+        assert "SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES" not in written
+
 
 # ---------------------------------------------------------------------------
 # Test 8: graceful validation failure writes config

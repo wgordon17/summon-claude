@@ -829,7 +829,9 @@ def cmd_init(ctx: click.Context) -> None:
                 cleared = False
                 while True:
                     raw_input = click.prompt(
-                        f"    {opt.label}", default=prompt_default, show_default=True
+                        f"    {opt.label}",
+                        default=prompt_default,
+                        show_default=prompt_default is not None,
                     )
                     raw_str = str(raw_input)
                     if raw_str.strip().lower() == "clear" and not opt.required:
