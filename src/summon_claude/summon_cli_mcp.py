@@ -88,6 +88,8 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         _ipc_queue_session: Override for daemon queue_session (testing).
         _web_client: AsyncWebClient for cross-channel Slack posts (testing).
     """
+    if is_global_pm and not is_pm:
+        raise ValueError("is_global_pm requires is_pm=True")
 
     @tool(
         "session_list",
