@@ -601,31 +601,43 @@ class TestScanTimer:
     async def test_scan_timer_injects_messages(self):
         """Scan timer injects synthetic events into the queue."""
         import asyncio
+        from datetime import datetime
 
         from summon_claude.sessions.scheduler import SessionScheduler
 
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
         ev = asyncio.Event()
-        scheduler = SessionScheduler(q, ev)
 
-        # Use a one-shot job with a cron that fires immediately (every minute)
-        job = await scheduler.create(
-            cron_expr="* * * * *",
-            prompt="test scan",
-            recurring=False,
-            internal=True,
-        )
-        assert job.internal is True
+        # Pin datetime.now() to 1s before the next minute boundary so
+        # CronSim's next fire time for "* * * * *" is ~1s away, avoiding
+        # up to 60s of wall-clock wait in CI.
+        real_now = datetime.now().astimezone()
+        pinned = real_now.replace(second=59, microsecond=0)
 
-        # Wait briefly for the job to fire (next minute boundary, or immediately
-        # if we're at second 0). Use a short timeout to avoid hanging.
-        try:
-            event = await asyncio.wait_for(q.get(), timeout=65)
-            assert event.get("_synthetic") is True
-            assert "test scan" in event["text"]
-        finally:
-            ev.set()
-            scheduler.cancel_all()
+        with patch("summon_claude.sessions.scheduler.datetime") as mock_dt:
+            mock_dt.now = MagicMock(
+                side_effect=lambda tz=None: pinned.astimezone(tz) if tz else pinned
+            )
+            mock_dt.fromisoformat = datetime.fromisoformat
+
+            scheduler = SessionScheduler(q, ev)
+
+            job = await scheduler.create(
+                cron_expr="* * * * *",
+                prompt="test scan",
+                recurring=False,
+                internal=True,
+            )
+            assert job.internal is True
+
+            # With time pinned to second 59, delay is ~1s — job fires quickly.
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=5)
+                assert event.get("_synthetic") is True
+                assert "test scan" in event["text"]
+            finally:
+                ev.set()
+                scheduler.cancel_all()
 
     @pytest.mark.asyncio
     async def test_scan_timer_respects_shutdown(self):
@@ -656,6 +668,7 @@ class TestScanTimer:
     async def test_scan_timer_drops_on_full_queue(self):
         """When queue is full, timer logs warning and drops event."""
         import asyncio
+        from datetime import datetime
 
         from summon_claude.sessions.scheduler import SessionScheduler
 
@@ -663,28 +676,41 @@ class TestScanTimer:
         # Pre-fill the queue
         q.put_nowait({"text": "filler"})
         ev = asyncio.Event()
-        scheduler = SessionScheduler(q, ev)
 
-        job = await scheduler.create(
-            cron_expr="* * * * *",
-            prompt="overflow test",
-            recurring=False,
-            internal=True,
-        )
+        # Pin datetime.now() to 1s before minute boundary (same pattern as
+        # test_scan_timer_injects_messages) to avoid up to 60s wall-clock wait.
+        real_now = datetime.now().astimezone()
+        pinned = real_now.replace(second=59, microsecond=0)
 
-        # Wait for job to attempt firing (up to 65s)
-        try:
-            await asyncio.wait_for(
-                asyncio.ensure_future(self._wait_for_job_done(job)),
-                timeout=65,
+        with patch("summon_claude.sessions.scheduler.datetime") as mock_dt:
+            mock_dt.now = MagicMock(
+                side_effect=lambda tz=None: pinned.astimezone(tz) if tz else pinned
             )
-        except TimeoutError:
-            pass  # Job may still be waiting
-        finally:
-            ev.set()
-            scheduler.cancel_all()
+            mock_dt.fromisoformat = datetime.fromisoformat
 
-        # Queue should still have exactly 1 item (the filler, not the overflow)
+            scheduler = SessionScheduler(q, ev)
+
+            job = await scheduler.create(
+                cron_expr="* * * * *",
+                prompt="overflow test",
+                recurring=False,
+                internal=True,
+            )
+
+            # Wait for the job task to complete (it fires, hits QueueFull, and returns)
+            try:
+                await asyncio.wait_for(
+                    asyncio.ensure_future(self._wait_for_job_done(job)),
+                    timeout=5,
+                )
+            except TimeoutError:
+                pytest.fail("Job task did not complete within 5s — job may never have fired")
+            finally:
+                ev.set()
+                scheduler.cancel_all()
+
+        # Job must have fired (task done) — queue must still hold only the filler
+        assert job.task is not None and job.task.done(), "Job task should be done after firing"
         assert q.qsize() == 1
         filler = q.get_nowait()
         assert filler["text"] == "filler"
@@ -692,7 +718,7 @@ class TestScanTimer:
     @staticmethod
     async def _wait_for_job_done(job) -> None:
         """Poll until the job's task is done."""
-        import asyncio as _asyncio
+        import asyncio
 
         while job.task and not job.task.done():
-            await _asyncio.sleep(0.1)
+            await asyncio.sleep(0.1)

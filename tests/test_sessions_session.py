@@ -3940,9 +3940,10 @@ class TestChannelScopeWiring:
 
     async def test_channel_resolver_updates_dynamically(self):
         """PM resolver reflects new children when the underlying DB changes."""
+        from summon_claude.slack.mcp import create_summon_mcp_tools
+
         mock_registry = AsyncMock()
-        # First call: 1 child
-        # Second call: 2 children (new spawn)
+        # First call: 1 child; second call: 2 children (new spawn)
         mock_registry.get_child_channels = AsyncMock(
             side_effect=[{"C_CHILD1"}, {"C_CHILD1", "C_CHILD2"}]
         )
@@ -3957,13 +3958,27 @@ class TestChannelScopeWiring:
                 channels |= await _reg.get_child_channels(_sid, _owner)
             return channels
 
-        # First call — 1 child
-        result1 = await _pm_channel_scope()
-        assert result1 == {"C_PPM", "C_CHILD1"}
+        mock_client = AsyncMock()
+        mock_client.channel_id = _own_cid
+        mock_fetch_result = MagicMock()
+        mock_fetch_result.messages = []
+        mock_fetch_result.has_more = False
+        mock_client.fetch_history = AsyncMock(return_value=mock_fetch_result)
 
-        # Second call — new child appears dynamically
-        result2 = await _pm_channel_scope()
-        assert result2 == {"C_PPM", "C_CHILD1", "C_CHILD2"}
+        tools = {
+            t.name: t
+            for t in create_summon_mcp_tools(mock_client, allowed_channels=_pm_channel_scope)
+        }
+        slack_read_history = tools["slack_read_history"]
+
+        # First resolver call returns {C_PPM, C_CHILD1} — C_CHILD2 not yet in scope
+        result1 = await slack_read_history.handler({"channel": "C_CHILD2"})
+        assert result1["is_error"] is True
+
+        # Second resolver call returns {C_PPM, C_CHILD1, C_CHILD2} — new child now in scope
+        result2 = await slack_read_history.handler({"channel": "C_CHILD2"})
+        assert not result2.get("is_error")
+        assert result2.get("content")
 
     async def test_read_history_rejects_unauthorized_channel(self):
         """slack_read_history rejects access to channels not in the resolver."""

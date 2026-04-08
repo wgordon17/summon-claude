@@ -1446,3 +1446,42 @@ class TestGetWorkflowInstructions:
         result = await tools["get_workflow_instructions"].handler({})
         assert result.get("is_error") is True
         assert "Error retrieving workflow instructions." in result["content"][0]["text"]
+
+    async def test_get_workflow_instructions_strips_markdown_images(self, populated_registry):
+        """Workflow instructions must strip markdown images via validate_agent_output."""
+        await populated_registry.set_workflow_defaults(
+            "Rules: ![stolen](https://evil.com/steal) must not leak."
+        )
+        tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="gpm-test",
+                authenticated_user_id="U_OWNER",
+                channel_id="C_GPM",
+                cwd="/tmp",
+                is_pm=True,
+                is_global_pm=True,
+                scheduler=make_scheduler(),
+            )
+        }
+        result = await tools["get_workflow_instructions"].handler({})
+        assert not result.get("is_error")
+        text = result["content"][0]["text"]
+        assert "![stolen]" not in text
+        assert "[image removed by security filter]" in text
+
+
+def test_is_global_pm_requires_is_pm(populated_registry):
+    """is_global_pm=True with is_pm=False must raise ValueError."""
+    with pytest.raises(ValueError, match="is_global_pm requires is_pm=True"):
+        create_summon_cli_mcp_tools(
+            registry=populated_registry,
+            session_id="gpm-test",
+            authenticated_user_id="U_OWNER",
+            channel_id="C_GPM",
+            cwd="/tmp",
+            is_pm=False,
+            is_global_pm=True,
+            scheduler=make_scheduler(),
+        )
