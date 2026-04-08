@@ -13,6 +13,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from summon_claude.config import get_browser_auth_dir
 
@@ -549,7 +550,6 @@ async def _resolve_workspace_url_from_page(page, team_id: str) -> str | None:  #
     from the ``/client/{TEAM_ID}`` URL path).
     """
     import time  # noqa: PLC0415
-    from urllib.parse import urlparse  # noqa: PLC0415
 
     deadline = time.monotonic() + _USER_ID_POLL_TIMEOUT
     while time.monotonic() < deadline:
@@ -674,9 +674,17 @@ async def interactive_slack_auth(  # noqa: PLR0915
         async def _monitor_page(target) -> None:  # type: ignore[no-untyped-def]
             """Wait for a single page to reach /client/."""
             try:
-                await target.wait_for_url("**/client/**", timeout=0, wait_until="commit")
-                auth_page_ref[0] = target
-                auth_done.set()
+                await target.wait_for_url(
+                    "https://*.slack.com/client/**",
+                    timeout=0,
+                    wait_until="commit",
+                )
+                if not auth_done.is_set():
+                    auth_page_ref[0] = target
+                    auth_done.set()
+            except asyncio.CancelledError:
+                logger.debug("Page monitor cancelled for %s", target.url)
+                raise
             except Exception as exc:
                 logger.debug("Page monitor ended for %s: %s", target.url, exc)
 
@@ -740,7 +748,7 @@ async def interactive_slack_auth(  # noqa: PLR0915
 
         if timed_out:
             all_pages = [page, *extra_pages]
-            page_urls = [p.url for p in all_pages]
+            page_urls = [pg.url for pg in all_pages]
             await browser.close()
             raise TimeoutError(
                 f"Slack login not completed within {_AUTH_TIMEOUT_S}s. "
@@ -752,14 +760,10 @@ async def interactive_slack_auth(  # noqa: PLR0915
 
         # Validate auth_page landed on a Slack domain (defense-in-depth
         # against a rogue tab navigating to a /client/-matching URL)
-        from urllib.parse import urlparse  # noqa: PLC0415
-
-        _auth_parsed = urlparse(auth_page.url)
-        if not _auth_parsed.netloc.endswith(".slack.com"):
+        parsed = urlparse(auth_page.url)
+        if not (parsed.netloc.endswith(".slack.com") and "@" not in parsed.netloc):
             await browser.close()
-            raise RuntimeError(
-                f"Authenticated page is not on a Slack domain: {_auth_parsed.netloc}"
-            )
+            raise RuntimeError(f"Authenticated page is not on a Slack domain: {parsed.netloc}")
 
         logger.info("Authenticated at %s", auth_page.url)
 

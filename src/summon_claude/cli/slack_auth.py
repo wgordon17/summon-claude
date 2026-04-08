@@ -530,7 +530,7 @@ def _fetch_channels_via_playwright(
 
             try:
                 await page.wait_for_url(
-                    "**/client/**",
+                    "https://*.slack.com/client/**",
                     timeout=30000,
                     wait_until="commit",
                 )

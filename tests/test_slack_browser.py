@@ -477,12 +477,27 @@ class TestInteractiveSlackAuth:
 
 
 def _make_interactive_auth_mocks(tmp_path, page_urls):
-    """Build Playwright mock chain for interactive_slack_auth tests."""
+    """Build Playwright mock chain for interactive_slack_auth tests.
+
+    ``page_urls`` is a sequence of URL strings. The first value is returned on
+    the initial ``page.url`` read (redirect-detection after goto). All subsequent
+    reads return the last value in the sequence, so tests remain correct even if
+    new ``page.url`` reads are added to the production code.
+    """
     auth_dir = tmp_path / "browser_auth"
     auth_dir.mkdir(exist_ok=True)
 
     mock_page = AsyncMock()
-    url_mock = PropertyMock(side_effect=page_urls)
+    _url_iter = iter(page_urls)
+    _url_fallback = page_urls[-1] if page_urls else ""
+
+    def _url_side_effect():
+        try:
+            return next(_url_iter)
+        except StopIteration:
+            return _url_fallback
+
+    url_mock = PropertyMock(side_effect=_url_side_effect)
     type(mock_page).url = url_mock
     mock_page.bring_to_front = AsyncMock()
     mock_page.goto = AsyncMock()
@@ -562,7 +577,10 @@ class TestEnterpriseGridAuth:
         mock_page = AsyncMock()
         mock_page.evaluate = AsyncMock(return_value={"T123": {"url": "https://ext.slack.com/"}})
 
-        with _patch("summon_claude.slack_browser._USER_ID_POLL_TIMEOUT", 0.1):
+        with (
+            _patch("summon_claude.slack_browser._USER_ID_POLL_TIMEOUT", 0.1),
+            _patch("summon_claude.slack_browser.asyncio.sleep", new=AsyncMock()),
+        ):
             result = await _resolve_workspace_url_from_page(mock_page, "T999")
 
         assert result is None
@@ -1014,6 +1032,28 @@ class TestSecurityHardening:
 
             _save_workspace_config(result, "https://evil.example.com", "chrome")
 
+    @pytest.mark.parametrize(
+        "bad_url",
+        [
+            "http://myteam.slack.com",  # http scheme rejected
+            "https://user@myteam.slack.com",  # userinfo in netloc rejected
+        ],
+    )
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_save_workspace_config_rejects_invalid_url_parametrized(self, bad_url):
+        """_save_workspace_config raises ValueError for http scheme and userinfo URLs."""
+        from summon_claude.slack_browser import SlackAuthResult
+
+        result = SlackAuthResult(state_file=Path("/tmp/t.json"), user_id="U1")
+
+        with (
+            _patch("summon_claude.cli.slack_auth._pick_channels", return_value=""),
+            pytest.raises(ValueError, match="Refusing to save"),
+        ):
+            from summon_claude.cli.slack_auth import _save_workspace_config
+
+            _save_workspace_config(result, bad_url, "chrome")
+
     def test_save_workspace_config_accepts_valid_url(self, tmp_path):
         """_save_workspace_config accepts valid Slack URLs."""
         from summon_claude.slack_browser import SlackAuthResult
@@ -1084,6 +1124,31 @@ class TestSecurityHardening:
         result = _resolve_client_url("https://myteam.slack.com", state_file)
         assert result == "https://app.slack.com/client/T123"
 
+    def test_resolve_client_url_accepts_slack_origin(self, tmp_path):
+        """_resolve_client_url accepts https://slack.com origin."""
+        from summon_claude.slack_browser import _resolve_client_url
+
+        state_file = tmp_path / "state.json"
+        state = {
+            "origins": [
+                {
+                    "origin": "https://slack.com",
+                    "localStorage": [
+                        {
+                            "name": "localConfig_v2",
+                            "value": json.dumps(
+                                {"teams": {"T456": {"url": "https://myteam.slack.com/"}}}
+                            ),
+                        }
+                    ],
+                }
+            ]
+        }
+        state_file.write_text(json.dumps(state))
+
+        result = _resolve_client_url("https://myteam.slack.com", state_file)
+        assert result == "https://app.slack.com/client/T456"
+
     def test_channel_error_scrubs_tokens(self):
         """_extract_channels scrubs xoxc- tokens from error log messages."""
         import logging
@@ -1106,3 +1171,64 @@ class TestSecurityHardening:
         logged_msg = str(info_calls[0])
         assert "xoxc-" not in logged_msg
         assert "[TOKEN]" in logged_msg
+
+    def test_channel_exception_scrubs_tokens(self):
+        """_extract_channels scrubs xoxc- tokens from exception log messages (except branch)."""
+        from summon_claude.slack_browser import _extract_channels
+
+        mock_page = AsyncMock()
+        mock_page.evaluate = AsyncMock(
+            side_effect=Exception("xoxc-leaked-token-abc evaluation failed")
+        )
+
+        with _patch("summon_claude.slack_browser.logger") as mock_logger:
+            asyncio.run(_extract_channels(mock_page, "https://test.slack.com"))
+
+        # The info log call for the exception path should have the token scrubbed
+        info_calls = [c for c in mock_logger.info.call_args_list if "Channel API" in str(c)]
+        assert len(info_calls) >= 1
+        logged_msg = str(info_calls[0])
+        assert "xoxc-" not in logged_msg
+        assert "[TOKEN]" in logged_msg
+
+    @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    async def test_auth_domain_validation_rejects_non_slack_domain(self, tmp_path):
+        """interactive_slack_auth raises RuntimeError if auth page lands on non-Slack domain."""
+        from summon_claude.slack_browser import interactive_slack_auth
+
+        page_urls = [
+            "https://myteam.slack.com",  # read 1: redirect detection (post-goto)
+            "https://evil.com/client/T123/C456",  # read 2+: domain validation check
+        ]
+        auth_dir, mock_page, mock_context, mock_browser, mock_pw_cm, _ = (
+            _make_interactive_auth_mocks(tmp_path, page_urls)
+        )
+
+        with (
+            _patch("summon_claude.slack_browser.get_browser_auth_dir", return_value=auth_dir),
+            _patch("playwright.async_api.async_playwright", return_value=mock_pw_cm),
+            pytest.raises(RuntimeError, match="not on a Slack domain"),
+        ):
+            await interactive_slack_auth("https://myteam.slack.com")
+
+    @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    async def test_auth_domain_validation_rejects_userinfo(self, tmp_path):
+        """interactive_slack_auth raises RuntimeError if auth page URL has userinfo."""
+        from summon_claude.slack_browser import interactive_slack_auth
+
+        page_urls = [
+            "https://myteam.slack.com",  # read 1: redirect detection
+            "https://user@app.slack.com/client/T123/C456",  # read 2+: userinfo bypass attempt
+        ]
+        auth_dir, mock_page, mock_context, mock_browser, mock_pw_cm, _ = (
+            _make_interactive_auth_mocks(tmp_path, page_urls)
+        )
+
+        with (
+            _patch("summon_claude.slack_browser.get_browser_auth_dir", return_value=auth_dir),
+            _patch("playwright.async_api.async_playwright", return_value=mock_pw_cm),
+            pytest.raises(RuntimeError, match="not on a Slack domain"),
+        ):
+            await interactive_slack_auth("https://myteam.slack.com")
