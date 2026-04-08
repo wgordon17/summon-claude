@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -795,16 +796,18 @@ class TestNextSteps:
         assert "summon doctor" in out
 
 
-_BRIDGE_SETTINGS = {
-    "hooks": {
-        "PreToolUse": [
-            {
-                "matcher": "EnterWorktree",
-                "hooks": [{"type": "command", "command": "summon-pre-worktree.sh"}],
-            }
-        ]
+_BRIDGE_SETTINGS = types.MappingProxyType(
+    {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "EnterWorktree",
+                    "hooks": [{"type": "command", "command": "summon-pre-worktree.sh"}],
+                }
+            ]
+        }
     }
-}
+)
 
 
 class TestShowThinkingSummariesWarn:

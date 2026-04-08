@@ -564,7 +564,7 @@ class TestShowThinkingSummariesManagement:
         settings = _read_settings(tmp_path)
         assert settings.get("showThinkingSummaries") is True
 
-    def test_idempotent_install_no_duplicate_managed_settings(self, tmp_path):
+    def test_idempotent_install_no_duplicate_managed_settings(self, tmp_path, capsys):
         """Installing twice does not duplicate managed_settings entries."""
         _invoke_install(tmp_path)
         _invoke_install(tmp_path)
@@ -573,6 +573,9 @@ class TestShowThinkingSummariesManagement:
         state = json.loads(state_file.read_text())
         managed = state.get("managed_settings", [])
         assert managed.count("showThinkingSummaries") == 1
+
+        captured = capsys.readouterr()
+        assert captured.out.count("Enabled showThinkingSummaries") == 1
 
     def test_uninstall_cleans_up_state_file(self, tmp_path):
         """uninstall_hooks deletes the state file."""
@@ -641,7 +644,7 @@ class TestShowThinkingSummariesManagement:
         settings = _read_settings(tmp_path)
         assert settings.get("showThinkingSummaries") is False
 
-    def test_uninstall_managed_settings_only_no_empty_hooks_injected(self, tmp_path):
+    def test_uninstall_managed_settings_only_no_empty_hooks_injected(self, tmp_path, capsys):
         """Uninstalling managed settings without hooks doesn't inject empty hooks key."""
         _invoke_install(tmp_path)
 
@@ -651,6 +654,9 @@ class TestShowThinkingSummariesManagement:
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.write_text(json.dumps(settings))
 
+        # Clear capsys buffer from install before checking uninstall output
+        capsys.readouterr()
+
         with _patch_paths(tmp_path):
             from summon_claude.cli.hooks import uninstall_hooks
 
@@ -659,3 +665,31 @@ class TestShowThinkingSummariesManagement:
         final = _read_settings(tmp_path)
         assert "showThinkingSummaries" not in final
         assert "hooks" not in final
+
+        captured = capsys.readouterr()
+        assert "Removed managed setting: showThinkingSummaries" in captured.out
+        assert "Updated ~/.claude/settings.json." in captured.out
+        assert "No summon entries found" not in captured.out
+
+    def test_uninstall_no_false_message_when_setting_already_removed(self, tmp_path, capsys):
+        """No 'No summon entries found' when state file exists but setting already removed."""
+        _invoke_install(tmp_path)
+
+        # Manually remove both hooks AND showThinkingSummaries from settings
+        settings = _read_settings(tmp_path)
+        settings.pop("hooks", None)
+        settings.pop("showThinkingSummaries", None)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.write_text(json.dumps(settings))
+
+        capsys.readouterr()
+
+        with _patch_paths(tmp_path):
+            from summon_claude.cli.hooks import uninstall_hooks
+
+            uninstall_hooks()
+
+        captured = capsys.readouterr()
+        assert "No summon entries found" not in captured.out
+        # Scripts still exist from install — confirm cleanup ran
+        assert "Removed" in captured.out

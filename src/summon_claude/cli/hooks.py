@@ -108,17 +108,20 @@ def _write_settings(settings: dict[str, Any]) -> None:
     _SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
 
 
-def _read_state() -> dict:
-    """Read ~/.claude/hooks/.summon-state.json, returning {} on any error."""
+def _read_state() -> dict[str, Any]:
+    """Read ~/.claude/hooks/.summon-state.json, returning {} if missing or unreadable."""
     try:
         data = json.loads(_STATE_FILE.read_text())
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, ValueError) as exc:
+        if not isinstance(exc, FileNotFoundError):
+            click.echo(f"Warning: could not read state file: {exc}", err=True)
         return {}
 
 
-def _write_state(state: dict) -> None:
+def _write_state(state: dict[str, Any]) -> None:
     """Write state dict to ~/.claude/hooks/.summon-state.json with 2-space indent."""
+    _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     _STATE_FILE.write_text(json.dumps(state, indent=2) + "\n")
 
 
@@ -212,7 +215,7 @@ def install_hooks() -> None:
         managed = state.get("managed_settings")
         if not isinstance(managed, list):
             managed = []
-            state["managed_settings"] = managed
+        state["managed_settings"] = managed
         if "showThinkingSummaries" not in managed:
             managed.append("showThinkingSummaries")
         _write_state(state)
@@ -248,6 +251,7 @@ def uninstall_hooks() -> None:
     hooks_section: dict[str, Any] = settings.get("hooks", {})
     changed = False
     hooks_changed = False
+    state_file_existed = _STATE_FILE.exists()
 
     for hook_type in ("PreToolUse", "PostToolUse"):
         marker = _PRE_MARKER if hook_type == "PreToolUse" else _POST_MARKER
@@ -271,9 +275,12 @@ def uninstall_hooks() -> None:
         if hooks_changed:
             settings["hooks"] = hooks_section
         _write_settings(settings)
-        if hooks_changed:
-            click.echo("Removed summon hook entries from ~/.claude/settings.json.")
-    else:
+        click.echo(
+            "Removed summon hook entries from ~/.claude/settings.json."
+            if hooks_changed
+            else "Updated ~/.claude/settings.json."
+        )
+    elif not state_file_existed:
         click.echo("No summon entries found in ~/.claude/settings.json.")
 
     _STATE_FILE.unlink(missing_ok=True)
