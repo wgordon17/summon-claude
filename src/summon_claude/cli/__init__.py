@@ -620,8 +620,6 @@ def cmd_init(ctx: click.Context) -> None:
 
     # Opportunistically refresh model cache via throwaway SDK session
     if cli_status.found:
-        import asyncio  # noqa: PLC0415
-
         from summon_claude.cli.model_cache import (  # noqa: PLC0415
             cache_sdk_models,
             load_cached_models,
