@@ -69,6 +69,7 @@ from summon_claude.sessions.context import (
     compute_context_usage,
     derive_transcript_path,
     get_last_step_usage,
+    reconcile_context_window_sizes,
 )
 from summon_claude.sessions.permissions import PermissionHandler
 from summon_claude.sessions.prompts import (
@@ -2248,6 +2249,13 @@ class SummonSession:
                             models = server_info.get("models", [])
                             if models:
                                 self._available_models = models
+                                from summon_claude.cli.model_cache import (  # noqa: PLC0415
+                                    cache_sdk_models,
+                                )
+
+                                init_model = server_info.get("model")
+                                cache_sdk_models(models, None, init_model)
+                                reconcile_context_window_sizes(models)
                             # Best-effort: resolve initial model from init data
                             init_model = server_info.get("model")
                             if init_model and (not self._model or self._model == "default"):

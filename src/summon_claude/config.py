@@ -1110,6 +1110,64 @@ def _validate_quiet_hours(v: str) -> str | None:
     return None
 
 
+_FALLBACK_MODEL_CHOICES: tuple[str, ...] = (
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+)
+
+
+def _default_sentinel(default_model: str | None) -> str:
+    """Build the 'default (...)' sentinel label for the model picker."""
+    if default_model:
+        return f"default (currently: {default_model})"
+    return "default (auto)"
+
+
+def get_model_choices() -> list[str]:
+    """Return model choices for the init wizard and config set.
+
+    Tries the TTL cache first; falls back to _FALLBACK_MODEL_CHOICES.
+    Always prepends a "default (...)" sentinel and appends "other".
+    Wraps entirely in try/except — ImportError from model_cache is non-fatal.
+    """
+    try:
+        from summon_claude.cli.model_cache import load_cached_models  # noqa: PLC0415
+
+        result = load_cached_models()
+        if result is not None:
+            models, default_model = result
+            values = [v for m in models if (v := m.get("value"))]
+            if values:
+                return [_default_sentinel(default_model), *values, "other"]
+    except Exception:
+        logger.debug("Failed to load cached models", exc_info=True)
+    return [_default_sentinel(None), *_FALLBACK_MODEL_CHOICES, "other"]
+
+
+def _warn_unrecognized_model(value: str) -> str | None:
+    """Soft-validate a model string; warn but never block.
+
+    Returns None always. Emits a click.echo warning if value does not
+    prefix-match any key in CONTEXT_WINDOW_SIZES (the canonical known-model set).
+    """
+    try:
+        import click  # noqa: PLC0415
+
+        from summon_claude.sessions.context import CONTEXT_WINDOW_SIZES  # noqa: PLC0415
+
+        if not any(value.startswith(prefix) for prefix in CONTEXT_WINDOW_SIZES):
+            click.echo(
+                f"Warning: '{value}' is not a recognized model. It will be used as-is.",
+                err=True,
+            )
+    except Exception:
+        logger.debug("Failed to warn unrecognized model", exc_info=True)
+    return None
+
+
 CONFIG_OPTIONS: list[ConfigOption] = [
     # Slack Credentials
     ConfigOption(
@@ -1161,7 +1219,9 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         group="Session Defaults",
         label="Default Model",
         help_text="Claude model to use for sessions (e.g. claude-opus-4-6)",
-        input_type="text",
+        input_type="choice",
+        choices_fn=get_model_choices,
+        validate_fn=_warn_unrecognized_model,
     ),
     ConfigOption(
         field_name="default_effort",
@@ -1223,7 +1283,9 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         group="Scribe",
         label="Scribe Model",
         help_text="Claude model for the scribe agent (default: inherits default_model)",
-        input_type="text",
+        input_type="choice",
+        choices_fn=get_model_choices,
+        validate_fn=_warn_unrecognized_model,
         visible=_scribe_enabled,
     ),
     ConfigOption(
@@ -1321,7 +1383,9 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         group="Global PM",
         label="Global PM Model",
         help_text="Claude model for the Global PM (default: inherits default_model)",
-        input_type="text",
+        input_type="choice",
+        choices_fn=get_model_choices,
+        validate_fn=_warn_unrecognized_model,
         advanced=True,
     ),
     # Advanced options below this point

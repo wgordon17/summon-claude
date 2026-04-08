@@ -462,3 +462,125 @@ class TestCwdValidators:
     def test_scribe_cwd_accepts_none(self):
         cfg = _make_config(scribe_cwd=None)
         assert cfg.scribe_cwd is None
+
+
+class TestModelChoices:
+    def test_get_model_choices_with_cache_and_default(self):
+        """Mock cached models with default → sentinel shows 'currently: ...'."""
+        from summon_claude.config import get_model_choices
+
+        with patch(
+            "summon_claude.cli.model_cache.load_cached_models",
+            return_value=([{"value": "model-a"}, {"value": "model-b"}], "model-a"),
+        ):
+            choices = get_model_choices()
+        assert choices == ["default (currently: model-a)", "model-a", "model-b", "other"]
+
+    def test_get_model_choices_with_cache_no_default(self):
+        """Mock cached models without default → sentinel shows 'auto'."""
+        from summon_claude.config import get_model_choices
+
+        with patch(
+            "summon_claude.cli.model_cache.load_cached_models",
+            return_value=([{"value": "model-a"}, {"value": "model-b"}], None),
+        ):
+            choices = get_model_choices()
+        assert choices == ["default (auto)", "model-a", "model-b", "other"]
+
+    def test_get_model_choices_without_cache(self):
+        """Cache returns None → fallback to _FALLBACK_MODEL_CHOICES."""
+        from summon_claude.config import _FALLBACK_MODEL_CHOICES, get_model_choices
+
+        with patch(
+            "summon_claude.cli.model_cache.load_cached_models",
+            return_value=None,
+        ):
+            choices = get_model_choices()
+        assert choices == ["default (auto)", *list(_FALLBACK_MODEL_CHOICES), "other"]
+
+    def test_get_model_choices_skips_missing_value(self):
+        """Entries without 'value' key are skipped."""
+        from summon_claude.config import get_model_choices
+
+        with patch(
+            "summon_claude.cli.model_cache.load_cached_models",
+            return_value=([{"value": "model-a"}, {"displayName": "no-value"}], None),
+        ):
+            choices = get_model_choices()
+        assert choices == ["default (auto)", "model-a", "other"]
+
+    def test_get_model_choices_all_entries_lack_value(self):
+        """All entries lack 'value' key → falls back to static list."""
+        from summon_claude.config import _FALLBACK_MODEL_CHOICES, get_model_choices
+
+        with patch(
+            "summon_claude.cli.model_cache.load_cached_models",
+            return_value=([{"displayName": "A"}, {"displayName": "B"}], None),
+        ):
+            choices = get_model_choices()
+        assert choices == ["default (auto)", *list(_FALLBACK_MODEL_CHOICES), "other"]
+
+    def test_warn_unrecognized_model_known(self):
+        """Known model (prefix-matches CONTEXT_WINDOW_SIZES) → returns None, no warning."""
+        from unittest.mock import patch as _patch
+
+        from summon_claude.config import _warn_unrecognized_model
+
+        with _patch("click.echo") as mock_echo:
+            result = _warn_unrecognized_model("claude-opus-4-6")
+        assert result is None
+        mock_echo.assert_not_called()
+
+    def test_warn_unrecognized_model_unknown(self):
+        """Unknown model (no CONTEXT_WINDOW_SIZES match) → returns None, warns to stderr."""
+        from unittest.mock import patch as _patch
+
+        from summon_claude.config import _warn_unrecognized_model
+
+        with _patch("click.echo") as mock_echo:
+            result = _warn_unrecognized_model("totally-unknown-model-xyz")
+        assert result is None
+        mock_echo.assert_called_once()
+        assert "totally-unknown-model-xyz" in mock_echo.call_args[0][0]
+        assert mock_echo.call_args[1].get("err") is True
+
+    def test_warn_unrecognized_model_prefix_match_no_warning(self):
+        """Dated snapshot prefix-matches CONTEXT_WINDOW_SIZES → no warning."""
+        from unittest.mock import patch as _patch
+
+        from summon_claude.config import _warn_unrecognized_model
+
+        with _patch("click.echo") as mock_echo:
+            # "claude-opus-4-6-20260401" starts with "claude-opus-4-6" in CONTEXT_WINDOW_SIZES
+            result = _warn_unrecognized_model("claude-opus-4-6-20260401")
+        assert result is None
+        mock_echo.assert_not_called()
+
+    def test_fallback_model_choices_subset_of_context_window_sizes(self):
+        """Every _FALLBACK_MODEL_CHOICES entry prefix-matches CONTEXT_WINDOW_SIZES.
+
+        Guard test: catches staleness if fallback list gets out of sync.
+        """
+        from summon_claude.config import _FALLBACK_MODEL_CHOICES
+        from summon_claude.sessions.context import CONTEXT_WINDOW_SIZES
+
+        for choice in _FALLBACK_MODEL_CHOICES:
+            assert any(choice.startswith(key) for key in CONTEXT_WINDOW_SIZES), (
+                f"_FALLBACK_MODEL_CHOICES entry {choice!r} has no prefix match"
+            )
+
+    def test_model_config_options_use_choice_type(self):
+        """All three model ConfigOptions use input_type='choice' and choices_fn."""
+        from summon_claude.config import CONFIG_OPTIONS, get_model_choices
+
+        model_fields = {"default_model", "scribe_model", "global_pm_model"}
+        matched = {opt.field_name: opt for opt in CONFIG_OPTIONS if opt.field_name in model_fields}
+        missing = model_fields - set(matched.keys())
+        assert not missing, f"Missing model fields: {missing}"
+        for field_name, opt in matched.items():
+            assert opt.input_type == "choice", (
+                f"{field_name}: expected input_type='choice', got {opt.input_type!r}"
+            )
+            assert opt.choices_fn is get_model_choices, (
+                f"{field_name}: choices_fn is not get_model_choices"
+            )

@@ -219,12 +219,24 @@ def config_set(key: str, value: str, override: str | None = None) -> None:
                 sys.exit(1)
         elif option.choices:
             choices = list(option.choices)
-        if choices and value not in choices:
+        # Sentinel values ("other", "default (...)") are UI-only choices from get_model_choices().
+        # Block them for options with validate_fn (model fields) — others don't use sentinels.
+        _is_sentinel = value == "other" or value.startswith("default (")
+        if _is_sentinel and choices and option.validate_fn:
+            click.echo(
+                f"Invalid value for {key}: {value!r} is a UI placeholder, not a valid value.",
+                err=True,
+            )
+            sys.exit(1)
+        # Strip sentinels so they don't appear in error messages.
+        choices = [c for c in choices if c != "other" and not c.startswith("default (")]
+        if choices and value not in choices and not option.validate_fn:
             click.echo(
                 f"Invalid value for {key}: {value!r}. Must be one of: {', '.join(choices)}",
                 err=True,
             )
             sys.exit(1)
+        # else: soft-validation option (model fields) — accept value; validate_fn fires below
 
     # Run option validator if present
     if option and option.validate_fn and value:

@@ -4867,3 +4867,51 @@ class TestShutdownCanvasException:
 
         assert session._shutdown_completed is True
         mock_registry.log_event.assert_awaited_once()
+
+
+class TestServerInfoModelCacheWiring:
+    """Test that server_info models trigger cache refresh and reconciliation."""
+
+    async def test_server_info_triggers_cache_and_reconciliation(self, registry):
+        """When server_info.models is non-empty, both cache_sdk_models and
+        reconcile_context_window_sizes are called with the model list."""
+        models = [{"value": "claude-opus-4-6"}]
+
+        class _FakeSDKClient:
+            def __init__(self, options):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                pass
+
+            async def get_server_info(self):
+                return {"models": models, "commands": []}
+
+        async def fake_consumer(_rt, _claude, _streamer):
+            raise RuntimeError("stop")
+
+        async def fake_preprocessor(_rt, _claude):
+            await asyncio.sleep(999)
+
+        session = make_session()
+        rt = make_rt(registry)
+
+        with (
+            patch("summon_claude.sessions.session.ClaudeSDKClient", _FakeSDKClient),
+            patch("summon_claude.sessions.session.create_summon_mcp_server", return_value={}),
+            patch("summon_claude.sessions.session.discover_installed_plugins", return_value=[]),
+            patch.object(session, "_run_preprocessor", fake_preprocessor),
+            patch.object(session, "_run_response_consumer", fake_consumer),
+            patch("summon_claude.cli.model_cache.cache_sdk_models") as mock_cache,
+            patch(
+                "summon_claude.sessions.session.reconcile_context_window_sizes"
+            ) as mock_reconcile,
+            contextlib.suppress(RuntimeError),
+        ):
+            await session._run_session_tasks(rt, AsyncMock())
+
+        mock_cache.assert_called_once_with(models, None, None)
+        mock_reconcile.assert_called_once_with(models)

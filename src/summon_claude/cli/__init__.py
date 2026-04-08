@@ -618,6 +618,28 @@ def cmd_init(ctx: click.Context) -> None:
         click.echo(f"  Existing config found at {config_file}")
         click.echo("  Press Enter to keep current values.\n")
 
+    # Opportunistically refresh model cache via throwaway SDK session
+    if cli_status.found:
+        from summon_claude.cli.model_cache import (  # noqa: PLC0415
+            cache_sdk_models,
+            load_cached_models,
+            query_sdk_models,
+        )
+
+        cached = load_cached_models()
+        if cached is None:
+            click.echo("  Discovering available models...", nl=False)
+            sdk_result = asyncio.run(query_sdk_models(cli_version=cli_status.version))
+            if sdk_result is not None:
+                sdk_models, sdk_cli_version, sdk_default = sdk_result
+                cache_sdk_models(sdk_models, sdk_cli_version, sdk_default)
+                if sdk_models:
+                    click.echo(" done")
+                else:
+                    click.echo(" skipped (no models returned)")
+            else:
+                click.echo(" skipped (CLI not authenticated)")
+
     # Collect values via prompts
     collected: dict[str, str] = {}
     current_group = ""
@@ -715,12 +737,33 @@ def cmd_init(ctx: click.Context) -> None:
             else:
                 choices = []
             prompt_default = current_value or (str(default) if default is not None else "")
+            # Sentinel-aware default handling for model fields.
+            if not prompt_default:
+                # Fresh install with no current value: select the "default (...)" sentinel
+                default_choice = next((c for c in choices if c.startswith("default (")), None)
+                if default_choice:
+                    prompt_default = default_choice
+                elif choices:
+                    prompt_default = choices[0]
+            elif choices and prompt_default not in choices:
+                # Existing custom model not in choices: insert it before "other"
+                insert_idx = choices.index("other") if "other" in choices else len(choices)
+                choices = [*choices[:insert_idx], prompt_default, *choices[insert_idx:]]
             value = click.prompt(
                 f"    {opt.label}",
                 type=click.Choice(choices, case_sensitive=False) if choices else None,
                 default=prompt_default or None,
                 show_default=True,
             )
+            # Sentinel post-processing
+            if value.startswith("default ("):
+                value = ""
+            elif value == "other":
+                raw_custom = click.prompt(f"    {opt.label} (custom)", default="")
+                value = raw_custom if raw_custom else (current_value or "")
+            # Soft-validate if validate_fn present (warn-only; return value always None)
+            if value and opt.validate_fn:
+                opt.validate_fn(value)
 
         elif opt.input_type == "flag":
             current_bool = False
