@@ -68,6 +68,36 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def write_env_file(path: Path, values: dict[str, str], *, atomic: bool = False) -> None:
+    """Write a dict as KEY=VALUE lines to a .env file with 0o600 permissions.
+
+    Sanitizes newlines from all values to prevent .env injection.
+    When atomic=True, writes to a temp file first then uses os.replace() for
+    atomic rename (prevents partial-write corruption on power loss).
+    """
+    content = "\n".join(
+        f"{k}={v.replace(chr(10), '').replace(chr(13), '')}" for k, v in values.items()
+    )
+    if content:
+        content += "\n"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    write_path = path.parent / (path.name + ".tmp") if atomic else path
+    try:
+        fd = os.open(str(write_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        if atomic:
+            write_path.replace(path)
+    except BaseException:
+        if atomic:
+            with contextlib.suppress(OSError):
+                write_path.unlink()
+        raise
+
+
 def _require_config_file(override: str | None = None):
     """Return the config file Path if it exists, else print a hint and return None."""
     config_file = get_config_file(override)
@@ -268,8 +298,12 @@ def config_set(key: str, value: str, override: str | None = None) -> None:
         new_lines.append(f"{key}={value}")
 
     config_file.write_text("\n".join(new_lines) + "\n")
-    with contextlib.suppress(OSError):
-        config_file.chmod(0o600)
+    try:
+        fd = os.open(str(config_file), os.O_RDONLY)
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+    except OSError:
+        pass
     click.echo(f"Set {key} in {config_file}")
 
 
