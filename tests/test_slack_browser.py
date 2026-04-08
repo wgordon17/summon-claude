@@ -1215,8 +1215,6 @@ class TestSecurityHardening:
 
     def test_channel_error_scrubs_tokens(self):
         """_extract_channels scrubs xoxc- tokens from error log messages."""
-        import logging
-
         from summon_claude.slack_browser import _extract_channels
 
         mock_page = AsyncMock()
