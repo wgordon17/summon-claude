@@ -1223,7 +1223,7 @@ async def _run_probe(cfg: _ProbeConfig) -> AuthProbeResult:
         has_client = False
         with contextlib.suppress(Exception):
             await page.wait_for_url(
-                "**/client/**",
+                "https://*.slack.com/client/**",
                 timeout=int(cfg.timeout_s * 1000),
                 wait_until="commit",
             )
@@ -1561,7 +1561,7 @@ async def _start_real_monitor(
     # Wait for authenticated view — skip if cookies expired
     try:
         await monitor._page.wait_for_url(  # type: ignore[union-attr]
-            "**/client/**",
+            "https://*.slack.com/client/**",
             timeout=30_000,
             wait_until="commit",
         )
@@ -1738,7 +1738,7 @@ class TestRealSlack:
 
         try:
             await monitor._page.wait_for_url(  # type: ignore[union-attr]
-                "**/client/**",
+                "https://*.slack.com/client/**",
                 timeout=30_000,
                 wait_until="commit",
             )

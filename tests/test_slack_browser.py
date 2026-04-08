@@ -420,7 +420,7 @@ class TestInteractiveSlackAuth:
             await interactive_slack_auth("https://test.slack.com")
 
     @pytest.mark.asyncio
-    async def test_non_timeout_exception_reraises_original(self, tmp_path):
+    async def test_non_timeout_exception_surfaces_as_timeout(self, tmp_path):
         """Non-timeout exceptions from wait_for_url are caught by _monitor_page.
 
         In the refactored code, NetworkError from page.wait_for_url is caught by
@@ -1225,8 +1225,6 @@ class TestSecurityHardening:
         )
 
         with _patch("summon_claude.slack_browser.logger") as mock_logger:
-            import asyncio
-
             asyncio.run(_extract_channels(mock_page, "https://test.slack.com"))
 
         # The info log call should have the token scrubbed
