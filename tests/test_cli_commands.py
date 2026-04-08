@@ -87,6 +87,10 @@ class TestCmdInit:
             ),
             patch("summon_claude.cli.config.config_check"),
             patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
+            patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
             ),
@@ -142,6 +146,10 @@ class TestCmdInit:
             ),
             patch("summon_claude.cli.config.config_check"),
             patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
+            patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
             ),
@@ -187,6 +195,10 @@ class TestCmdInit:
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
             patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
             patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
@@ -236,6 +248,10 @@ class TestCmdInit:
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
             patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
             patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
@@ -290,6 +306,10 @@ class TestCmdInit:
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
             patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
             patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
@@ -394,6 +414,10 @@ class TestCmdInit:
             ),
             patch("summon_claude.cli.config.config_check"),
             patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
+            patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
             ),
@@ -435,6 +459,10 @@ class TestCmdInit:
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
             patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
             patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
@@ -478,6 +506,10 @@ class TestCmdInit:
             ),
             patch("summon_claude.cli.config.config_check"),
             patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
+            patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
             ),
@@ -489,6 +521,57 @@ class TestCmdInit:
         content = config_file.read_text()
         # Empty "other" input on fresh install → value is "" → not stored (skipped)
         assert "SUMMON_DEFAULT_MODEL" not in content
+
+    def test_init_model_picker_other_empty_reinit_keeps_existing(self, tmp_path):
+        """Selecting 'other' then pressing Enter on re-init keeps the existing model."""
+        config_file = tmp_path / "config.env"
+        config_file.write_text(
+            "SUMMON_SLACK_BOT_TOKEN=xoxb-existing\n"
+            "SUMMON_SLACK_APP_TOKEN=xapp-existing\n"
+            "SUMMON_SLACK_SIGNING_SECRET=abcdef012345\n"
+            "SUMMON_DEFAULT_MODEL=my-existing-model\n"
+        )
+
+        inputs = (
+            "\n".join(
+                [
+                    "",  # slack_bot_token (keep existing)
+                    "",  # slack_app_token (keep existing)
+                    "",  # signing_secret (keep existing)
+                    "other",  # default_model: select "other" sentinel
+                    "",  # default_model (custom): empty → fall back to current_value
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # Configure advanced settings?
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
+            patch(
+                "summon_claude.cli.model_cache.query_sdk_models",
+                return_value=None,
+            ),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        content = config_file.read_text()
+        assert "SUMMON_DEFAULT_MODEL=my-existing-model" in content
 
     def test_init_reinit_custom_model_preserved(self, tmp_path):
         """Re-init with existing custom model inserts it into choices and preserves it on Enter."""
@@ -524,6 +607,10 @@ class TestCmdInit:
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
             ),
             patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
             patch(
                 "summon_claude.cli.model_cache.query_sdk_models",
                 return_value=None,
@@ -580,6 +667,50 @@ class TestCmdInit:
 
         assert result.exit_code == 0, f"Init failed: {result.output}"
         mock_cache.assert_called_once_with(sdk_models, "1.0.0")
+        assert "done" in result.output
+
+    def test_init_model_discovery_empty_models(self, tmp_path):
+        """When query_sdk_models returns ([], ver), output says 'skipped (no models returned)'."""
+        config_file = tmp_path / "config.env"
+
+        inputs = (
+            "\n".join(
+                [
+                    "xoxb-valid-bot-token",
+                    "xapp-valid-app-token",
+                    "abcdef012345",
+                    "default (auto)",  # default_model
+                    "high",  # default_effort
+                    "",  # channel_prefix
+                    "n",  # scribe_enabled
+                    "n",  # Configure advanced settings?
+                ]
+            )
+            + "\n"
+        )
+
+        with (
+            patch("summon_claude.cli.get_config_file", return_value=config_file),
+            patch("summon_claude.config.get_config_file", return_value=config_file),
+            patch(
+                "summon_claude.cli.preflight.check_claude_cli",
+                return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),
+            ),
+            patch("summon_claude.cli.config.config_check"),
+            patch(
+                "summon_claude.cli.model_cache.load_cached_models",
+                return_value=None,
+            ),
+            patch(
+                "summon_claude.cli.model_cache.query_sdk_models",
+                return_value=([], "1.0.0"),
+            ),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["init"], input=inputs)
+
+        assert result.exit_code == 0, f"Init failed: {result.output}"
+        assert "no models returned" in result.output
 
     def test_init_model_discovery_failure(self, tmp_path):
         """When query_sdk_models returns None, wizard continues with fallback choices."""

@@ -322,3 +322,13 @@ class TestReconcileContextWindowSizes:
             reconcile_context_window_sizes([{"value": "new-model"}])
         assert "new-model" not in ctx_mod._runtime_context_sizes
         assert any("cap reached" in r.message for r in caplog.records)
+
+    def test_reconcile_oversized_model_value_skipped(self, caplog):
+        """model_value longer than 200 chars → skipped with a WARNING, not added to overlay."""
+        import logging
+
+        oversized = "x" * 201
+        with caplog.at_level(logging.WARNING, logger="summon_claude.sessions.context"):
+            reconcile_context_window_sizes([{"value": oversized}])
+        assert oversized not in ctx_mod._runtime_context_sizes
+        assert any("oversized" in r.message for r in caplog.records)

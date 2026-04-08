@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -136,8 +138,6 @@ class TestLoadCachedModels:
 class TestQuerySdkModels:
     def test_query_sdk_models_success(self, tmp_path):
         """Mock ClaudeSDKClient → verify returns (models, cli_version)."""
-        import asyncio
-
         mock_server_info = {"models": _SAMPLE_MODELS}
         mock_client = AsyncMock()
         mock_client.get_server_info = AsyncMock(return_value=mock_server_info)
@@ -157,7 +157,86 @@ class TestQuerySdkModels:
 
     def test_query_sdk_models_failure(self, tmp_path):
         """Mock exception from ClaudeSDKClient → returns None."""
-        import asyncio
+        with patch(
+            "claude_agent_sdk.ClaudeSDKClient",
+            side_effect=RuntimeError("SDK error"),
+        ):
+            result = asyncio.run(query_sdk_models(cli_version="1.2.3"))
+
+        assert result is None
+
+    def test_query_sdk_models_timeout(self, tmp_path):
+        """asyncio.wait_for raises TimeoutError → returns None."""
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        def _timeout_wait_for(coro, *, timeout=None):
+            coro.close()  # prevent "coroutine was never awaited" warning
+            raise TimeoutError
+
+        with (
+            patch("claude_agent_sdk.ClaudeSDKClient", return_value=mock_client),
+            patch("asyncio.wait_for", side_effect=_timeout_wait_for),
+        ):
+            result = asyncio.run(query_sdk_models(cli_version="1.2.3"))
+
+        assert result is None
+
+    def test_query_sdk_models_empty_models_key_missing(self, tmp_path):
+        """server_info without 'models' key → returns ([], cli_version)."""
+        mock_client = AsyncMock()
+        mock_client.get_server_info = AsyncMock(return_value={})
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("claude_agent_sdk.ClaudeSDKClient", return_value=mock_client):
+            result = asyncio.run(query_sdk_models(cli_version="1.2.3"))
+
+        assert result == ([], "1.2.3")
+
+    def test_query_sdk_models_empty_models_list(self, tmp_path):
+        """server_info with empty models list → returns ([], cli_version)."""
+        mock_client = AsyncMock()
+        mock_client.get_server_info = AsyncMock(return_value={"models": []})
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("claude_agent_sdk.ClaudeSDKClient", return_value=mock_client):
+            result = asyncio.run(query_sdk_models(cli_version="1.2.3"))
+
+        assert result == ([], "1.2.3")
+
+    def test_query_sdk_models_server_info_none(self, tmp_path):
+        """get_server_info() returns None → returns None (not a timeout, not an exception)."""
+        mock_client = AsyncMock()
+        mock_client.get_server_info = AsyncMock(return_value=None)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("claude_agent_sdk.ClaudeSDKClient", return_value=mock_client):
+            result = asyncio.run(query_sdk_models(cli_version="1.2.3"))
+
+        assert result is None
+
+    def test_query_sdk_models_restores_claudecode_on_success(self, tmp_path, monkeypatch):
+        """CLAUDECODE env-var is restored after a successful query."""
+        monkeypatch.setenv("CLAUDECODE", "1")
+
+        mock_client = AsyncMock()
+        mock_client.get_server_info = AsyncMock(return_value={"models": _SAMPLE_MODELS})
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("claude_agent_sdk.ClaudeSDKClient", return_value=mock_client):
+            result = asyncio.run(query_sdk_models(cli_version="1.2.3"))
+
+        assert result is not None
+        assert os.environ.get("CLAUDECODE") == "1"
+
+    def test_query_sdk_models_restores_claudecode_on_failure(self, tmp_path, monkeypatch):
+        """CLAUDECODE env-var is restored even when query fails."""
+        monkeypatch.setenv("CLAUDECODE", "1")
 
         with patch(
             "claude_agent_sdk.ClaudeSDKClient",
@@ -166,3 +245,4 @@ class TestQuerySdkModels:
             result = asyncio.run(query_sdk_models(cli_version="1.2.3"))
 
         assert result is None
+        assert os.environ.get("CLAUDECODE") == "1"

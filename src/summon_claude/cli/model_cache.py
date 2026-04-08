@@ -6,6 +6,7 @@ Follows the update_check.py cache pattern: JSON file in get_data_dir(),
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -99,14 +100,13 @@ async def query_sdk_models(
 
     Returns (models_list, cli_version) on success, None on any failure.
     """
-    import asyncio  # noqa: PLC0415
-
     try:
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient  # noqa: PLC0415
 
         saved = os.environ.pop("CLAUDECODE", None)
         try:
-
+            # Inner coroutine gives wait_for a single awaitable covering both
+            # client startup (__aenter__ spawns subprocess) and the query.
             async def _do_query() -> tuple[list[dict[str, str]], str | None] | None:
                 async with ClaudeSDKClient(
                     ClaudeAgentOptions(

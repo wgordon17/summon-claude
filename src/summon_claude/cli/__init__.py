@@ -635,7 +635,10 @@ def cmd_init(ctx: click.Context) -> None:
             if sdk_result is not None:
                 sdk_models, sdk_cli_version = sdk_result
                 cache_sdk_models(sdk_models, sdk_cli_version)
-                click.echo(" done")
+                if sdk_models:
+                    click.echo(" done")
+                else:
+                    click.echo(" skipped (no models returned)")
             else:
                 click.echo(" skipped (CLI not authenticated)")
 
@@ -759,7 +762,7 @@ def cmd_init(ctx: click.Context) -> None:
             elif value == "other":
                 raw_custom = click.prompt(f"    {opt.label} (custom)", default="")
                 value = raw_custom if raw_custom else (current_value or "")
-            # Soft-validate if validate_fn present
+            # Soft-validate if validate_fn present (warn-only; return value always None)
             if value and opt.validate_fn:
                 opt.validate_fn(value)
 
