@@ -1653,22 +1653,12 @@ class TestApprovalVisibility:
 class TestBridgeTimeoutGuard:
     """Guard test: bridge timeout must exceed permission timeout."""
 
-    def test_default_bridge_timeout_exceeds_default_permission_timeout(self):
-        from summon_claude.sessions.permissions import _DEFAULT_PERMISSION_TIMEOUT_S
-        from summon_claude.sessions.response import _DEFAULT_BRIDGE_TIMEOUT_S
-
-        assert _DEFAULT_BRIDGE_TIMEOUT_S > _DEFAULT_PERMISSION_TIMEOUT_S, (
-            f"_DEFAULT_BRIDGE_TIMEOUT_S ({_DEFAULT_BRIDGE_TIMEOUT_S}) must exceed "
-            f"_DEFAULT_PERMISSION_TIMEOUT_S ({_DEFAULT_PERMISSION_TIMEOUT_S})"
-        )
-
-    def test_config_default_matches_module_default(self):
+    def test_config_permission_timeout_default_is_900(self):
+        """Guard: config default must stay at 15 minutes (900s)."""
         from conftest import make_test_config
 
-        from summon_claude.sessions.permissions import _DEFAULT_PERMISSION_TIMEOUT_S
-
         config = make_test_config()
-        assert config.permission_timeout_s == _DEFAULT_PERMISSION_TIMEOUT_S
+        assert config.permission_timeout_s == 900
 
     def test_bridge_skip_tools_contains_builtin_bypass_tools(self):
         """Guard: _BRIDGE_SKIP_TOOLS must include tools that bypass can_use_tool."""

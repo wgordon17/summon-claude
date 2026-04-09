@@ -179,8 +179,6 @@ _JIRA_MCP_AUTO_APPROVE_EXACT = frozenset(
     }
 )
 
-_DEFAULT_PERMISSION_TIMEOUT_S = 900  # 15 minutes (overridden by config.permission_timeout_s)
-
 # --- Approval visibility ---
 
 

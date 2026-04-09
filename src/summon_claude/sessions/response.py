@@ -44,11 +44,6 @@ logger = logging.getLogger(__name__)
 _MAX_MESSAGE_CHARS = 3000
 _FLUSH_HEADROOM_CHARS = 100
 _FLUSH_INTERVAL_S = 2.0  # 2 seconds to stay under Slack Tier 3 rate limits
-# Default bridge timeout — fallback when no explicit bridge_timeout_s is passed.
-# Production code (session.py) always passes config.permission_timeout_s + 60.
-# This default matches: 900 (config default) + 60s buffer.
-_DEFAULT_BRIDGE_TIMEOUT_S = 960.0
-
 # Built-in tools that bypass can_use_tool — the SDK never fires the callback
 # for these, so a bridge Future would never resolve (660s hang). Skip the
 # bridge entirely for these tools. Spike-confirmed 2026-03-20 on SDK 0.1.48.
@@ -223,7 +218,7 @@ class ResponseStreamer:
         on_worktree_entered: Callable[[str], None] | None = None,
         mcp_health: McpHealthTracker | None = None,
         bridge: ApprovalBridge | None = None,
-        bridge_timeout_s: float = _DEFAULT_BRIDGE_TIMEOUT_S,
+        bridge_timeout_s: float = 960.0,
     ) -> None:
         self._router = router
         self._user_id = user_id
