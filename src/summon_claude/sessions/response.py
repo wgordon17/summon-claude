@@ -44,12 +44,10 @@ logger = logging.getLogger(__name__)
 _MAX_MESSAGE_CHARS = 3000
 _FLUSH_HEADROOM_CHARS = 100
 _FLUSH_INTERVAL_S = 2.0  # 2 seconds to stay under Slack Tier 3 rate limits
-# Bridge timeout must exceed _PERMISSION_TIMEOUT_S (permissions.py) so the
-# permission handler always resolves the bridge before the streamer's timeout
-# fires. Cannot import directly due to circular dependency (response ↔ permissions).
-# Guard test `test_bridge_timeout_exceeds_permission_timeout` asserts the invariant.
-_PERMISSION_TIMEOUT_S = 600  # must match permissions._PERMISSION_TIMEOUT_S
-_BRIDGE_TIMEOUT_S = _PERMISSION_TIMEOUT_S + 60  # 60s buffer for debounce + scheduling
+# Default bridge timeout — fallback when no explicit bridge_timeout_s is passed.
+# Production code (session.py) always passes config.permission_timeout_s + 60.
+# This default matches: 900 (config default) + 60s buffer.
+_DEFAULT_BRIDGE_TIMEOUT_S = 960.0
 
 # Built-in tools that bypass can_use_tool — the SDK never fires the callback
 # for these, so a bridge Future would never resolve (660s hang). Skip the
@@ -225,6 +223,7 @@ class ResponseStreamer:
         on_worktree_entered: Callable[[str], None] | None = None,
         mcp_health: McpHealthTracker | None = None,
         bridge: ApprovalBridge | None = None,
+        bridge_timeout_s: float = _DEFAULT_BRIDGE_TIMEOUT_S,
     ) -> None:
         self._router = router
         self._user_id = user_id
@@ -234,6 +233,7 @@ class ResponseStreamer:
         self._on_worktree_entered = on_worktree_entered
         self._mcp_health = mcp_health
         self._bridge = bridge
+        self._bridge_timeout_s = bridge_timeout_s
 
         # Per-turn routing state (reset on each stream call)
         self._turn = _TurnState()
@@ -419,7 +419,7 @@ class ResponseStreamer:
         if self._bridge is not None and parent_id is None and block.name not in _BRIDGE_SKIP_TOOLS:
             try:
                 fut = self._bridge.create_future(block.name)
-                approval = await asyncio.wait_for(fut, timeout=_BRIDGE_TIMEOUT_S)
+                approval = await asyncio.wait_for(fut, timeout=self._bridge_timeout_s)
             except (TimeoutError, asyncio.CancelledError):
                 logger.warning(
                     "Approval bridge timeout for %s — posting without label",

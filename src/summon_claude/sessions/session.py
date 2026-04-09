@@ -2044,6 +2044,7 @@ class SummonSession:
             on_worktree_entered=rt.permission_handler.notify_entered_worktree,
             mcp_health=mcp_health_tracker,
             bridge=rt.bridge,
+            bridge_timeout_s=self._config.permission_timeout_s + 60,
         )
 
         # Disable auto-compaction — we handle compaction via !compact

@@ -124,6 +124,7 @@ class TestCmdInit:
                     "default (auto)",  # global_pm_model (choice)
                     "",  # max_inline_chars (accept default)
                     "",  # permission_debounce_ms (accept default)
+                    "",  # permission_timeout_s (accept default)
                     "y",  # no_update_check (flag)
                     "",  # safe_write_dirs (accept default)
                     "y",  # enable_thinking (flag)

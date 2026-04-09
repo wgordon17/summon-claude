@@ -649,6 +649,7 @@ class SummonConfig(BaseSettings):
 
     # Permission handling
     permission_debounce_ms: int = 2000
+    permission_timeout_s: int = 900  # 15 minutes
 
     # Write gate — directories where writes are allowed without entering containment
     # comma-separated paths, relative to project root or absolute (e.g. "hack/,.dev/")
@@ -1407,6 +1408,15 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         group="Behavior",
         label="Permission Debounce (ms)",
         help_text="Milliseconds to debounce permission prompts",
+        input_type="int",
+        advanced=True,
+    ),
+    ConfigOption(
+        field_name="permission_timeout_s",
+        env_key="SUMMON_PERMISSION_TIMEOUT_S",
+        group="Behavior",
+        label="Permission Timeout (s)",
+        help_text="Seconds to wait for user approval before auto-denying",
         input_type="int",
         advanced=True,
     ),

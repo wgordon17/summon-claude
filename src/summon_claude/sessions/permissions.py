@@ -179,7 +179,7 @@ _JIRA_MCP_AUTO_APPROVE_EXACT = frozenset(
     }
 )
 
-_PERMISSION_TIMEOUT_S = 600  # 10 minutes
+_DEFAULT_PERMISSION_TIMEOUT_S = 900  # 15 minutes (overridden by config.permission_timeout_s)
 
 # --- Approval visibility ---
 
@@ -400,6 +400,7 @@ class PermissionHandler:
         self._authenticated_user_id = authenticated_user_id
         self._bridge = bridge
         self._debounce_ms = config.permission_debounce_ms
+        self._timeout_s = config.permission_timeout_s
 
         # Write gate state
         self._project_root: Path | None = Path(project_root) if project_root else None
@@ -900,13 +901,13 @@ class PermissionHandler:
 
         # Wait for this specific request to be resolved
         try:
-            async with asyncio.timeout(_PERMISSION_TIMEOUT_S):
+            async with asyncio.timeout(self._timeout_s):
                 await req.result_event.wait()
         except TimeoutError:
             logger.warning("Permission request timed out for tool %s", tool_name)
             self._resolve_approval(tool_name, _LABEL_DENIED, reason="timed out", is_denial=True)
             await self._post_timeout_message()
-            timeout_min = _PERMISSION_TIMEOUT_S // 60
+            timeout_min = self._timeout_s // 60
             return PermissionResultDeny(
                 message=f"Permission request timed out ({timeout_min} minutes)",
             )
@@ -937,7 +938,7 @@ class PermissionHandler:
 
         # Wait for user response
         try:
-            async with asyncio.timeout(_PERMISSION_TIMEOUT_S):
+            async with asyncio.timeout(self._timeout_s):
                 await batch_event.wait()
         except TimeoutError:
             approved = False
@@ -1129,7 +1130,7 @@ class PermissionHandler:
         try:
             await self._router.post_to_active_thread(
                 f":hourglass: Permission request timed out after"
-                f" {_PERMISSION_TIMEOUT_S // 60} minutes. Denied.",
+                f" {self._timeout_s // 60} minutes. Denied.",
             )
         except Exception as e:
             logger.warning("Failed to post timeout message: %s", e)
@@ -1167,7 +1168,7 @@ class PermissionHandler:
             return PermissionResultDeny(message="Failed to display question")
 
         try:
-            async with asyncio.timeout(_PERMISSION_TIMEOUT_S):
+            async with asyncio.timeout(self._timeout_s):
                 await event.wait()
         except TimeoutError:
             logger.warning("AskUserQuestion timed out")
@@ -1176,7 +1177,7 @@ class PermissionHandler:
             if msg_ts:
                 await self._router.client.delete_message(msg_ts)
             self._cleanup_ask_user(request_id)
-            timeout_min = _PERMISSION_TIMEOUT_S // 60
+            timeout_min = self._timeout_s // 60
             return PermissionResultDeny(
                 message=f"Question timed out ({timeout_min} minutes)",
             )
