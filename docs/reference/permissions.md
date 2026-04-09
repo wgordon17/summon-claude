@@ -116,7 +116,7 @@ Approve or Deny applies to all tools in the batch. "Approve for session" caches 
 
 ## Timeout
 
-Permission requests expire after **10 minutes**. If you do not respond:
+Permission requests expire after **15 minutes** (configurable via `SUMMON_PERMISSION_TIMEOUT_S`). If you do not respond:
 
 - The request is automatically denied.
 - The interactive message is deleted.

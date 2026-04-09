@@ -216,9 +216,9 @@ This page covers common problems and their solutions. Issues are grouped by cate
 
     **Cause:** Permission requests have a timeout. After the timeout, summon defaults to denying the request (fail-safe).
 
-    **Fix:** Respond to permission requests promptly. The debounce interval can be adjusted via `SUMMON_PERMISSION_DEBOUNCE_MS` (default: 500ms):
+    **Fix:** Respond to permission requests promptly. The timeout can be increased via `SUMMON_PERMISSION_TIMEOUT_S` (default: 900 = 15 minutes):
     ```bash
-    summon config set SUMMON_PERMISSION_DEBOUNCE_MS 1000
+    summon config set SUMMON_PERMISSION_TIMEOUT_S 1800  # 30 minutes
     ```
 
 ???+ tip "Permission messages disappear after clicking"

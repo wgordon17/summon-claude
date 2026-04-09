@@ -1998,7 +1998,7 @@ class TestHeadlessBoilerplate:
         from summon_claude.sessions.prompts.shared import _HEADLESS_BOILERPLATE
 
         assert "Permission requests" in _HEADLESS_BOILERPLATE
-        assert "10 minutes" in _HEADLESS_BOILERPLATE
+        assert "15 minutes" in _HEADLESS_BOILERPLATE
 
     def test_headless_boilerplate_in_pm_prompt(self):
         from summon_claude.sessions.prompts import build_pm_system_prompt
