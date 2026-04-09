@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -208,11 +207,9 @@ _LABEL_SDK_ALLOWED = "sdk-allowed"
 _LABEL_SDK_DENIED = "denied by policy"
 _LABEL_DENIED = "denied"
 _LABEL_USER_ANSWERED = "answered"
-# Format-string labels for HITL decisions — user_id must be regex-validated
-# to [A-Z0-9]+ before interpolation (see handle_action).
-_LABEL_USER_APPROVED = "approved by <@{}>"
-_LABEL_USER_APPROVED_SESSION = "approved for session by <@{}>"
-_LABEL_USER_DENIED = "denied by <@{}>"
+_LABEL_USER_APPROVED = "approved"
+_LABEL_USER_APPROVED_SESSION = "approved for session"
+_LABEL_USER_DENIED = "denied"
 
 
 class ApprovalBridge:
@@ -1108,19 +1105,14 @@ class PermissionHandler:
             await self._router.client.delete_message(msg_ts)
 
         # Resolve bridge for each tool in the batch.
-        # Defense-in-depth: sanitize user_id for mrkdwn <@mention> even
-        # though handle_action already verified user_id == authenticated_user_id.
-        if not re.fullmatch(r"[A-Z0-9]+", user_id):
-            logger.warning("user_id %r failed mrkdwn sanitization regex", user_id)
-            user_id = "unknown"
         tool_names_list = self._batch.tool_names.get(batch_id, [])
         for name in tool_names_list:
             if approved and is_session_approve:
-                self._resolve_approval(name, _LABEL_USER_APPROVED_SESSION.format(user_id))
+                self._resolve_approval(name, _LABEL_USER_APPROVED_SESSION)
             elif approved:
-                self._resolve_approval(name, _LABEL_USER_APPROVED.format(user_id))
+                self._resolve_approval(name, _LABEL_USER_APPROVED)
             else:
-                self._resolve_approval(name, _LABEL_USER_DENIED.format(user_id), is_denial=True)
+                self._resolve_approval(name, _LABEL_USER_DENIED, is_denial=True)
 
         logger.info(
             "Permission %s: %s",

@@ -218,14 +218,13 @@ class TestHandleAction:
         assert batch_id not in handler._batch.decisions
         assert not event.is_set()
 
-    async def test_user_id_sanitization_fallback_in_handle_action(self):
-        """user_id that fails [A-Z0-9]+ regex is replaced with 'unknown' in bridge label."""
+    async def test_hitl_labels_do_not_embed_user_id(self):
+        """HITL labels use constants — no <@user_id> mention to avoid Slack pings."""
         from summon_claude.sessions.permissions import ApprovalBridge
 
         bridge = ApprovalBridge()
-        # authenticated_user_id must match user_id to pass the identity check
-        handler, _, _ = make_handler(authenticated_user_id="u_test_lower", bridge=bridge)
-        batch_id = "test-batch-sanitize"
+        handler, _, _ = make_handler(bridge=bridge)
+        batch_id = "test-batch-label"
         event = asyncio.Event()
         handler._batch.events[batch_id] = event
         handler._batch.tool_names[batch_id] = ["CustomTool"]
@@ -234,15 +233,14 @@ class TestHandleAction:
 
         await handler.handle_action(
             value=f"deny:{batch_id}",
-            user_id="u_test_lower",
+            user_id="U_TEST",
         )
 
         fut = bridge.create_future("CustomTool")
         assert fut.done()
         info = fut.result()
-        # user_id "u_test_lower" fails [A-Z0-9]+ so it's replaced with "unknown"
-        assert "<@unknown>" in info.label
-        assert "<@u_test_lower>" not in info.label
+        assert info.label == "denied"
+        assert "<@" not in info.label
         assert info.is_denial is True
 
 
@@ -879,7 +877,7 @@ class TestArgBasedCaching:
         assert "approved for session" in info.label
 
     async def test_regular_approve_resolves_bridge_without_session(self):
-        """Regular approve should resolve bridge with 'approved by' label."""
+        """Regular approve should resolve bridge with 'approved' label."""
         from summon_claude.sessions.permissions import ApprovalBridge
 
         bridge = ApprovalBridge()
@@ -898,7 +896,7 @@ class TestArgBasedCaching:
         fut = bridge.create_future("Bash")
         assert fut.done()
         info = fut.result()
-        assert "approved by" in info.label
+        assert info.label == "approved"
         assert "for session" not in info.label
 
     async def test_arg_cache_per_instance(self):
@@ -1705,7 +1703,7 @@ class TestApprovalBridgeResolution:
         assert fut.done()
         info = fut.result()
         assert info.is_denial is True
-        assert "denied by" in info.label
+        assert info.label == "denied"
 
     async def test_no_bridge_does_not_error(self):
         """Handler without bridge (bridge=None) works without errors."""
@@ -1805,7 +1803,7 @@ class TestApprovalBridgeResolution:
         assert fut.result().label == "auto-allowed"
 
     async def test_hitl_approve_resolves_bridge(self):
-        """HITL approval resolves bridge with 'approved by' label."""
+        """HITL approval resolves bridge with 'approved' label."""
         from summon_claude.sessions.permissions import ApprovalBridge
 
         bridge = ApprovalBridge()
@@ -1819,7 +1817,7 @@ class TestApprovalBridgeResolution:
         fut = bridge.create_future("Edit")
         assert fut.done()
         info = fut.result()
-        assert "approved by" in info.label
+        assert info.label == "approved"
         assert info.is_denial is False
 
     async def test_request_approval_timeout_resolves_bridge(self):
