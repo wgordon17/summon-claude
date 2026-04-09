@@ -44,9 +44,12 @@ logger = logging.getLogger(__name__)
 _MAX_MESSAGE_CHARS = 3000
 _FLUSH_HEADROOM_CHARS = 100
 _FLUSH_INTERVAL_S = 2.0  # 2 seconds to stay under Slack Tier 3 rate limits
-# Bridge timeout must exceed _PERMISSION_TIMEOUT_S (600s) so the permission
-# handler always resolves the bridge before the streamer's timeout fires.
-_BRIDGE_TIMEOUT_S = 660.0  # _PERMISSION_TIMEOUT_S (600) + 60s buffer
+# Bridge timeout must exceed _PERMISSION_TIMEOUT_S (permissions.py) so the
+# permission handler always resolves the bridge before the streamer's timeout
+# fires. Cannot import directly due to circular dependency (response ↔ permissions).
+# Guard test `test_bridge_timeout_exceeds_permission_timeout` asserts the invariant.
+_PERMISSION_TIMEOUT_S = 600  # must match permissions._PERMISSION_TIMEOUT_S
+_BRIDGE_TIMEOUT_S = _PERMISSION_TIMEOUT_S + 60  # 60s buffer for debounce + scheduling
 
 # Built-in tools that bypass can_use_tool — the SDK never fires the callback
 # for these, so a bridge Future would never resolve (660s hang). Skip the

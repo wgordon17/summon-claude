@@ -1654,12 +1654,23 @@ class TestBridgeTimeoutGuard:
     """Guard test: bridge timeout must exceed permission timeout."""
 
     def test_bridge_timeout_exceeds_permission_timeout(self):
-        from summon_claude.sessions.permissions import _PERMISSION_TIMEOUT_S
-        from summon_claude.sessions.response import _BRIDGE_TIMEOUT_S
+        from summon_claude.sessions.permissions import (
+            _PERMISSION_TIMEOUT_S as _PERM_TIMEOUT,
+        )
+        from summon_claude.sessions.response import (
+            _BRIDGE_TIMEOUT_S,
+        )
+        from summon_claude.sessions.response import (
+            _PERMISSION_TIMEOUT_S as _RESP_TIMEOUT,
+        )
 
-        assert _BRIDGE_TIMEOUT_S > _PERMISSION_TIMEOUT_S, (
+        assert _RESP_TIMEOUT == _PERM_TIMEOUT, (
+            f"response._PERMISSION_TIMEOUT_S ({_RESP_TIMEOUT}) must match "
+            f"permissions._PERMISSION_TIMEOUT_S ({_PERM_TIMEOUT})"
+        )
+        assert _BRIDGE_TIMEOUT_S > _PERM_TIMEOUT, (
             f"_BRIDGE_TIMEOUT_S ({_BRIDGE_TIMEOUT_S}) must exceed "
-            f"_PERMISSION_TIMEOUT_S ({_PERMISSION_TIMEOUT_S})"
+            f"_PERMISSION_TIMEOUT_S ({_PERM_TIMEOUT})"
         )
 
     def test_bridge_skip_tools_contains_builtin_bypass_tools(self):
