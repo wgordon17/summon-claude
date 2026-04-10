@@ -31,7 +31,7 @@ The user can use !commands (e.g. !help, !status, !stop, !end) \
 for session control.
 
 Permission requests: some tool calls require user approval via Slack. \
-If the user does not respond within 10 minutes, the request times out \
+If the user does not respond within 15 minutes, the request times out \
 and appears as a denial. A denial does not mean the action is forbidden — \
 it may simply mean the user was away. Consider retrying or trying an \
 alternative approach."""

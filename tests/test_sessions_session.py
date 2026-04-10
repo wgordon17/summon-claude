@@ -21,6 +21,7 @@ from summon_claude.sessions.commands import (
     CommandDef,
     CommandResult,
 )
+from summon_claude.sessions.permissions import ApprovalBridge
 from summon_claude.sessions.registry import (
     MAX_SPAWN_CHILDREN,
     MAX_SPAWN_CHILDREN_PM,
@@ -116,6 +117,7 @@ def make_rt(
         registry=registry,
         client=client,
         permission_handler=AsyncMock(),
+        bridge=ApprovalBridge(),
     )
 
 
@@ -742,6 +744,7 @@ class TestSessionShutdownSummary:
                 registry=registry,
                 client=mock_client,
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             await session._shutdown(rt)
@@ -767,6 +770,7 @@ class TestSessionShutdownSummary:
                 registry=registry,
                 client=mock_client,
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             await session._shutdown(rt)
@@ -909,6 +913,7 @@ class TestDisconnectMessage:
                 registry=registry,
                 client=mock_client,
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             await session._post_disconnect_message(rt)
@@ -1028,6 +1033,7 @@ class TestProcessIncomingEvent:
             registry=AsyncMock(),
             client=make_mock_client("C_TEST"),
             permission_handler=mock_permission_handler,
+            bridge=ApprovalBridge(),
         )
 
     async def test_normal_message_returns_text_and_ts(self):
@@ -1365,6 +1371,7 @@ class TestIdentityVerification:
             registry=AsyncMock(),
             client=make_mock_client("C_TEST"),
             permission_handler=mock_ph,
+            bridge=ApprovalBridge(),
         )
 
     async def test_non_owner_message_rejected(self):
@@ -1991,7 +1998,7 @@ class TestHeadlessBoilerplate:
         from summon_claude.sessions.prompts.shared import _HEADLESS_BOILERPLATE
 
         assert "Permission requests" in _HEADLESS_BOILERPLATE
-        assert "10 minutes" in _HEADLESS_BOILERPLATE
+        assert "15 minutes" in _HEADLESS_BOILERPLATE
 
     def test_headless_boilerplate_in_pm_prompt(self):
         from summon_claude.sessions.prompts import build_pm_system_prompt
@@ -2497,6 +2504,7 @@ class TestHandleSpawn:
                 registry=registry,
                 client=make_mock_client("C_SELF"),
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             with patch(
@@ -2534,6 +2542,7 @@ class TestHandleSpawn:
                 registry=registry,
                 client=make_mock_client("C_SELF"),
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             with patch(
@@ -2698,6 +2707,7 @@ class TestHandleSpawn:
             registry=AsyncMock(),
             client=make_mock_client("C_TEST"),
             permission_handler=mock_ph,
+            bridge=ApprovalBridge(),
         )
 
         event = {"user": "U_OWNER", "text": "please !summon start", "ts": "1"}
@@ -2760,6 +2770,7 @@ class TestHandleResumeFromActive:
             registry=AsyncMock(),
             client=make_mock_client(channel_id),
             permission_handler=AsyncMock(),
+            bridge=ApprovalBridge(),
         )
 
     async def test_rejects_missing_ipc_resume(self):
@@ -3554,6 +3565,7 @@ class TestCompactMidMessageBlocked:
             registry=AsyncMock(),
             client=make_mock_client("C_TEST"),
             permission_handler=mock_ph,
+            bridge=ApprovalBridge(),
         )
 
         event = {"user": "U_OWNER", "text": "please !compact", "ts": "1"}
@@ -4313,6 +4325,7 @@ class TestZzzShutdownIntegration:
                 registry=registry,
                 client=client,
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             with patch.object(
@@ -4339,6 +4352,7 @@ class TestZzzShutdownIntegration:
                 registry=registry,
                 client=client,
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             with patch.object(
@@ -4496,6 +4510,7 @@ class TestZzzShutdownOrder:
                 registry=registry,
                 client=client,
                 permission_handler=AsyncMock(),
+                bridge=ApprovalBridge(),
             )
 
             async def track_rename(*args, **kwargs):

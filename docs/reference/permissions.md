@@ -116,12 +116,14 @@ Approve or Deny applies to all tools in the batch. "Approve for session" caches 
 
 ## Timeout
 
-Permission requests expire after **10 minutes**. If you do not respond:
+Permission requests expire after **15 minutes** (configurable via `SUMMON_PERMISSION_TIMEOUT_S`). If you do not respond:
 
 - The request is automatically denied.
 - The interactive message is deleted.
 - A timeout message is posted in the turn thread.
 - Claude is told the permission timed out and adapts (typically by reporting it could not complete the action).
+
+Set `SUMMON_PERMISSION_TIMEOUT_S=0` to disable the timeout entirely — permission requests will wait indefinitely until you respond.
 
 ---
 

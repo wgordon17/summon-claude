@@ -16,10 +16,12 @@ from claude_agent_sdk import (
 )
 
 from helpers import make_mock_slack_client
+from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
 from summon_claude.sessions.response import (
     ResponseStreamer,
     _format_tool_result,
     _format_tool_summary,
+    _sanitize_approval_reason,
 )
 from summon_claude.sessions.response import split_text as _split_text
 from summon_claude.slack.router import ThreadRouter
@@ -1434,3 +1436,331 @@ class TestStreamerHealthTrackerIntegration:
         await streamer._handle_tool_result_block(
             ToolResultBlock(tool_use_id="tu_1", content="err", is_error=True), None
         )
+
+
+class TestApprovalVisibility:
+    """Tests for approval label rendering on tool use messages."""
+
+    async def test_tool_use_with_auto_allowed_label(self):
+        """Pre-resolved bridge with 'auto-allowed' renders label on tool use."""
+        bridge = ApprovalBridge()
+        bridge.resolve("Read", ApprovalInfo(label="auto-allowed"))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        # Find the context block with the tool use text
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert "_(auto-allowed)_" in text
+        assert ":hammer_and_wrench:" in text
+
+    async def test_tool_use_with_classifier_label_and_reason(self):
+        """Classifier approval renders label with reason."""
+        bridge = ApprovalBridge()
+        bridge.resolve("Bash", ApprovalInfo(label="auto-mode", reason="local file edit"))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Bash", {"command": "git status"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert "_(auto-mode: local file edit)_" in text
+
+    async def test_denied_tool_uses_denial_emoji(self):
+        """Denied tool uses :no_entry_sign: emoji instead of :hammer_and_wrench:."""
+        bridge = ApprovalBridge()
+        bridge.resolve("Write", ApprovalInfo(label="denied by <@U123>", is_denial=True))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Write", {"file_path": "/tmp/test.py"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert ":no_entry_sign:" in text
+        assert ":hammer_and_wrench:" not in text
+
+    async def test_no_bridge_fallback(self):
+        """Streamer without bridge posts tool use immediately with no label."""
+        streamer, router, client = make_streamer()
+        assert streamer._bridge is None
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert ":hammer_and_wrench:" in text
+        assert "_(" not in text  # No label suffix
+
+    async def test_bridge_timeout_posts_without_label(self):
+        """On bridge timeout, tool use posts without label (graceful degradation)."""
+        bridge = ApprovalBridge()
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        # Patch asyncio.wait_for to raise TimeoutError immediately
+        timeout_patch = patch(
+            "summon_claude.sessions.response.asyncio.wait_for",
+            side_effect=asyncio.TimeoutError,
+        )
+        with timeout_patch:
+            await streamer._handle_tool_use_block(block, None)
+
+        posted_blocks = client.post.call_args
+        call_kwargs = posted_blocks[1] if len(posted_blocks) > 1 else {}
+        blocks = call_kwargs.get("blocks", [])
+        text = blocks[0]["elements"][0]["text"] if blocks else ""
+        assert ":hammer_and_wrench:" in text
+        assert "_(" not in text  # No label
+
+    async def test_subagent_tool_skips_bridge(self):
+        """Subagent tool calls (parent_id != None) skip bridge, post immediately."""
+        bridge = ApprovalBridge()
+        bridge.create_future = MagicMock()
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = make_tool_use_block("Read", {"file_path": "/tmp/test.py"})
+
+        # parent_id is set — subagent context
+        router._subagent_threads = {"parent_123": "thread_ts"}
+        await streamer._handle_tool_use_block(block, "parent_123")
+
+        bridge.create_future.assert_not_called()
+
+    async def test_enter_worktree_skips_bridge(self):
+        """EnterWorktree bypasses can_use_tool — must skip bridge to prevent timeout hang."""
+        bridge = ApprovalBridge()
+        bridge.create_future = MagicMock()
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = ToolUseBlock(id="tu_wt", name="EnterWorktree", input={"name": "test"})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        bridge.create_future.assert_not_called()
+
+    async def test_exit_worktree_skips_bridge(self):
+        """ExitWorktree bypasses can_use_tool — must skip bridge to prevent timeout hang."""
+        bridge = ApprovalBridge()
+        bridge.create_future = MagicMock()
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        block = ToolUseBlock(id="tu_exit_wt", name="ExitWorktree", input={})
+
+        await streamer._handle_tool_use_block(block, None)
+
+        bridge.create_future.assert_not_called()
+
+    async def test_denied_tool_result_suppressed(self):
+        """Denied tool results (is_error=True) are suppressed — no :x: Tool error."""
+        bridge = ApprovalBridge()
+        bridge.resolve("Write", ApprovalInfo(label="denied", is_denial=True))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        tool_block = ToolUseBlock(id="tu_deny", name="Write", input={"file_path": "/f"})
+
+        await streamer._handle_tool_use_block(tool_block, None)
+        client.post.reset_mock()
+
+        result_block = ToolResultBlock(
+            tool_use_id="tu_deny",
+            content="Denied by user in Slack",
+            is_error=True,
+        )
+        await streamer._handle_tool_result_block(result_block, None)
+
+        # post should NOT have been called for the denied result
+        client.post.assert_not_called()
+
+    async def test_approved_tool_result_not_suppressed(self):
+        """Approved tool results are posted normally."""
+        bridge = ApprovalBridge()
+        bridge.resolve("Read", ApprovalInfo(label="auto-allowed"))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        tool_block = ToolUseBlock(id="tu_ok", name="Read", input={"file_path": "/f"})
+
+        await streamer._handle_tool_use_block(tool_block, None)
+        client.post.reset_mock()
+
+        result_block = ToolResultBlock(
+            tool_use_id="tu_ok",
+            content="file content here",
+            is_error=False,
+        )
+        await streamer._handle_tool_result_block(result_block, None)
+
+        # post SHOULD have been called for the approved result
+        client.post.assert_called()
+
+    async def test_denied_tool_success_result_not_suppressed(self):
+        """Denied tool with is_error=False result is NOT suppressed — posts normally."""
+        bridge = ApprovalBridge()
+        bridge.resolve("Write", ApprovalInfo(label="denied", is_denial=True))
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+        tool_block = ToolUseBlock(id="tu_deny_ok", name="Write", input={"file_path": "/f"})
+
+        await streamer._handle_tool_use_block(tool_block, None)
+        client.post.reset_mock()
+
+        # Denied tool but result is NOT an error (is_error=False)
+        result_block = ToolResultBlock(
+            tool_use_id="tu_deny_ok",
+            content="Completed successfully",
+            is_error=False,
+        )
+        await streamer._handle_tool_result_block(result_block, None)
+
+        # Suppression only fires for denied+is_error=True; success posts normally
+        client.post.assert_called()
+
+
+class TestBridgeTimeoutGuard:
+    """Guard test: bridge timeout must exceed permission timeout."""
+
+    def test_config_permission_timeout_default_is_900(self):
+        """Guard: config default must stay at 15 minutes (900s)."""
+        from conftest import make_test_config
+
+        config = make_test_config()
+        assert config.permission_timeout_s == 900
+
+    def test_bridge_skip_tools_contains_builtin_bypass_tools(self):
+        """Guard: _BRIDGE_SKIP_TOOLS must include tools that bypass can_use_tool."""
+        from summon_claude.sessions.response import _BRIDGE_SKIP_TOOLS
+
+        assert "EnterWorktree" in _BRIDGE_SKIP_TOOLS
+        assert "ExitWorktree" in _BRIDGE_SKIP_TOOLS
+
+
+class TestBridgeClearOnNewTurn:
+    """Tests for bridge.clear() cancelling stale Futures on stream_with_flush."""
+
+    async def test_stale_future_cancelled_on_second_stream_with_flush(self):
+        """Futures pending from a prior turn are cancelled when stream_with_flush starts."""
+        bridge = ApprovalBridge()
+        streamer, router, client = make_streamer()
+        streamer._bridge = bridge
+
+        stale_fut = bridge.create_future("Write")
+        assert not stale_fut.done()
+        messages = [
+            make_assistant_message([make_text_block("hello")]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        # The stale Future must now be cancelled
+        assert stale_fut.cancelled()
+
+
+class TestSanitizeApprovalReason:
+    """Tests for the _sanitize_approval_reason helper."""
+
+    def test_empty_string(self):
+        assert _sanitize_approval_reason("") == ""
+
+    def test_underscores_replaced_with_spaces(self):
+        assert "_" not in _sanitize_approval_reason("safe_file_edit")
+
+    def test_angle_brackets_stripped(self):
+        result = _sanitize_approval_reason("injected <@U123> mention")
+        assert "<" not in result
+        assert ">" not in result
+
+    def test_truncated_to_60_chars(self):
+        long_reason = "a" * 100
+        result = _sanitize_approval_reason(long_reason)
+        assert len(result) <= 60
+
+    def test_bold_and_backtick_stripped(self):
+        result = _sanitize_approval_reason("*bold* and `code`")
+        assert "*" not in result
+        assert "`" not in result
+
+
+class TestBridgeTimeoutRelationship:
+    """Guard: bridge_timeout_s must exceed permission_timeout_s."""
+
+    def test_bridge_timeout_exceeds_permission_timeout(self):
+        """session.py wires bridge_timeout_s = permission_timeout_s + 60."""
+        from conftest import make_test_config
+
+        config = make_test_config()
+        expected = config.permission_timeout_s + 60
+        # Default matches the formula: permission_timeout_s (900) + 60 = 960
+        streamer, _, _ = make_streamer()
+        assert streamer._bridge_timeout_s == expected
+
+    def test_permission_timeout_env_var_binding(self):
+        """SUMMON_PERMISSION_TIMEOUT_S env var changes config value."""
+        import os
+
+        from summon_claude.config import SummonConfig
+
+        env_patch = {
+            "SUMMON_PERMISSION_TIMEOUT_S": "120",
+            "SUMMON_SLACK_BOT_TOKEN": "xoxb-t",
+            "SUMMON_SLACK_APP_TOKEN": "xapp-t",
+            "SUMMON_SLACK_SIGNING_SECRET": "abc123",
+        }
+        saved = {}
+        for k, v in env_patch.items():
+            saved[k] = os.environ.get(k)
+            os.environ[k] = v
+        try:
+            config = SummonConfig(_env_file=None)
+            assert config.permission_timeout_s == 120
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_permission_timeout_zero_means_indefinite(self):
+        """permission_timeout_s=0 produces None timeout (indefinite)."""
+        from conftest import make_test_config
+
+        from summon_claude.sessions.permissions import PermissionHandler
+        from summon_claude.slack.router import ThreadRouter
+
+        config = make_test_config(permission_timeout_s=0)
+        from helpers import make_mock_slack_client
+
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        handler = PermissionHandler(router, config, authenticated_user_id="U_TEST")
+        assert handler._timeout_s is None
+
+    def test_permission_timeout_negative_rejected(self):
+        """Negative permission_timeout_s is rejected by validator."""
+        import pytest
+
+        from summon_claude.config import SummonConfig
+
+        with pytest.raises(Exception, match="must be >= 0"):
+            SummonConfig(
+                slack_bot_token="xoxb-t",
+                slack_app_token="xapp-t",
+                slack_signing_secret="abc123",
+                permission_timeout_s=-1,
+                _env_file=None,
+            )

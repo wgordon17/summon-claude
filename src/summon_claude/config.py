@@ -649,6 +649,7 @@ class SummonConfig(BaseSettings):
 
     # Permission handling
     permission_debounce_ms: int = 2000
+    permission_timeout_s: int = 900  # 15 minutes; 0 = no timeout (wait indefinitely)
 
     # Write gate — directories where writes are allowed without entering containment
     # comma-separated paths, relative to project root or absolute (e.g. "hack/,.dev/")
@@ -758,6 +759,14 @@ class SummonConfig(BaseSettings):
         valid = {"low", "medium", "high", "max"}
         if v not in valid:
             raise ValueError(f"SUMMON_DEFAULT_EFFORT must be one of {sorted(valid)}, got {v!r}")
+        return v
+
+    @field_validator("permission_timeout_s")
+    @classmethod
+    def validate_permission_timeout(cls, v: int) -> int:
+        """Permission timeout must be >= 0. 0 = no timeout (wait indefinitely)."""
+        if v < 0:
+            raise ValueError("SUMMON_PERMISSION_TIMEOUT_S must be >= 0 (0 = no timeout)")
         return v
 
     @field_validator("scribe_scan_interval_minutes")
@@ -1079,6 +1088,13 @@ def _scribe_slack_enabled(cfg: dict[str, str]) -> bool:
     return (
         _scribe_enabled(cfg) and is_extra_installed("playwright") and _slack_browser_auth_exists()
     )
+
+
+def _validate_permission_timeout(v: str) -> str | None:
+    try:
+        return None if int(v) >= 0 else "Must be >= 0 (0 = no timeout)"
+    except (ValueError, TypeError):
+        return "Must be an integer"
 
 
 def _validate_scan_interval_minutes(v: str) -> str | None:
@@ -1409,6 +1425,16 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Milliseconds to debounce permission prompts",
         input_type="int",
         advanced=True,
+    ),
+    ConfigOption(
+        field_name="permission_timeout_s",
+        env_key="SUMMON_PERMISSION_TIMEOUT_S",
+        group="Behavior",
+        label="Permission Timeout (s)",
+        help_text="Seconds to wait for user approval before auto-denying (0 = no timeout)",
+        input_type="int",
+        advanced=True,
+        validate_fn=_validate_permission_timeout,
     ),
     ConfigOption(
         field_name="no_update_check",

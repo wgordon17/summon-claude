@@ -17,6 +17,7 @@ from summon_claude.sessions.permissions import (
     _JIRA_MCP_AUTO_APPROVE_PREFIXES,
     _JIRA_MCP_HARD_DENY,
     _JIRA_MCP_PREFIX,
+    ApprovalBridge,
     PermissionHandler,
 )
 from summon_claude.slack.router import ThreadRouter
@@ -59,7 +60,7 @@ _ALL_KNOWN_JIRA_TOOLS = frozenset(
 )
 
 
-def make_handler():
+def make_handler(bridge=None):
     """Create a PermissionHandler with a mocked ThreadRouter."""
     client = make_mock_slack_client()
     router = ThreadRouter(client)
@@ -71,7 +72,7 @@ def make_handler():
             "permission_debounce_ms": 10,
         }
     )
-    return PermissionHandler(router, config, authenticated_user_id="U_TEST")
+    return PermissionHandler(router, config, authenticated_user_id="U_TEST", bridge=bridge)
 
 
 class TestJiraMCPConstantsPinned:
@@ -259,3 +260,33 @@ class TestJiraMCPBehavioral:
         handler = make_handler()
         result = await handler.handle("mcp__jira__getFutureReadTool", {}, None)
         assert isinstance(result, PermissionResultAllow)
+
+
+class TestJiraBridgeResolution:
+    """Tests that Jira permission paths resolve the ApprovalBridge correctly."""
+
+    async def test_hard_deny_resolves_bridge_with_denial(self):
+        """Hard-denied Jira tool resolves bridge with denial label."""
+        bridge = ApprovalBridge()
+        handler = make_handler(bridge=bridge)
+        result = await handler.handle("mcp__jira__addCommentToJiraIssue", {"cloudId": "x"}, None)
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("mcp__jira__addCommentToJiraIssue")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "denied"
+        assert info.is_denial is True
+        assert info.reason == "read-only mode"
+
+    async def test_unknown_jira_tool_resolves_bridge_with_denial(self):
+        """Unknown Jira tool (fail-closed) resolves bridge with denial label."""
+        bridge = ApprovalBridge()
+        handler = make_handler(bridge=bridge)
+        result = await handler.handle("mcp__jira__unknownNewTool", {}, None)
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("mcp__jira__unknownNewTool")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "denied"
+        assert info.is_denial is True
+        assert info.reason == "read-only mode"

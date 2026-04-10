@@ -120,6 +120,7 @@ See [GitHub Integration](../guide/github-integration.md) for setup details.
 | Config Key | Type | Default | Description |
 |------------|------|---------|-------------|
 | `SUMMON_PERMISSION_DEBOUNCE_MS` | integer | `2000` | Milliseconds to wait before posting a permission request to Slack. Batches rapid tool approvals into a single message. |
+| `SUMMON_PERMISSION_TIMEOUT_S` | integer | `900` | Seconds to wait for user approval before auto-denying a permission request. Default is 15 minutes. Set to `0` to disable the timeout (wait indefinitely). |
 | `SUMMON_NO_UPDATE_CHECK` | boolean | `false` | Disable the background PyPI update check on `summon start`. |
 | `SUMMON_SAFE_WRITE_DIRS` | text | `` | Comma-separated directories where writes are allowed without entering containment (e.g. `hack/,.dev/`). Relative paths resolve against the project root (the `cwd` passed to the session); absolute paths also work. Tilde (`~`) is expanded to the home directory. |
 

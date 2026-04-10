@@ -99,19 +99,13 @@ class TestTimeoutDeniesAllPending:
 
         provider.post_interactive = AsyncMock(return_value=MagicMock(ts="mock_ts"))
 
-        # Patch the permission timeout to be very short
-        import summon_claude.sessions.permissions as perm_module
+        # Set a very short timeout on this handler instance
+        handler._timeout_s = 0.2
 
-        original_timeout = perm_module._PERMISSION_TIMEOUT_S
-        perm_module._PERMISSION_TIMEOUT_S = 0.2
-
-        try:
-            results = await asyncio.gather(
-                handler.handle("Bash", {"command": "cmd"}, None),
-                return_exceptions=True,
-            )
-        finally:
-            perm_module._PERMISSION_TIMEOUT_S = original_timeout
+        results = await asyncio.gather(
+            handler.handle("Bash", {"command": "cmd"}, None),
+            return_exceptions=True,
+        )
 
         assert len(results) == 1
         assert isinstance(results[0], PermissionResultDeny)

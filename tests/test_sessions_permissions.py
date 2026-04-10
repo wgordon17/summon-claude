@@ -20,6 +20,8 @@ from summon_claude.sessions.permissions import (
     _JIRA_MCP_PREFIX,
     _SUMMON_MCP_AUTO_APPROVE_PREFIXES,
     _WRITE_GATED_TOOLS,
+    ApprovalBridge,
+    ApprovalInfo,
     PendingRequest,
     PermissionHandler,
     _format_request_summary,
@@ -32,7 +34,7 @@ def make_config(debounce_ms=10):
     return make_test_config(permission_debounce_ms=debounce_ms)
 
 
-def make_handler(debounce_ms=10, authenticated_user_id="U_TEST"):
+def make_handler(debounce_ms=10, authenticated_user_id="U_TEST", bridge=None):
     """Create a PermissionHandler with a mocked ThreadRouter.
 
     Sets _in_containment=True so tests exercise the Slack approval flow for
@@ -42,7 +44,9 @@ def make_handler(debounce_ms=10, authenticated_user_id="U_TEST"):
     client = make_mock_slack_client()
     router = ThreadRouter(client)
     config = make_config(debounce_ms=debounce_ms)
-    handler = PermissionHandler(router, config, authenticated_user_id=authenticated_user_id)
+    handler = PermissionHandler(
+        router, config, authenticated_user_id=authenticated_user_id, bridge=bridge
+    )
     # Bypass write gate — these tests exercise HITL batching, not the gate
     handler._check_write_gate = AsyncMock(return_value=None)
     return handler, client, router
@@ -215,6 +219,29 @@ class TestHandleAction:
         # Decision should NOT have been set
         assert batch_id not in handler._batch.decisions
         assert not event.is_set()
+
+    async def test_hitl_labels_do_not_embed_user_id(self):
+        """HITL labels use constants — no <@user_id> mention to avoid Slack pings."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        batch_id = "test-batch-label"
+        event = asyncio.Event()
+        handler._batch.events[batch_id] = event
+        handler._batch.tool_names[batch_id] = ["CustomTool"]
+        handler._batch.tool_inputs[batch_id] = [{"key": "val"}]
+        handler._batch.message_ts[batch_id] = "1234.5678"
+
+        await handler.handle_action(
+            value=f"deny:{batch_id}",
+            user_id="U_TEST",
+        )
+
+        fut = bridge.create_future("CustomTool")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "user-denied"
+        assert "<@" not in info.label
+        assert info.is_denial is True
 
 
 class TestAutoApproveList:
@@ -668,25 +695,31 @@ class TestSessionApprovalCaching:
         )
         provider.delete_message.assert_awaited_once_with("1234.5678")
 
-    async def test_approve_session_confirmation_includes_tool_names(self):
-        """Confirmation message for approve_session should include 'for session' and tool names."""
-        handler, _, _ = make_handler()
+    async def test_approve_session_resolves_bridge_with_session_label(self):
+        """approve_session should resolve bridge with 'approved for session' label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
         batch_id = "test-batch"
         event = asyncio.Event()
         handler._batch.events[batch_id] = event
         handler._batch.tool_names[batch_id] = ["Edit", "Write"]
         handler._batch.tool_inputs[batch_id] = [{"path": "/f"}, {"file_path": "/g"}]
         handler._batch.message_ts[batch_id] = "1234.5678"
-        handler._router.post_to_active_thread = AsyncMock()
 
         await handler.handle_action(
             value=f"approve_session:{batch_id}",
             user_id="U_TEST",
         )
-        posted = handler._router.post_to_active_thread.call_args[0][0]
-        assert "for session" in posted
-        assert "`Edit`" in posted
-        assert "`Write`" in posted
+        # Bridge should have resolved entries for both tools
+        fut_edit = bridge.create_future("Edit")
+        assert fut_edit.done()
+        info_edit = fut_edit.result()
+        assert "approved for session" in info_edit.label
+
+        fut_write = bridge.create_future("Write")
+        assert fut_write.done()
+        info_write = fut_write.result()
+        assert "approved for session" in info_write.label
 
 
 class TestArgBasedCaching:
@@ -819,44 +852,46 @@ class TestArgBasedCaching:
         assert "Edit" not in handler._session_approved_tools
         assert "Bash" not in handler._session_approved_tools
 
-    async def test_confirmation_shows_primary_arg_for_write_tools(self):
-        """Session-approve confirmation for write tools should show the primary arg."""
-        handler, _, _ = make_handler()
+    async def test_approve_session_resolves_bridge_for_write_tools(self):
+        """approve_session for write tools should resolve bridge with session label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
         batch_id = "test-batch"
         event = asyncio.Event()
         handler._batch.events[batch_id] = event
         handler._batch.tool_names[batch_id] = ["Bash"]
         handler._batch.tool_inputs[batch_id] = [{"command": "git status"}]
         handler._batch.message_ts[batch_id] = "1234.5678"
-        handler._router.post_to_active_thread = AsyncMock()
 
         await handler.handle_action(
             value=f"approve_session:{batch_id}",
             user_id="U_TEST",
         )
-        posted = handler._router.post_to_active_thread.call_args[0][0]
-        assert "for session" in posted
-        assert "`Bash`" in posted
-        assert "`git status`" in posted
+        fut = bridge.create_future("Bash")
+        assert fut.done()
+        info = fut.result()
+        assert "approved for session" in info.label
 
-    async def test_regular_approve_does_not_show_arg_in_confirmation(self):
-        """Regular approve should not show arg details in confirmation."""
-        handler, _, _ = make_handler()
+    async def test_regular_approve_resolves_bridge_without_session(self):
+        """Regular approve should resolve bridge with 'approved' label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
         batch_id = "test-batch"
         event = asyncio.Event()
         handler._batch.events[batch_id] = event
         handler._batch.tool_names[batch_id] = ["Bash"]
         handler._batch.tool_inputs[batch_id] = [{"command": "git status"}]
         handler._batch.message_ts[batch_id] = "1234.5678"
-        handler._router.post_to_active_thread = AsyncMock()
 
         await handler.handle_action(
             value=f"approve:{batch_id}",
             user_id="U_TEST",
         )
-        posted = handler._router.post_to_active_thread.call_args[0][0]
-        assert "for session" not in posted
-        assert "`Bash`" in posted
+        fut = bridge.create_future("Bash")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "approved"
+        assert "for session" not in info.label
 
     async def test_arg_cache_per_instance(self):
         """Arg caches should be per handler instance."""
@@ -1515,3 +1550,393 @@ class TestJiraMCPGuardTests:
     def test_all_prefixes_start_with_jira_prefix(self):
         for prefix in _JIRA_MCP_AUTO_APPROVE_PREFIXES:
             assert prefix.startswith(_JIRA_MCP_PREFIX)
+
+
+class TestLabelConstants:
+    """Guard: approval label constants must remain distinct."""
+
+    def test_denied_labels_are_distinct(self):
+        """_LABEL_DENIED and _LABEL_USER_DENIED must differ to distinguish system vs user denial."""
+        from summon_claude.sessions.permissions import _LABEL_DENIED, _LABEL_USER_DENIED
+
+        assert _LABEL_DENIED != _LABEL_USER_DENIED
+
+
+class TestApprovalBridge:
+    """Tests for the ApprovalBridge two-sided rendezvous."""
+
+    async def test_streamer_first_ordering(self):
+        """create_future then resolve — Future resolves with expected info."""
+        bridge = ApprovalBridge()
+        fut = bridge.create_future("Read")
+        info = ApprovalInfo(label="auto-allowed")
+        bridge.resolve("Read", info)
+        result = await fut
+        assert result.label == "auto-allowed"
+        assert result.is_denial is False
+
+    async def test_handler_first_ordering(self):
+        """resolve before create_future — returned Future is already resolved."""
+        bridge = ApprovalBridge()
+        info = ApprovalInfo(label="sdk-allowed")
+        bridge.resolve("Read", info)
+        fut = bridge.create_future("Read")
+        assert fut.done()
+        assert fut.result().label == "sdk-allowed"
+
+    async def test_fifo_ordering(self):
+        """Two create_future, two resolve — first goes to first, second to second."""
+        bridge = ApprovalBridge()
+        fut1 = bridge.create_future("Read")
+        fut2 = bridge.create_future("Read")
+        bridge.resolve("Read", ApprovalInfo(label="first"))
+        bridge.resolve("Read", ApprovalInfo(label="second"))
+        assert (await fut1).label == "first"
+        assert (await fut2).label == "second"
+
+    async def test_cleanup_on_empty(self):
+        """After all Futures resolved, no leftover keys in internal dicts."""
+        bridge = ApprovalBridge()
+        fut = bridge.create_future("Read")
+        bridge.resolve("Read", ApprovalInfo(label="done"))
+        await fut
+        assert "Read" not in bridge._pending
+        assert "Read" not in bridge._resolved
+
+    async def test_different_tool_names(self):
+        """Futures for different tool names don't interfere."""
+        bridge = ApprovalBridge()
+        fut_r = bridge.create_future("Read")
+        fut_w = bridge.create_future("Write")
+        bridge.resolve("Write", ApprovalInfo(label="write-ok"))
+        bridge.resolve("Read", ApprovalInfo(label="read-ok"))
+        assert (await fut_r).label == "read-ok"
+        assert (await fut_w).label == "write-ok"
+
+    async def test_clear_cancels_pending_futures(self):
+        """clear() cancels all pending Futures and empties dicts."""
+        bridge = ApprovalBridge()
+        fut = bridge.create_future("Read")
+        bridge.clear()
+        assert fut.cancelled()
+        assert len(bridge._pending) == 0
+        assert len(bridge._resolved) == 0
+
+    async def test_clear_resets_resolved(self):
+        """clear() removes pre-resolved entries; new create_future creates a pending Future."""
+        bridge = ApprovalBridge()
+        bridge.resolve("Read", ApprovalInfo(label="stale"))
+        bridge.clear()
+        assert len(bridge._resolved) == 0
+        fut = bridge.create_future("Read")
+        assert not fut.done()  # New pending Future, not the pre-resolved one
+
+
+class TestApprovalBridgeResolution:
+    """Tests that _resolve_approval fires at key decision points."""
+
+    async def test_auto_allow_resolves_bridge(self):
+        """Static allowlist (Read) resolves bridge with 'auto-allowed'."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        result = await handler.handle("Read", {}, None)
+        assert isinstance(result, PermissionResultAllow)
+        fut = bridge.create_future("Read")
+        assert fut.done()
+        assert fut.result().label == "auto-allowed"
+
+    async def test_session_cache_resolves_bridge(self):
+        """Session-cached tool resolves bridge with 'session-cached'."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        handler._session_approved_tools.add("Agent")
+        result = await handler.handle("Agent", {}, None)
+        assert isinstance(result, PermissionResultAllow)
+        fut = bridge.create_future("Agent")
+        assert fut.done()
+        assert fut.result().label == "session-cached"
+
+    async def test_sdk_deny_resolves_bridge(self):
+        """SDK deny resolves bridge with denial label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        mock_ctx = MagicMock()
+        mock_suggestion = MagicMock()
+        mock_suggestion.behavior = "deny"
+        mock_ctx.suggestions = [mock_suggestion]
+        result = await handler.handle("SomeTool", {}, mock_ctx)
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("SomeTool")
+        assert fut.done()
+        assert fut.result().is_denial is True
+
+    async def test_hitl_deny_resolves_bridge(self):
+        """HITL deny via handle_action resolves bridge with denial label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        batch_id = "test-deny"
+        handler._batch.events[batch_id] = asyncio.Event()
+        handler._batch.tool_names[batch_id] = ["Write"]
+        handler._batch.tool_inputs[batch_id] = [{}]
+        handler._batch.message_ts[batch_id] = "1234.5678"
+
+        await handler.handle_action(value=f"deny:{batch_id}", user_id="U_TEST")
+        fut = bridge.create_future("Write")
+        assert fut.done()
+        info = fut.result()
+        assert info.is_denial is True
+        assert info.label == "user-denied"
+
+    async def test_no_bridge_does_not_error(self):
+        """Handler without bridge (bridge=None) works without errors."""
+        handler, _, _ = make_handler(bridge=None)
+        result = await handler.handle("Read", {}, None)
+        assert isinstance(result, PermissionResultAllow)
+
+    async def test_classifier_allow_resolves_bridge(self):
+        """Classifier allow resolves bridge with 'auto-mode' and reason."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        handler._classifier_enabled = True
+        handler._in_worktree = True
+        mock_classifier = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.decision = "allow"
+        mock_result.reason = "safe read operation"
+        mock_classifier.classify = AsyncMock(return_value=mock_result)
+        handler._classifier = mock_classifier
+        result = await handler.handle("Agent", {}, None)
+        assert isinstance(result, PermissionResultAllow)
+        fut = bridge.create_future("Agent")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "auto-mode"
+        assert info.reason == "safe read operation"
+
+    async def test_classifier_block_resolves_bridge(self):
+        """Classifier block resolves bridge with 'blocked' and denial flag."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        handler._classifier_enabled = True
+        handler._in_worktree = True
+        mock_classifier = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.decision = "block"
+        mock_result.reason = "dangerous operation"
+        mock_classifier.classify = AsyncMock(return_value=mock_result)
+        handler._classifier = mock_classifier
+        result = await handler.handle("Agent", {}, None)
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("Agent")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "blocked"
+        assert info.is_denial is True
+
+    async def test_write_gate_containment_resolves_bridge(self, tmp_path):
+        """Write within containment resolves bridge with 'within project'."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "src").mkdir()
+
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        # Re-enable real write gate (make_handler mocks it out)
+        handler._check_write_gate = PermissionHandler._check_write_gate.__get__(
+            handler, PermissionHandler
+        )
+        handler._in_containment = True
+        handler._write_access_granted = True
+        handler._containment_root = project.resolve()
+        file_path = str((project / "src" / "foo.py").resolve())
+        result = await handler.handle("Write", {"file_path": file_path}, None)
+        assert isinstance(result, PermissionResultAllow)
+        fut = bridge.create_future("Write")
+        assert fut.done()
+        assert fut.result().label == "within project"
+
+    async def test_write_gate_safe_dir_resolves_bridge(self, tmp_path):
+        """Write to safe dir resolves bridge with 'auto-allowed'."""
+        project = tmp_path / "project"
+        project.mkdir()
+        hack_dir = project / "hack"
+        hack_dir.mkdir()
+
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        handler._check_write_gate = PermissionHandler._check_write_gate.__get__(
+            handler, PermissionHandler
+        )
+        handler._project_root = project.resolve()
+        handler._safe_dirs = [str(hack_dir.resolve())]
+        file_path = str((hack_dir / "notes.md").resolve())
+        result = await handler.handle("Write", {"file_path": file_path}, None)
+        assert isinstance(result, PermissionResultAllow)
+        fut = bridge.create_future("Write")
+        assert fut.done()
+        assert fut.result().label == "auto-allowed"
+
+    async def test_hitl_approve_resolves_bridge(self):
+        """HITL approval resolves bridge with 'approved' label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        batch_id = "test-approve"
+        handler._batch.events[batch_id] = asyncio.Event()
+        handler._batch.tool_names[batch_id] = ["Edit"]
+        handler._batch.tool_inputs[batch_id] = [{"file_path": "/f"}]
+        handler._batch.message_ts[batch_id] = "1234.5678"
+        await handler.handle_action(value=f"approve:{batch_id}", user_id="U_TEST")
+        fut = bridge.create_future("Edit")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "approved"
+        assert info.is_denial is False
+
+    async def test_request_approval_timeout_resolves_bridge(self):
+        """_request_approval TimeoutError path resolves bridge with denial."""
+        from unittest.mock import patch
+
+        class _ImmediateTimeout:
+            async def __aenter__(self):
+                raise TimeoutError
+
+            async def __aexit__(self, *args):
+                return False
+
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+
+        with patch(
+            "summon_claude.sessions.permissions.asyncio.timeout",
+            return_value=_ImmediateTimeout(),
+        ):
+            result = await handler.handle("CustomTool", {"key": "val"}, None)
+
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("CustomTool")
+        assert fut.done()
+        info = fut.result()
+        assert info.is_denial is True
+        assert info.reason == "timed out"
+
+    async def test_post_approval_message_exception_resolves_bridge(self):
+        """When post_interactive raises, bridge resolves with denial."""
+        bridge = ApprovalBridge()
+        handler, provider, _ = make_handler(bridge=bridge)
+        provider.post_interactive = AsyncMock(side_effect=RuntimeError("slack down"))
+
+        result = await handler.handle("CustomTool", {"key": "val"}, None)
+
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("CustomTool")
+        assert fut.done()
+        info = fut.result()
+        assert info.is_denial is True
+        assert info.reason == "internal error"
+
+    async def test_sdk_allowed_resolves_bridge(self):
+        """Step 3 SDK allow resolves bridge with 'sdk-allowed' label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+
+        mock_suggestion = MagicMock()
+        mock_suggestion.behavior = "allow"
+        mock_ctx = MagicMock()
+        mock_ctx.suggestions = [mock_suggestion]
+
+        result = await handler.handle("CustomTool", {"key": "val"}, mock_ctx)
+
+        assert isinstance(result, PermissionResultAllow)
+        fut = bridge.create_future("CustomTool")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "sdk-allowed"
+        assert info.is_denial is False
+
+    async def test_ask_user_question_resolves_bridge_with_answered(self):
+        """AskUserQuestion success resolves bridge with 'answered' label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        # Mock _handle_ask_user_question to return allow without Slack interaction
+        handler._handle_ask_user_question = AsyncMock(return_value=PermissionResultAllow())
+
+        result = await handler.handle("AskUserQuestion", {"questions": []}, None)
+
+        assert isinstance(result, PermissionResultAllow)
+        fut = bridge.create_future("AskUserQuestion")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "answered"
+        assert info.is_denial is False
+
+    async def test_ask_user_question_deny_resolves_bridge_with_denied(self):
+        """AskUserQuestion failure resolves bridge with denial — prevents timeout hang."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        handler._handle_ask_user_question = AsyncMock(
+            return_value=PermissionResultDeny(message="question timed out")
+        )
+
+        result = await handler.handle("AskUserQuestion", {"questions": []}, None)
+
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("AskUserQuestion")
+        assert fut.done()
+        info = fut.result()
+        assert info.label == "denied"
+        assert info.reason == "question failed"
+        assert info.is_denial is True
+
+    async def test_request_and_batch_timeout_both_resolve_bridge(self):
+        """Both per-request and batch timeouts deposit bridge resolve entries."""
+        bridge = ApprovalBridge()
+        handler, provider, _ = make_handler(bridge=bridge)
+        provider.post_interactive = AsyncMock(return_value=MagicMock(ts="mock_ts"))
+        handler._timeout_s = 1  # Short timeout
+
+        result = await handler.handle("CustomTool", {"key": "val"}, None)
+        assert isinstance(result, PermissionResultDeny)
+
+        # Per-request timeout (_request_approval:906) fires first → resolve #1
+        fut1 = bridge.create_future("CustomTool")
+        assert fut1.done()
+        assert fut1.result().is_denial is True
+        assert fut1.result().reason == "timed out"
+
+        # Yield to let batch timeout (_debounce_and_post:944) fire → resolve #2
+        await asyncio.sleep(0.05)
+        fut2 = bridge.create_future("CustomTool")
+        assert fut2.done()
+        info2 = fut2.result()
+        assert info2.is_denial is True
+        assert info2.reason == "timed out"
+
+    async def test_write_gated_fallthrough_skips_sdk_allowed(self):
+        """SDK-allow for write-gated tool with containment goes to HITL, not sdk-allowed."""
+        bridge = ApprovalBridge()
+        handler, provider, _ = make_handler(bridge=bridge)
+        provider.post_interactive = AsyncMock(return_value=MagicMock(ts="mock_ts"))
+        handler._timeout_s = 1  # Short timeout to avoid hanging
+
+        # Enable containment so write gate passes but _write_gated_fallthrough is True
+        handler._check_write_gate = PermissionHandler._check_write_gate.__get__(
+            handler, PermissionHandler
+        )
+        handler._in_containment = True
+        handler._write_access_granted = True
+
+        mock_suggestion = MagicMock()
+        mock_suggestion.behavior = "allow"
+        mock_ctx = MagicMock()
+        mock_ctx.suggestions = [mock_suggestion]
+
+        result = await handler.handle("Bash", {"command": "git status"}, mock_ctx)
+
+        # Should NOT be auto-allowed — should go to HITL and timeout
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("Bash")
+        assert fut.done()
+        info = fut.result()
+        # Should NOT be "sdk-allowed" — the fallthrough prevents SDK allow
+        assert info.label != "sdk-allowed"
+        assert info.is_denial is True
