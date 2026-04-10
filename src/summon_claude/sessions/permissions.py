@@ -202,7 +202,7 @@ _LABEL_SESSION_CACHED = "session-cached"
 _LABEL_AUTO_MODE = "auto-mode"
 _LABEL_BLOCKED_AUTO_MODE = "blocked"
 _LABEL_SDK_ALLOWED = "sdk-allowed"
-_LABEL_SDK_DENIED = "denied by policy"
+_LABEL_SDK_DENIED = "sdk-denied"
 _LABEL_DENIED = "denied"
 _LABEL_USER_ANSWERED = "answered"
 _LABEL_USER_APPROVED = "approved"
@@ -473,6 +473,17 @@ class PermissionHandler:
         self._classifier_enabled = enabled
         if enabled and self._classifier is not None:
             self._classifier.reset_counters()
+
+    @property
+    def _timeout_display(self) -> str:
+        """Human-readable timeout for user-facing messages."""
+        if not self._timeout_s:  # defensive — callers are inside TimeoutError handlers
+            return "0 minutes"
+        secs = int(self._timeout_s)
+        mins = secs // 60
+        if mins:
+            return f"{mins} minute{'s' if mins != 1 else ''}"
+        return f"{secs}s"
 
     def _resolve_approval(
         self,
@@ -906,9 +917,8 @@ class PermissionHandler:
             logger.warning("Permission request timed out for tool %s", tool_name)
             self._resolve_approval(tool_name, _LABEL_DENIED, reason="timed out", is_denial=True)
             await self._post_timeout_message()
-            timeout_min = int(self._timeout_s) // 60 if self._timeout_s else 0
             return PermissionResultDeny(
-                message=f"Permission request timed out ({timeout_min} minutes)",
+                message=f"Permission request timed out ({self._timeout_display})",
             )
 
         if req.approved:
@@ -1127,9 +1137,8 @@ class PermissionHandler:
     async def _post_timeout_message(self) -> None:
         """Post a message indicating permission timed out."""
         try:
-            timeout_min = int(self._timeout_s) // 60 if self._timeout_s else 0
             await self._router.post_to_active_thread(
-                f":hourglass: Permission request timed out after {timeout_min} minutes. Denied.",
+                f":hourglass: Permission request timed out after {self._timeout_display}. Denied.",
             )
         except Exception as e:
             logger.warning("Failed to post timeout message: %s", e)
@@ -1176,9 +1185,8 @@ class PermissionHandler:
             if msg_ts:
                 await self._router.client.delete_message(msg_ts)
             self._cleanup_ask_user(request_id)
-            timeout_min = int(self._timeout_s) // 60 if self._timeout_s else 0
             return PermissionResultDeny(
-                message=f"Question timed out ({timeout_min} minutes)",
+                message=f"Question timed out ({self._timeout_display})",
             )
 
         answers = dict(self._ask_user.answers.get(request_id, {}))

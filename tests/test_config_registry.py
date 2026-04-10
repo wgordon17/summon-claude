@@ -569,6 +569,24 @@ class TestValidateFunctions:
             assert result is not None, f"Expected error for {value!r}"
 
     @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("0", None),
+            ("900", None),
+            ("1", None),
+            ("-1", "Must be >= 0 (0 = no timeout)"),
+            ("1.5", "Must be an integer"),
+            (" 900", None),  # int() accepts leading/trailing whitespace
+            ("abc", "Must be an integer"),
+            ("", "Must be an integer"),
+        ],
+    )
+    def test_validate_permission_timeout(self, value, expected):
+        from summon_claude.config import _validate_permission_timeout
+
+        assert _validate_permission_timeout(value) == expected
+
+    @pytest.mark.parametrize(
         "value,expected_none",
         [
             ("", True),  # empty = no quiet hours

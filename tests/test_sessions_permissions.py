@@ -1561,6 +1561,12 @@ class TestLabelConstants:
 
         assert _LABEL_DENIED != _LABEL_USER_DENIED
 
+    def test_sdk_denied_label_pinned(self):
+        """Guard: _LABEL_SDK_DENIED value is user-visible in Slack — pin it."""
+        from summon_claude.sessions.permissions import _LABEL_SDK_DENIED
+
+        assert _LABEL_SDK_DENIED == "sdk-denied"
+
 
 class TestApprovalBridge:
     """Tests for the ApprovalBridge two-sided rendezvous."""
@@ -1631,6 +1637,18 @@ class TestApprovalBridge:
         fut = bridge.create_future("Read")
         assert not fut.done()  # New pending Future, not the pre-resolved one
 
+    async def test_resolve_after_clear_deposits_into_resolved(self):
+        """resolve() after clear() deposits into _resolved; next create_future picks it up."""
+        bridge = ApprovalBridge()
+        bridge.create_future("Read")  # seed a pending entry so clear() has something to cancel
+        bridge.clear()
+        # Post-clear resolve goes into _resolved
+        bridge.resolve("Read", ApprovalInfo(label="post-clear"))
+        # Next create_future picks up the post-clear entry
+        fut = bridge.create_future("Read")
+        assert fut.done()
+        assert fut.result().label == "post-clear"
+
 
 class TestApprovalBridgeResolution:
     """Tests that _resolve_approval fires at key decision points."""
@@ -1669,6 +1687,7 @@ class TestApprovalBridgeResolution:
         fut = bridge.create_future("SomeTool")
         assert fut.done()
         assert fut.result().is_denial is True
+        assert fut.result().label == "sdk-denied"
 
     async def test_hitl_deny_resolves_bridge(self):
         """HITL deny via handle_action resolves bridge with denial label."""
@@ -1776,6 +1795,26 @@ class TestApprovalBridgeResolution:
         assert fut.done()
         assert fut.result().label == "auto-allowed"
 
+    async def test_write_gate_sdk_deny_resolves_bridge(self):
+        """SDK deny inside _check_write_gate resolves bridge with denial label."""
+        bridge = ApprovalBridge()
+        handler, _, _ = make_handler(bridge=bridge)
+        # make_handler stubs _check_write_gate; restore real impl to test SDK-deny path
+        handler._check_write_gate = PermissionHandler._check_write_gate.__get__(
+            handler, PermissionHandler
+        )
+        mock_suggestion = MagicMock()
+        mock_suggestion.behavior = "deny"
+        mock_ctx = MagicMock()
+        mock_ctx.suggestions = [mock_suggestion]
+        result = await handler.handle("Write", {"file_path": "/f"}, mock_ctx)
+        assert isinstance(result, PermissionResultDeny)
+        fut = bridge.create_future("Write")
+        assert fut.done()
+        info = fut.result()
+        assert info.is_denial is True
+        assert info.label == "sdk-denied"
+
     async def test_hitl_approve_resolves_bridge(self):
         """HITL approval resolves bridge with 'approved' label."""
         bridge = ApprovalBridge()
@@ -1818,6 +1857,29 @@ class TestApprovalBridgeResolution:
         info = fut.result()
         assert info.is_denial is True
         assert info.reason == "timed out"
+
+    async def test_timeout_message_contains_display_format(self):
+        """Deny message uses _timeout_display — sub-minute shows seconds."""
+        from unittest.mock import patch
+
+        class _ImmediateTimeout:
+            async def __aenter__(self):
+                raise TimeoutError
+
+            async def __aexit__(self, *args):
+                return False
+
+        handler, _, _ = make_handler()
+        handler._timeout_s = 45
+
+        with patch(
+            "summon_claude.sessions.permissions.asyncio.timeout",
+            return_value=_ImmediateTimeout(),
+        ):
+            result = await handler.handle("CustomTool", {"key": "val"}, None)
+
+        assert isinstance(result, PermissionResultDeny)
+        assert "45s" in result.message
 
     async def test_post_approval_message_exception_resolves_bridge(self):
         """When post_interactive raises, bridge resolves with denial."""
@@ -1940,3 +2002,23 @@ class TestApprovalBridgeResolution:
         # Should NOT be "sdk-allowed" — the fallthrough prevents SDK allow
         assert info.label != "sdk-allowed"
         assert info.is_denial is True
+
+
+class TestTimeoutDisplay:
+    """Tests for _timeout_display property."""
+
+    @pytest.mark.parametrize(
+        "timeout_s,expected",
+        [
+            (None, "0 minutes"),
+            (30, "30s"),
+            (60, "1 minute"),
+            (90, "1 minute"),
+            (120, "2 minutes"),
+            (900, "15 minutes"),
+        ],
+    )
+    def test_timeout_display(self, timeout_s, expected):
+        handler, _, _ = make_handler()
+        handler._timeout_s = timeout_s
+        assert handler._timeout_display == expected
