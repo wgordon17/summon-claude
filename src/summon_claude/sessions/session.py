@@ -3132,6 +3132,7 @@ class SummonSession:
                     env=_git_safe_env(cwd),
                 )
                 nidx_stdout, _ = await asyncio.wait_for(nidx_proc.communicate(), timeout=10)
+                nidx_rc = nidx_proc.returncode or 0
                 if nidx_stdout:
                     diff_output = nidx_stdout.decode(errors="replace")
                     if len(diff_output) > _MAX_UPLOAD_CHARS:
@@ -3151,13 +3152,12 @@ class SummonSession:
                         thread_ts=thread_ts,
                         snippet_type="diff",
                     )
-                elif nidx_proc.returncode >= 2:
+                elif nidx_rc >= 2:
                     await rt.client.post(
-                        f":warning: git diff --no-index failed for `{user_path}` "
-                        f"(exit {nidx_proc.returncode}).",
+                        f":warning: git diff --no-index failed for `{user_path}` (exit {nidx_rc}).",
                         thread_ts=thread_ts,
                     )
-                elif nidx_proc.returncode == 1:
+                elif nidx_rc == 1:
                     # TOCTOU: file deleted between exists check and --no-index
                     await rt.client.post(
                         f":warning: File not found: `{user_path}`.",
@@ -3254,7 +3254,8 @@ class SummonSession:
                         env=_git_safe_env(cwd),
                     )
                     nidx_out, _ = await asyncio.wait_for(nidx_proc.communicate(), timeout=10)
-                    if nidx_out and nidx_proc.returncode < 2:
+                    nidx_rc = nidx_proc.returncode or 0
+                    if nidx_out and nidx_rc < 2:
                         parts.append(nidx_out.decode(errors="replace"))
                 except Exception:
                     logger.debug("--no-index failed for untracked file %s", uf)
