@@ -5270,6 +5270,48 @@ class TestDiffAllUntracked:
         # Early exit before scanning untracked files because tracked diff > cap
         assert no_index_calls["count"] == 0
 
+    async def test_diff_all_overflow_count_accurate_under_50(self, tmp_path):
+        """When <50 files and size limit triggers, overflow count must match reality."""
+        from summon_claude.sessions import session as session_mod
+
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        # 10 untracked files, tracked diff nearly fills the cap
+        files_list = "\n".join(f"file{i}.py" for i in range(10)) + "\n"
+        calls = {"count": 0}
+
+        def factory(*args, **kwargs):
+            args_list = list(args)
+            if "ls-files" in args_list:
+                return _make_proc(0, files_list.encode())
+            if "--no-index" in args_list:
+                calls["count"] += 1
+                return _make_proc(1, b"diff content\n")
+            # tracked diff fills most of the cap
+            return _make_proc(0, b"x" * 95)
+
+        with (
+            patch.object(session_mod, "_MAX_UPLOAD_CHARS", 100),
+            patch("asyncio.create_subprocess_exec", side_effect=factory),
+        ):
+            await session._handle_diff_all(rt, "thread_1")
+
+        # Should NOT say "50 more" or "40 more" — there are only 10 total
+        if rt.client.upload.called:
+            uploaded = rt.client.upload.call_args.kwargs.get("content", "")
+            if "more untracked" in uploaded:
+                # Extract the number from "... and N more untracked files"
+                import re
+
+                m = re.search(r"(\d+) more untracked", uploaded)
+                assert m is not None
+                reported = int(m.group(1))
+                # Can't report more skipped files than actually exist
+                assert reported <= 10, f"Reported {reported} overflow but only 10 files exist"
+
 
 # ---------------------------------------------------------------------------
 # TestShowCommand

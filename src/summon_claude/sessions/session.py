@@ -3238,13 +3238,14 @@ class SummonSession:
                 logger.debug("git ls-files --others failed", exc_info=True)
                 untracked_files = []
 
-            overflow_count = max(0, len(untracked_files) - 50)
+            capped = untracked_files[:50]
+            overflow_count = len(untracked_files) - len(capped)
             parts: list[str] = []
             parts_len = 0
-            for idx, uf in enumerate(untracked_files[:50]):
+            for idx, uf in enumerate(capped):
                 combined_len = len(tracked_diff) + parts_len
                 if combined_len > _MAX_UPLOAD_CHARS:
-                    overflow_count += 50 - idx  # remaining capped files
+                    overflow_count += len(capped) - idx  # remaining capped files
                     break
                 rel_path = uf
                 try:
