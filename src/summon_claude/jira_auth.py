@@ -783,3 +783,13 @@ def check_jira_status() -> str | None:  # noqa: PLR0911
         )
 
     return None
+
+
+def get_jira_site_name() -> str | None:
+    """Return the configured Jira cloud site name, or None."""
+    token_path = get_jira_token_path()
+    try:
+        token_data = json.loads(token_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    return token_data.get("cloud_name") or None

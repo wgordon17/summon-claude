@@ -293,7 +293,8 @@ class TestJiraLogin:
 
         assert result.exit_code == 0
         mock_browser.assert_not_called()
-        assert "refreshed" in result.output.lower()
+        assert "jira authenticated" in result.output.lower()
+        assert "mcp tools will be available" in result.output.lower()
 
     def test_login_refresh_fails_falls_through(self):
         """When try_refresh_only returns False, browser flow is called."""

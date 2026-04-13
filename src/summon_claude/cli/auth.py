@@ -5,7 +5,10 @@ Consolidates all authentication commands under `summon auth`:
   - summon auth status          (unified status of all providers)
   - summon auth github login    (GitHub OAuth device flow)
   - summon auth github logout   (remove GitHub token)
+  - summon auth github status   (check GitHub auth status)
+  - summon auth google setup    (guided Google OAuth setup)
   - summon auth google login    (Google Workspace OAuth)
+  - summon auth google logout   (remove Google credentials)
   - summon auth google status   (check Google creds)
   - summon auth jira login      (Jira OAuth 2.1 with PKCE + DCR)
   - summon auth jira logout     (remove Jira credentials)
@@ -32,6 +35,7 @@ from summon_claude.cli.formatting import format_tag
 from summon_claude.cli.google_auth import (
     _check_google_status,
     google_auth,
+    google_logout,
     google_setup,
     google_status,
 )
@@ -56,7 +60,7 @@ def cmd_auth() -> None:
 
 @cmd_auth.command("status")
 @click.pass_context
-def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912
+def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912, PLR0915
     """Show authentication status for all configured providers."""
     quiet = ctx.obj.get("quiet", False) if ctx.obj else False
 
@@ -75,6 +79,7 @@ def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912
     # Jira
     from summon_claude.jira_auth import (  # noqa: PLC0415
         check_jira_status,
+        get_jira_site_name,
         jira_credentials_exist,
     )
 
@@ -83,7 +88,11 @@ def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912
         jira_err = check_jira_status()
         if jira_err is None:
             if not quiet:
-                click.echo(f"  {format_tag('PASS')} Jira: authenticated")
+                site = get_jira_site_name()
+                if site:
+                    site = re.sub(r"[^\x20-\x7e]", "", site)[:80]
+                site_suffix = f" (site: {site})" if site else ""
+                click.echo(f"  {format_tag('PASS')} Jira: authenticated{site_suffix}")
         elif not quiet:
             click.echo(f"  {format_tag('FAIL')} Jira: {jira_err}")
     elif not quiet:
@@ -109,7 +118,8 @@ def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912
                 existing = _check_existing_slack_auth()
                 if existing:
                     age = existing["age"]
-                    click.echo(f"  {format_tag('PASS')} Slack: authenticated ({url}, {age})")
+                    tag = format_tag("PASS")
+                    click.echo(f"  {tag} Slack: authenticated (workspace: {url}, saved {age})")
                 else:
                     click.echo(f"  {format_tag('FAIL')} Slack: auth expired or missing ({url})")
     elif not quiet:
@@ -150,6 +160,12 @@ def auth_github_logout() -> None:
     github_logout()
 
 
+@auth_github.command("status")
+def auth_github_status_cmd() -> None:
+    """Check GitHub authentication status."""
+    _check_github_status()
+
+
 # ---------------------------------------------------------------------------
 # summon auth google
 # ---------------------------------------------------------------------------
@@ -157,7 +173,7 @@ def auth_github_logout() -> None:
 
 @cmd_auth.group("google")
 def auth_google() -> None:
-    """Google Workspace authentication for scribe monitoring."""
+    """Google authentication."""
 
 
 @auth_google.command("setup")
@@ -174,7 +190,10 @@ def auth_google_setup(account: str | None) -> None:
 @click.option("--account", default=None, help="Account label (e.g., personal, work)")
 def auth_google_login(account: str | None) -> None:
     """Authenticate with Google Workspace."""
-    google_auth(account=account)
+    try:
+        google_auth(account=account)
+    except KeyboardInterrupt:
+        click.echo("\nAuthentication cancelled.", err=True)
 
 
 @auth_google.command("status")
@@ -184,6 +203,13 @@ def auth_google_status(account: str | None) -> None:
     google_status(account=account)
 
 
+@auth_google.command("logout")
+@click.option("--account", default=None, help="Account label (e.g., personal, work)")
+def auth_google_logout(account: str | None) -> None:
+    """Remove stored Google credentials."""
+    google_logout(account=account)
+
+
 # ---------------------------------------------------------------------------
 # summon auth slack
 # ---------------------------------------------------------------------------
@@ -191,7 +217,7 @@ def auth_google_status(account: str | None) -> None:
 
 @cmd_auth.group("slack")
 def auth_slack() -> None:
-    """External Slack workspace authentication for scribe monitoring."""
+    """External Slack workspace authentication."""
 
 
 @auth_slack.command("login")
@@ -202,7 +228,10 @@ def auth_slack_login(workspace: str) -> None:
     WORKSPACE can be a name (myteam), enterprise (acme.enterprise),
     or full URL (https://myteam.slack.com).
     """
-    slack_auth(workspace)
+    try:
+        slack_auth(workspace)
+    except KeyboardInterrupt:
+        click.echo("\nAuthentication cancelled.", err=True)
 
 
 @auth_slack.command("logout")
@@ -266,7 +295,7 @@ def _extract_site_host(url: str) -> str:
 
 @cmd_auth.group("jira")
 def auth_jira() -> None:
-    """Jira authentication (OAuth 2.1 with PKCE + DCR)."""
+    """Jira authentication for MCP tools."""
 
 
 @auth_jira.command("login")
@@ -282,84 +311,96 @@ def auth_jira_login(site: str | None) -> None:  # noqa: PLR0912, PLR0915
 
     from summon_claude.jira_auth import (  # noqa: PLC0415
         discover_cloud_sites,
+        get_jira_token_path,
         load_jira_token,
         save_jira_token,
         start_auth_flow,
         try_refresh_only,
     )
 
-    # Try refresh first — skip browser if refresh token is still valid
-    # Idempotent: fresh DCR + PKCE flow, overwrites existing token.json
-    if asyncio.run(try_refresh_only()):
-        token = load_jira_token()
-        if token:
-            site_name = token.get("cloud_name", "Unknown")
-            click.echo(f"Jira credentials refreshed successfully. Connected to {site_name}")
-            return
-
-    click.echo("Starting Jira OAuth flow — a browser window will open.")
     try:
-        token_data = asyncio.run(start_auth_flow())
-    except TimeoutError as e:
-        click.echo(f"Timed out: {e}", err=True)
-        sys.exit(1)
-    except RuntimeError as e:
-        click.echo(f"Authentication failed: {e}", err=True)
-        sys.exit(1)
+        # Try refresh first — skip browser if refresh token is still valid
+        # Idempotent: fresh DCR + PKCE flow, overwrites existing token.json
+        if asyncio.run(try_refresh_only()):
+            token = load_jira_token()
+            if token:
+                site_name = token.get("cloud_name", "Unknown")
+                click.echo(f"Jira authenticated (site: {site_name}).")
+                click.echo(f"Credentials stored in {get_jira_token_path().parent}")
+                click.echo()
+                click.echo("Jira MCP tools will be available on next session start.")
+                return
 
-    # Resolve cloud site: always discover via API first (to get the UUID),
-    # then use --site as a filter or manual prompt as a last resort.
-    access_token = token_data.get("access_token", "")
-    sites = asyncio.run(discover_cloud_sites(access_token))
+        click.echo("Opening browser for Jira authentication...")
+        try:
+            token_data = asyncio.run(start_auth_flow())
+        except TimeoutError as e:
+            click.echo(f"Jira authentication timed out: {e}", err=True)
+            sys.exit(1)
+        except RuntimeError as e:
+            click.echo(f"Jira authentication failed: {e}", err=True)
+            sys.exit(1)
 
-    if site:
-        # --site narrows the discovery results by hostname match
-        site_host = _normalize_site(site)
-        matched = [s for s in sites if _extract_site_host(s.get("url", "")) == site_host]
-        if matched:
-            token_data["cloud_id"] = matched[0]["id"]
-            token_data["cloud_name"] = matched[0].get("name", "")
-        else:
-            # Fallback: store hostname (not UUID) with a warning
-            if sites:
-                click.echo(
-                    f"Warning: --site '{site}' did not match any discovered site. "
-                    f"Available: {', '.join(s.get('name', '') for s in sites)}",
-                    err=True,
-                )
+        # Resolve cloud site: always discover via API first (to get the UUID),
+        # then use --site as a filter or manual prompt as a last resort.
+        access_token = token_data.get("access_token", "")
+        sites = asyncio.run(discover_cloud_sites(access_token))
+
+        if site:
+            # --site narrows the discovery results by hostname match
+            site_host = _normalize_site(site)
+            matched = [s for s in sites if _extract_site_host(s.get("url", "")) == site_host]
+            if matched:
+                token_data["cloud_id"] = matched[0]["id"]
+                token_data["cloud_name"] = matched[0].get("name", "")
             else:
-                click.echo(
-                    f"Warning: site discovery unavailable — storing '{site_host}' as cloud_id. "
-                    "MCP tools may require a UUID; re-run login without --site if issues arise.",
-                    err=True,
-                )
-            token_data["cloud_id"] = site_host
-            token_data["cloud_name"] = site_host.split(".")[0]
-    elif sites:
-        if len(sites) == 1:
-            chosen = sites[0]
+                # Fallback: store hostname (not UUID) with a warning
+                if sites:
+                    click.echo(
+                        f"Warning: --site '{site}' did not match any discovered site. "
+                        f"Available: {', '.join(s.get('name', '') for s in sites)}",
+                        err=True,
+                    )
+                else:
+                    click.echo(
+                        f"Warning: site discovery unavailable"
+                        f" — storing '{site_host}' as cloud_id."
+                        " MCP tools may require a UUID;"
+                        " re-run login without --site if issues arise.",
+                        err=True,
+                    )
+                token_data["cloud_id"] = site_host
+                token_data["cloud_name"] = site_host.split(".")[0]
+        elif sites:
+            if len(sites) == 1:
+                chosen = sites[0]
+            else:
+                click.echo("Multiple Atlassian cloud sites found:")
+                for i, s in enumerate(sites, 1):
+                    click.echo(f"  {i}. {s.get('name', '')} ({s.get('url', '')})")
+                idx = click.prompt("Select a site", type=click.IntRange(1, len(sites)), default=1)
+                chosen = sites[idx - 1]
+            token_data["cloud_id"] = chosen["id"]
+            token_data["cloud_name"] = chosen.get("name", "")
         else:
-            click.echo("Multiple Atlassian cloud sites found:")
-            for i, s in enumerate(sites, 1):
-                click.echo(f"  {i}. {s.get('name', '')} ({s.get('url', '')})")
-            idx = click.prompt("Select a site", type=click.IntRange(1, len(sites)), default=1)
-            chosen = sites[idx - 1]
-        token_data["cloud_id"] = chosen["id"]
-        token_data["cloud_name"] = chosen.get("name", "")
-    else:
-        org = click.prompt("Enter your Atlassian org name (e.g. 'myorg')")
-        site_host = _normalize_site(org)
-        click.echo(
-            f"Warning: storing '{site_host}' as cloud_id — MCP tools may require a UUID. "
-            "Re-run login if issues arise.",
-            err=True,
-        )
-        token_data["cloud_id"] = site_host
-        token_data["cloud_name"] = org.strip()
+            org = click.prompt("Enter your Atlassian org name (e.g. 'myorg')")
+            site_host = _normalize_site(org)
+            click.echo(
+                f"Warning: storing '{site_host}' as cloud_id — MCP tools may require a UUID. "
+                "Re-run login if issues arise.",
+                err=True,
+            )
+            token_data["cloud_id"] = site_host
+            token_data["cloud_name"] = org.strip()
 
-    save_jira_token(token_data)
-    site_label = token_data.get("cloud_name", token_data["cloud_id"])
-    click.echo(f"Jira authenticated (site: {site_label}).")
+        save_jira_token(token_data)
+        site_label = token_data.get("cloud_name", token_data["cloud_id"])
+        click.echo(f"Jira authenticated (site: {site_label}).")
+        click.echo(f"Credentials stored in {get_jira_token_path().parent}")
+        click.echo()
+        click.echo("Jira MCP tools will be available on next session start.")
+    except (KeyboardInterrupt, click.Abort):
+        click.echo("\nAuthentication cancelled.", err=True)
 
 
 @auth_jira.command("logout")

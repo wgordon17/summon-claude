@@ -28,6 +28,12 @@ summon config check
 
 Once authenticated, the GitHub MCP server is wired into **all** sessions automatically — no per-session configuration needed.
 
+To check authentication status:
+
+```{ .bash .notest }
+summon auth github status
+```
+
 To remove stored credentials:
 
 ```{ .bash .notest }

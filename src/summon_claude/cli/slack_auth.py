@@ -291,7 +291,7 @@ def slack_auth(workspace: str) -> None:
 
     browser_type = os.environ.get("SUMMON_SCRIBE_SLACK_BROWSER", "chrome")
 
-    click.echo(f"Opening {browser_type} browser for Slack login at {workspace_url}")
+    click.echo(f"Opening {browser_type} browser for Slack authentication at {workspace_url}")
     click.echo("Complete the login in the browser window.")
     click.echo("The browser will close automatically after detecting your session.")
     click.echo("WARNING: Auth state contains session cookies — treat stored files as secrets.")
@@ -313,6 +313,8 @@ def slack_auth(workspace: str) -> None:
         click.echo(f"  Resolved: {result.resolved_url} (redirected from {workspace_url})")
 
     _save_workspace_config(result, effective_url, browser_type)
+    click.echo()
+    click.echo("Slack monitoring will be available on next project start.")
 
 
 def _save_workspace_config(

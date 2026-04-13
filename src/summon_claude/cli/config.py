@@ -661,6 +661,28 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
     if google_result is False:
         all_pass = False
 
+    # Jira (optional, only if credentials exist)
+    from summon_claude.jira_auth import (  # noqa: PLC0415
+        check_jira_status,
+        get_jira_site_name,
+        jira_credentials_exist,
+    )
+
+    if jira_credentials_exist():
+        jira_err = check_jira_status()
+        if jira_err is None:
+            if not quiet:
+                site = get_jira_site_name()
+                if site:
+                    site = re.sub(r"[^\x20-\x7e]", "", site)[:80]
+                site_suffix = f" (site: {site})" if site else ""
+                click.echo(f"  {format_tag('PASS')} Jira: authenticated{site_suffix}")
+        else:
+            click.echo(f"  {format_tag('FAIL')} Jira: {jira_err}")
+            all_pass = False
+    elif not quiet:
+        click.echo(f"  {format_tag('INFO')} Jira: not configured (optional)")
+
     # Optional extras availability (informational)
     if not quiet:
         from summon_claude.config import (  # noqa: PLC0415
@@ -731,20 +753,6 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         click.echo()
         click.echo(click.style("Features:", bold=True))
         _print_feature_inventory(db_path, values)
-
-    # Jira (optional, only if credentials exist)
-    from summon_claude.jira_auth import check_jira_status, jira_credentials_exist  # noqa: PLC0415
-
-    if jira_credentials_exist():
-        jira_err = check_jira_status()
-        if jira_err is None:
-            if not quiet:
-                click.echo(f"  {format_tag('PASS')} Jira credentials valid")
-        else:
-            click.echo(f"  {format_tag('FAIL')} Jira: {jira_err}")
-            all_pass = False
-    elif not quiet:
-        click.echo(f"  {format_tag('INFO')} Jira: not configured (optional)")
 
     return all_pass
 

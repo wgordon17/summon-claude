@@ -64,6 +64,12 @@ summon auth google status
 
 This shows whether credentials exist, which scopes are granted (read-only vs read-write per service), and whether the token is still valid.
 
+To remove stored Google credentials (keeps app setup intact for re-login):
+
+```{ .bash .notest }
+summon auth google logout
+```
+
 ### Enabling the Google collector
 
 The Google collector is **auto-detected**: when workspace-mcp is installed and Google credentials exist, the scribe automatically uses Google tools. No manual config flag is needed.

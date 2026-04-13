@@ -933,7 +933,7 @@ def google_auth(account: str | None = None) -> None:
         store.store_credential(user_email, cred)
         _secure_credential_files(account_dir)
         click.echo()
-        click.echo(f"Google Workspace authenticated as {user_email}.")
+        click.echo(f"Google authenticated as {user_email}.")
         click.echo(f"Credentials stored in {account_dir}")
 
     # Context-aware next-step guidance.
@@ -1069,3 +1069,32 @@ def google_status(account: str | None = None) -> None:
     if account is not None:
         account = _validate_account_label(account)
     _check_google_status(account=account)
+
+
+def google_logout(account: str | None = None) -> None:
+    """Remove stored Google credentials."""
+    from summon_claude.config import discover_google_accounts  # noqa: PLC0415
+
+    accounts = discover_google_accounts()
+    if account is not None:
+        account = _validate_account_label(account)
+        matches = [a for a in accounts if a.label == account]
+        if not matches:
+            click.echo(f"No Google credentials found for account '{account}'.")
+            return
+        target_accounts = matches
+    else:
+        target_accounts = accounts
+
+    if not target_accounts:
+        click.echo("No Google credentials stored.")
+        return
+
+    for acct in target_accounts:
+        cred_files = [f for f in acct.creds_dir.glob("*.json") if "@" in f.stem]
+        if not cred_files:
+            click.echo(f"No Google credentials found for account '{acct.label}'.")
+            continue
+        for f in cred_files:
+            f.unlink(missing_ok=True)
+        click.echo(f"Google credentials removed ({acct.label}).")
