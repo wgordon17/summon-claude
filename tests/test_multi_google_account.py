@@ -1100,6 +1100,47 @@ class TestScopesToServices:
             result = _scopes_to_services(full)
             assert service in result, f"Service {service!r} not detected from scopes {full}"
 
+    def test_legacy_calendar_full_scope_undetectable(self) -> None:
+        """Legacy 'calendar' (full) scope is not detectable after scope narrowing.
+
+        Pre-PR, calendar rw tier was ['calendar', 'calendar.events'], so
+        credentials with https://www.googleapis.com/auth/calendar would match.
+        Post-PR, rw tier is ['calendar.events'] only.  Users with legacy
+        credentials must re-authenticate.
+        """
+        from summon_claude.config import _scopes_to_services
+
+        result = _scopes_to_services({"https://www.googleapis.com/auth/calendar"})
+        assert result == []  # intentionally undetectable after scope narrowing
+
+    def test_legacy_rw_scopes_detected_by_existing_rw(self) -> None:
+        """existing_rw detection in google_auth() recognizes legacy rw scopes.
+
+        The _LEGACY_RW_SCOPES dict maps old scopes (gmail.modify, calendar)
+        to their services so that the interactive wizard defaults to write
+        for users who authenticated before the scope narrowing.
+        """
+        from summon_claude.cli.google_auth import (
+            _LEGACY_RW_SCOPES,
+            GOOGLE_SCOPE_PREFIX,
+        )
+        from summon_claude.config import GOOGLE_SERVICE_SCOPES
+
+        for legacy_scope, expected_svc in [("gmail.modify", "gmail"), ("calendar", "calendar")]:
+            granted = {f"{GOOGLE_SCOPE_PREFIX}{legacy_scope}"}
+            existing_rw: set[str] = set()
+            for svc, tiers in GOOGLE_SERVICE_SCOPES.items():
+                rw_scopes = {
+                    s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}"
+                    for s in tiers["rw"]
+                }
+                legacy_rw = _LEGACY_RW_SCOPES.get(svc, set())
+                if (rw_scopes | legacy_rw) & granted:
+                    existing_rw.add(svc)
+            assert expected_svc in existing_rw, (
+                f"{legacy_scope} should be detected as legacy rw for {expected_svc}"
+            )
+
     def test_ro_rw_tiers_disjoint(self) -> None:
         """ro and rw tiers must be disjoint — _describe_granted_scopes assumes this.
 

@@ -982,6 +982,24 @@ class TestGoogleScopeHelpers:
         assert "drive" in scope_names
         assert "drive.readonly" in scope_names
 
+    def test_google_scopes_docs_rw_produces_union(self) -> None:
+        """docs:rw produces ro+rw union: {documents.readonly, documents}."""
+        from summon_claude.cli.google_auth import GOOGLE_SCOPE_PREFIX, _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["docs:rw"])
+        scope_names = {s.removeprefix(GOOGLE_SCOPE_PREFIX) for s in scopes}
+        assert "documents.readonly" in scope_names  # ro tier included
+        assert "documents" in scope_names  # rw tier included
+
+    def test_google_scopes_search_rw_deduplicates(self) -> None:
+        """search:rw deduplicates when ro == rw (both are 'cse'): single cse scope."""
+        from summon_claude.cli.google_auth import GOOGLE_SCOPE_PREFIX, _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["search:rw"])
+        scope_names = [s.removeprefix(GOOGLE_SCOPE_PREFIX) for s in scopes]
+        cse_count = scope_names.count("cse")
+        assert cse_count == 1, f"Expected 'cse' exactly once, got {cse_count}"
+
     def test_google_scopes_unknown_service_skipped(self):
         """Unknown services are silently skipped."""
         from summon_claude.cli.google_auth import _GOOGLE_BASE_SCOPES, _google_scopes_for_services
@@ -1023,6 +1041,21 @@ class TestGoogleScopeHelpers:
         }
         desc = _describe_granted_scopes(granted)
         assert "gmail (read-write)" in desc
+        assert "calendar (read-write)" in desc
+
+    def test_describe_granted_scopes_legacy_rw(self) -> None:
+        """Legacy rw scopes (gmail.modify, calendar) show as read-write."""
+        from summon_claude.cli.google_auth import (
+            GOOGLE_SCOPE_PREFIX,
+            _describe_granted_scopes,
+        )
+
+        # gmail.modify — legacy Gmail rw scope
+        desc = _describe_granted_scopes({f"{GOOGLE_SCOPE_PREFIX}gmail.modify"})
+        assert "gmail (read-write)" in desc
+
+        # calendar (full) — legacy Calendar rw scope
+        desc = _describe_granted_scopes({f"{GOOGLE_SCOPE_PREFIX}calendar"})
         assert "calendar (read-write)" in desc
 
     def test_load_google_client_credentials_from_env(self):
