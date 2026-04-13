@@ -111,10 +111,12 @@ class Redactor:
         # 1. Token secrets (xoxb-, xapp-, sk-ant-, ghp_, github_pat_, gho_, ghu_, ghs_, ghr_)
         text = redact_secrets(text)
         # 2. Path normalization — longer specific dirs first, home last
-        if _data_dir_str() != _HOME_DIR:
-            text = text.replace(_data_dir_str(), "[data_dir]")
-        if _config_dir_str() != _HOME_DIR:
-            text = text.replace(_config_dir_str(), "[config_dir]")
+        data_dir = _data_dir_str()
+        config_dir = _config_dir_str()
+        if data_dir != _HOME_DIR:
+            text = text.replace(data_dir, "[data_dir]")
+        if config_dir != _HOME_DIR:
+            text = text.replace(config_dir, "[config_dir]")
         text = text.replace(_HOME_DIR, "~")
         # 3. Slack IDs: user (U), channel (C), team (T), bot (B)
         text = _SLACK_USER_ID_RE.sub("U***", text)

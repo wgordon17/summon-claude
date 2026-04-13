@@ -92,7 +92,7 @@ def _get_git_main_repo_root(cwd: Path) -> Path | None:
         if not resolved.is_relative_to(Path.home()):
             return None
         return resolved
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, IndexError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, IndexError, UnicodeDecodeError):
         return None
 
 

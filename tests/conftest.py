@@ -257,7 +257,10 @@ def _global_xdg_dir(env_var: str, default_rel: str) -> Path:
         p = Path(xdg)
         if p.is_absolute():
             return p / "summon"
-    return Path.home() / default_rel / "summon"
+    candidate = Path.home() / default_rel / "summon"
+    if (Path.home() / default_rel).exists():
+        return candidate
+    return Path.home() / ".summon"
 
 
 @pytest.fixture(autouse=True, scope="session")

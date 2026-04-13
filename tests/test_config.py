@@ -575,6 +575,25 @@ class TestGetGitMainRepoRoot:
 
         assert result is None
 
+    def test_path_outside_home_returns_none(self, tmp_path):
+        """Security gate: git returns a path that resolves outside Path.home() → None."""
+        from summon_claude.config import _get_git_main_repo_root
+
+        _get_git_main_repo_root.cache_clear()
+
+        # git reports a .git dir under /opt — outside the mocked home of /home/testuser
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = b"/opt/somewhere/.git\n"
+
+        with (
+            patch("subprocess.run", return_value=fake_result),
+            patch("summon_claude.config.Path.home", return_value=tmp_path / "home" / "testuser"),
+        ):
+            result = _get_git_main_repo_root(tmp_path)
+
+        assert result is None
+
 
 class TestDetectInstallModeWorktree:
     """Tests for worktree-aware install mode detection.
