@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import stat
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -67,6 +68,35 @@ def _find_project_root() -> Path | None:
 
 
 @functools.lru_cache(maxsize=1)
+def _get_git_main_repo_root(cwd: Path) -> Path | None:
+    """Return the main repo root for the given directory (worktree-aware).
+
+    For a normal git repo, returns the same directory (parent of .git/).
+    For a git worktree, returns the main repo root (not the worktree itself).
+    Returns None if not in a git repo or if git is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],  # noqa: S607
+            capture_output=True,
+            timeout=5,
+            check=False,
+            cwd=cwd,
+        )
+        if result.returncode != 0:
+            return None
+        raw_path = result.stdout.decode().strip().splitlines()[0]
+        if not raw_path or len(raw_path) >= 4096:
+            return None
+        resolved = (cwd / raw_path).resolve().parent
+        if not resolved.is_relative_to(Path.home()):
+            return None
+        return resolved
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, IndexError):
+        return None
+
+
+@functools.lru_cache(maxsize=1)
 def _detect_install_mode() -> tuple[str, Path | None]:
     """Detect whether this is a local or global install.
 
@@ -91,12 +121,20 @@ def _detect_install_mode() -> tuple[str, Path | None]:
         if not project_root.is_relative_to(home):
             return ("global", None)
 
-    # Auto-detect: VIRTUAL_ENV under project root
+    # Auto-detect: VIRTUAL_ENV under project root (or main repo root for worktrees)
     venv_str = os.environ.get("VIRTUAL_ENV", "").strip()
     if venv_str and project_root is not None:
         venv_path = Path(venv_str)
-        if venv_path.is_absolute() and venv_path.resolve().is_relative_to(project_root.resolve()):
-            return ("local", project_root)
+        if venv_path.is_absolute():
+            if venv_path.resolve().is_relative_to(project_root.resolve()):
+                return ("local", project_root)
+            main_root = _get_git_main_repo_root(project_root)
+            if (
+                main_root is not None
+                and main_root.resolve() != project_root.resolve()
+                and venv_path.resolve().is_relative_to(main_root.resolve())
+            ):
+                return ("local", project_root)
 
     return ("global", None)
 
