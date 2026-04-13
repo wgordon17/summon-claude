@@ -169,15 +169,17 @@ Lists all files created or modified during this session, with line addition/dele
 
 These commands are forwarded directly to the Claude Code CLI subprocess. They trigger Claude's built-in slash commands.
 
+<!-- commands:passthrough -->
 | Command | Description |
 |---------|-------------|
-| `!review` | Review code changes |
+| `!claude-developer-platform` | Claude developer platform info |
+| `!debug` | Debug session issues |
 | `!init` | Initialize project configuration |
 | `!pr-comments` | Review PR comments |
-| `!security-review` | Run a security review |
+| `!review` | Review code changes |
+| `!security-review` | Run security review |
 | `!simplify` | Simplify and refine code |
-| `!debug` | Debug session issues |
-| `!claude-developer-platform` | Claude developer platform information |
+<!-- /commands:passthrough -->
 
 Passthrough commands produce output in the session channel, the same as if you had typed them in a local Claude terminal.
 
@@ -189,19 +191,23 @@ Some Claude CLI commands are blocked in Slack sessions because they depend on a 
 
 ### Blocked with specific reasons
 
+<!-- commands:blocked-specific -->
 | Command | Reason |
 |---------|--------|
+| `!context` | Use `!status` for context info |
+| `!cost` | Use `!status` for cost info |
 | `!insights` | Generates a local HTML report — not viewable in Slack |
-| `!context` | Use `!status` instead |
-| `!cost` | Use `!status` instead |
+| `!login` | Not available in Slack sessions. |
 | `!release-notes` | Not available in Slack sessions |
-| `!login` | Not available in Slack sessions |
+<!-- /commands:blocked-specific -->
 
 ### CLI-only commands
 
 These commands require the interactive Claude CLI and are blocked with: _"Only available in the interactive CLI"_
 
-`!config` (`!settings`), `!doctor`, `!desktop` (`!app`), `!feedback` (`!bug`), `!permissions` (`!allowed-tools`), `!mobile` (`!ios`, `!android`), `!resume` (`!continue`), `!rewind` (`!checkpoint`), `!remote-control` (`!rc`), `!add-dir`, `!agents`, `!chrome`, `!copy`, `!export`, `!extra-usage`, `!fast`, `!fork`, `!hooks`, `!ide`, `!install-github-app`, `!install-slack-app`, `!keybindings`, `!mcp`, `!memory`, `!output-style`, `!passes`, `!plan`, `!plugin`, `!privacy-settings`, `!reload-plugins`, `!remote-env`, `!rename`, `!sandbox`, `!skills`, `!stats`, `!statusline`, `!stickers`, `!tasks`, `!terminal-setup`, `!theme`, `!upgrade`, `!usage`, `!vim`
+<!-- commands:cli-only -->
+`!add-dir`, `!agents`, `!batch`, `!chrome`, `!claude-api`, `!config` (`!settings`), `!copy`, `!desktop` (`!app`), `!doctor`, `!export`, `!extra-usage`, `!fast`, `!feedback` (`!bug`), `!fork`, `!heapdump`, `!hooks`, `!ide`, `!install-github-app`, `!install-slack-app`, `!keybindings`, `!mcp`, `!memory`, `!mobile` (`!ios`, `!android`), `!output-style`, `!passes`, `!permissions` (`!allowed-tools`), `!plan`, `!plugin`, `!privacy-settings`, `!reload-plugins`, `!remote-control` (`!rc`), `!remote-env`, `!rename`, `!resume` (`!continue`), `!rewind` (`!checkpoint`), `!sandbox`, `!skills`, `!stats`, `!statusline`, `!stickers`, `!tasks`, `!terminal-setup`, `!theme`, `!upgrade`, `!usage`, `!vim`
+<!-- /commands:cli-only -->
 
 When a blocked command is used, summon responds with a clear explanation rather than forwarding it to Claude.
 
