@@ -431,7 +431,7 @@ class ResponseStreamer:
         # so this persists during actual tool execution until the result arrives.
         await self._set_status(f"Running {block.name}...")
 
-    async def _handle_tool_result_block(  # noqa: PLR0912
+    async def _handle_tool_result_block(
         self, block: ToolResultBlock, parent_id: str | None
     ) -> None:
         """Route a ToolResultBlock to the correct thread."""
@@ -456,8 +456,8 @@ class ResponseStreamer:
             fc_tool_name, filepath, old_str, new_str = pending_fc
             # For Edit tools, compute unified_diff once and share it with both
             # _schedule_file_change (additions/deletions count) and _upload_diff (Slack content).
-            if fc_tool_name in ("Edit", "str_replace_editor") and old_str:
-                edit_diff_lines = list(
+            edit_diff_lines = (
+                list(
                     difflib.unified_diff(
                         old_str.splitlines(keepends=True),
                         new_str.splitlines(keepends=True),
@@ -465,8 +465,9 @@ class ResponseStreamer:
                         tofile=f"b/{filepath}",
                     )
                 )
-            else:
-                edit_diff_lines = []
+                if fc_tool_name in ("Edit", "str_replace_editor") and old_str
+                else []
+            )
             self._schedule_file_change(
                 filepath, old_str, new_str, precomputed_diff=edit_diff_lines or None
             )
