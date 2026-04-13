@@ -70,7 +70,7 @@ def _check_jira_status_data() -> dict:
     site = get_jira_site_name()
     result: dict = {"provider": "jira", "status": "authenticated"}
     if site:
-        result["site"] = re.sub(r"[^\x20-\x7e]", "", site)[:80]
+        result["site"] = site
     return result
 
 
@@ -82,7 +82,7 @@ def _check_slack_status_data() -> dict:
         return {"provider": "slack", "status": "not_configured"}
     try:
         workspace = _json.loads(wcp.read_text())
-        url = re.sub(r"[^\x20-\x7e]", "", workspace.get("url", "unknown"))
+        url = re.sub(r"[^\x20-\x7e]", "", workspace.get("url", "unknown"))[:200]
     except (_json.JSONDecodeError, OSError, AttributeError):
         return {"provider": "slack", "status": "error", "error": "corrupted config"}
     existing = _check_existing_slack_auth()
@@ -160,8 +160,6 @@ def auth_status(ctx: click.Context, as_json: bool) -> None:  # noqa: PLR0912, PL
         if jira_err is None:
             if not quiet:
                 site = get_jira_site_name()
-                if site:
-                    site = re.sub(r"[^\x20-\x7e]", "", site)[:80]
                 site_suffix = f" (site: {site})" if site else ""
                 click.echo(f"  {format_tag('PASS')} Jira: authenticated{site_suffix}")
         elif not quiet:
@@ -494,8 +492,6 @@ def auth_jira_status() -> None:
     err = check_jira_status()
     if err is None:
         site = get_jira_site_name()
-        if site:
-            site = re.sub(r"[^\x20-\x7e]", "", site)[:80]
         site_suffix = f" (site: {site})" if site else ""
         click.echo(f"{format_tag('PASS')} Jira: authenticated{site_suffix}")
     else:

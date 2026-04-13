@@ -1162,6 +1162,10 @@ def google_logout(account: str | None = None) -> None:
         click.echo("No Google credentials stored.")
         return
 
+    labels = ", ".join(a.label for a in target_accounts)
+    if not click.confirm(f"Remove Google credentials for {labels}?"):
+        return
+
     for acct in target_accounts:
         cred_files = [f for f in acct.creds_dir.glob("*.json") if "@" in f.stem]
         if not cred_files:

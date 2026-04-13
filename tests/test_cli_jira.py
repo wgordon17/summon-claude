@@ -765,3 +765,69 @@ class TestProjectListJQLDisplay:
 
         assert result.exit_code == 0
         assert "JQL" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# get_jira_site_name
+# ---------------------------------------------------------------------------
+
+
+class TestGetJiraSiteName:
+    def test_returns_cloud_name(self, tmp_path):
+        """get_jira_site_name returns cloud_name from token file."""
+        import json
+
+        from summon_claude.jira_auth import get_jira_site_name
+
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({"cloud_name": "MyOrg"}))
+        with patch("summon_claude.jira_auth.get_jira_token_path", return_value=token_file):
+            result = get_jira_site_name()
+        assert result == "MyOrg"
+
+    def test_returns_none_for_missing_file(self, tmp_path):
+        """get_jira_site_name returns None when token file missing."""
+        from summon_claude.jira_auth import get_jira_site_name
+
+        with patch(
+            "summon_claude.jira_auth.get_jira_token_path",
+            return_value=tmp_path / "missing.json",
+        ):
+            result = get_jira_site_name()
+        assert result is None
+
+    def test_returns_none_for_corrupt_file(self, tmp_path):
+        """get_jira_site_name returns None for corrupt JSON."""
+        from summon_claude.jira_auth import get_jira_site_name
+
+        token_file = tmp_path / "token.json"
+        token_file.write_text("not json{{{")
+        with patch("summon_claude.jira_auth.get_jira_token_path", return_value=token_file):
+            result = get_jira_site_name()
+        assert result is None
+
+    def test_returns_none_for_missing_cloud_name(self, tmp_path):
+        """get_jira_site_name returns None when cloud_name not in token."""
+        import json
+
+        from summon_claude.jira_auth import get_jira_site_name
+
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({"access_token": "abc"}))
+        with patch("summon_claude.jira_auth.get_jira_token_path", return_value=token_file):
+            result = get_jira_site_name()
+        assert result is None
+
+    def test_sanitizes_non_printable_chars(self, tmp_path):
+        """get_jira_site_name strips non-printable characters."""
+        import json
+
+        from summon_claude.jira_auth import get_jira_site_name
+
+        token_file = tmp_path / "token.json"
+        token_file.write_text(json.dumps({"cloud_name": "My\x00Org\x1bName"}))
+        with patch("summon_claude.jira_auth.get_jira_token_path", return_value=token_file):
+            result = get_jira_site_name()
+        assert result == "MyOrgName"
+        assert "\x00" not in result
+        assert "\x1b" not in result

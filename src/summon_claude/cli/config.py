@@ -707,8 +707,6 @@ def config_check(quiet: bool = False, config_path: str | None = None) -> bool:
         if jira_err is None:
             if not quiet:
                 site = get_jira_site_name()
-                if site:
-                    site = re.sub(r"[^\x20-\x7e]", "", site)[:80]
                 site_suffix = f" (site: {site})" if site else ""
                 click.echo(f"  {format_tag('PASS')} Jira: authenticated{site_suffix}")
         else:

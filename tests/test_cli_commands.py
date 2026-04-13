@@ -1342,6 +1342,34 @@ class TestAuthStatusJSON:
         assert github["login"] == "testuser"
         assert github["scopes"] == "repo"
 
+    def test_auth_status_json_quiet(self):
+        """--json output is still produced when --quiet is passed."""
+        import json
+
+        with (
+            patch(
+                "summon_claude.cli.auth._check_github_status_data",
+                return_value={"provider": "github", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_google_status_data",
+                return_value={"provider": "google", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_jira_status_data",
+                return_value={"provider": "jira", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_slack_status_data",
+                return_value={"provider": "slack", "status": "not_configured"},
+            ),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["--quiet", "auth", "status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data["providers"]) == 4
+
 
 class TestGitHubAuthCLI:
     """Tests for auth github login/logout Click commands."""
@@ -1461,6 +1489,35 @@ class TestGitHubAuthCLI:
 
         assert result.exit_code == 0
         assert "No GitHub credentials stored." in result.output
+
+
+class TestLoginKeyboardInterrupt:
+    def test_google_login_keyboard_interrupt(self):
+        """Ctrl+C during google login prints cancellation."""
+        with patch("summon_claude.cli.auth.google_auth", side_effect=KeyboardInterrupt):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "google", "login"])
+        assert "cancelled" in result.output.lower()
+
+    def test_jira_login_keyboard_interrupt(self):
+        """Ctrl+C during jira login prints cancellation."""
+        from unittest.mock import AsyncMock
+
+        with patch(
+            "summon_claude.jira_auth.try_refresh_only",
+            new_callable=AsyncMock,
+            side_effect=KeyboardInterrupt,
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "jira", "login"])
+        assert "cancelled" in result.output.lower()
+
+    def test_slack_login_keyboard_interrupt(self):
+        """Ctrl+C during slack login prints cancellation."""
+        with patch("summon_claude.cli.auth.slack_auth", side_effect=KeyboardInterrupt):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "slack", "login", "test-workspace"])
+        assert "cancelled" in result.output.lower()
 
 
 class TestConfigSetChoiceValidation:
@@ -1800,7 +1857,7 @@ class TestGoogleLogoutCmd:
         )
         with patch("summon_claude.config.discover_google_accounts", return_value=[mock_account]):
             runner = CliRunner()
-            result = runner.invoke(cli, ["auth", "google", "logout"])
+            result = runner.invoke(cli, ["auth", "google", "logout"], input="y\n")
 
         assert result.exit_code == 0
         assert "Google credentials removed" in result.output

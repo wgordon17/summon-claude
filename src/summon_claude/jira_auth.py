@@ -21,6 +21,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import select
 import shutil
@@ -786,10 +787,13 @@ def check_jira_status() -> str | None:  # noqa: PLR0911
 
 
 def get_jira_site_name() -> str | None:
-    """Return the configured Jira cloud site name, or None."""
+    """Return the configured Jira cloud site name (sanitized), or None."""
     token_path = get_jira_token_path()
     try:
         token_data = json.loads(token_path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-    return token_data.get("cloud_name") or None
+    name = token_data.get("cloud_name") or None
+    if name:
+        name = re.sub(r"[^\x20-\x7e]", "", name)[:80]
+    return name or None
