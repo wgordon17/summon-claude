@@ -5357,6 +5357,18 @@ class TestShowCommand:
         assert any("truncated" in p.lower() for p in posted)
         rt.client.upload.assert_called_once()
 
+    async def test_show_file_empty(self, tmp_path):
+        f = tmp_path / "empty.txt"
+        f.write_text("")
+        session = make_session(cwd=str(tmp_path))
+        rt = make_rt(AsyncMock())
+
+        await session._handle_show_file(rt, "empty.txt", "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("empty" in p.lower() for p in posted)
+        rt.client.upload.assert_not_called()
+
     async def test_show_file_outside_cwd(self, tmp_path):
         session = make_session(cwd=str(tmp_path))
         rt = make_rt(AsyncMock())

@@ -3359,6 +3359,13 @@ class SummonSession:
                 )
                 return
 
+            if not content:
+                await rt.client.post(
+                    f"_`{user_path}` is empty — nothing to show._",
+                    thread_ts=thread_ts,
+                )
+                return
+
             if truncated:
                 await rt.client.post(
                     f":warning: File truncated at {_MAX_UPLOAD_CHARS:,} chars.",
