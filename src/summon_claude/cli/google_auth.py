@@ -746,8 +746,8 @@ def _describe_granted_scopes(granted: set[str]) -> str:
 
 
 _GOOGLE_WRITE_PROMPTS: dict[str, str] = {
-    "gmail": "Send and compose emails via Gmail",
-    "calendar": "Create and edit Google Calendar events",
+    "gmail": "Send and compose emails, manage labels, filters, and email settings",
+    "calendar": "Create, edit, and delete calendar events",
     "drive": "Create, edit, and delete Google Drive files",
 }
 
@@ -922,7 +922,7 @@ def google_auth(account: str | None = None) -> None:
             elif has_required_scopes(granted, scopes):
                 # Granted scopes are broader than requested — user is
                 # dropping write access.  Re-auth with the smaller set.
-                click.echo("Re-authenticating to narrow scope access.\n")
+                click.echo("Re-authenticating to update scope access.\n")
             else:
                 click.echo("Current credentials are missing some requested scopes.\n")
 
