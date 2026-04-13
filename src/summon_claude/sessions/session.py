@@ -3119,7 +3119,7 @@ class SummonSession:
                     )
                     return
                 # Generate synthetic diff via --no-index
-                rel_path = Path(resolved).relative_to(cwd)
+                rel_path = str(Path(resolved).relative_to(cwd))
                 nidx_proc = await asyncio.create_subprocess_exec(
                     "git",
                     "diff",
@@ -3237,10 +3237,10 @@ class SummonSession:
             overflow_count = max(0, len(untracked_files) - 50)
             parts: list[str] = []
             for uf in untracked_files[:50]:
-                combined_len = len(tracked_diff) + len(untracked_diffs)
+                combined_len = len(tracked_diff) + sum(len(p) for p in parts)
                 if combined_len > _MAX_UPLOAD_CHARS:
                     break
-                rel_path = (Path(cwd) / uf).relative_to(cwd)
+                rel_path = str((Path(cwd) / uf).relative_to(cwd))
                 try:
                     nidx_proc = await asyncio.create_subprocess_exec(
                         "git",
@@ -3296,7 +3296,7 @@ class SummonSession:
                 thread_ts=thread_ts,
             )
 
-    async def _handle_show_file(
+    async def _handle_show_file(  # noqa: PLR0911
         self, rt: _SessionRuntime, user_path: str, thread_ts: str | None
     ) -> None:
         """Handle !show <file> — display file contents."""
@@ -3318,6 +3318,12 @@ class SummonSession:
                 content, truncated = await asyncio.to_thread(
                     _read_bounded, resolved, _MAX_UPLOAD_CHARS
                 )
+            except FileNotFoundError:
+                await rt.client.post(
+                    f":warning: File not found: `{user_path}`.",
+                    thread_ts=thread_ts,
+                )
+                return
             except PermissionError:
                 await rt.client.post(
                     f":warning: Permission denied: `{user_path}`.",
