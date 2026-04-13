@@ -10,7 +10,7 @@ CURRENT_BRANCH := $(shell git branch --show-current)
 .PHONY: install lint test build clean all release
 .PHONY: py-install py-lint py-typecheck py-test py-test-slack py-test-llm py-test-quick py-build py-clean py-all
 .PHONY: repo-hooks-install repo-hooks-clean
-.PHONY: docs-prompts docs-commands docs-serve docs-build docs-check docs-screenshots docs-terminal docs-test docs-test-links
+.PHONY: docs-prompts docs-commands docs-env docs-serve docs-build docs-check docs-screenshots docs-terminal docs-test docs-test-links
 
 # Default target - auto-generated from inline ## comments
 help:
@@ -86,6 +86,9 @@ docs-prompts: ## Regenerate docs/reference/prompts.md from source constants
 
 docs-commands: ## Regenerate docs/reference/commands.md from COMMAND_ACTIONS
 	uv run python scripts/generate_commands_docs.py
+
+docs-env: ## Regenerate docs/reference/environment-variables.md from CONFIG_OPTIONS
+	uv run python scripts/generate_env_docs.py
 
 docs-serve: ## Serve docs locally with live reload
 	uv run mkdocs serve

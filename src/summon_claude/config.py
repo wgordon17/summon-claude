@@ -1191,7 +1191,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SLACK_BOT_TOKEN",
         group="Slack Credentials",
         label="Bot Token",
-        help_text="Slack bot token (xoxb-...)",
+        help_text="Slack Bot User OAuth token. Must start with `xoxb-`.",
         input_type="secret",
         required=True,
         help_hint=(
@@ -1205,7 +1205,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SLACK_APP_TOKEN",
         group="Slack Credentials",
         label="App Token",
-        help_text="Slack Socket Mode app-level token (xapp-...)",
+        help_text="Slack App-Level token for Socket Mode. Must start with `xapp-`.",
         input_type="secret",
         required=True,
         help_hint="Find at: api.slack.com/apps → your app → Basic Information → App-Level Tokens",
@@ -1217,7 +1217,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SLACK_SIGNING_SECRET",
         group="Slack Credentials",
         label="Signing Secret",
-        help_text="Slack app signing secret for request verification",
+        help_text="Slack signing secret for request verification (hex string).",
         input_type="secret",
         required=True,
         help_hint="Find at: api.slack.com/apps → your app → Basic Information → App Credentials",
@@ -1234,7 +1234,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_DEFAULT_MODEL",
         group="Session Defaults",
         label="Default Model",
-        help_text="Claude model to use for sessions (e.g. claude-opus-4-6)",
+        help_text="Claude model to use for new sessions (e.g. `claude-opus-4-6`).",
         input_type="choice",
         choices_fn=get_model_choices,
         validate_fn=_warn_unrecognized_model,
@@ -1244,7 +1244,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_DEFAULT_EFFORT",
         group="Session Defaults",
         label="Default Effort",
-        help_text="Thinking effort level for sessions",
+        help_text="Thinking effort level for new sessions.",
         input_type="choice",
         choices=("low", "medium", "high", "max"),
     ),
@@ -1253,7 +1253,11 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_CHANNEL_PREFIX",
         group="Session Defaults",
         label="Channel Prefix",
-        help_text="Prefix for Slack channel names created by summon",
+        help_text=(
+            "Prefix for auto-created Slack channel names."
+            " Channels are named `{prefix}-{session-name}`."
+            " Must be lowercase alphanumeric, hyphens, and underscores only."
+        ),
         input_type="text",
         validate_fn=_validate_channel_prefix,
     ),
@@ -1263,7 +1267,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_ENABLED",
         group="Scribe",
         label="Enable Scribe",
-        help_text="Enable the background scribe agent (auto-detected from Google/Slack)",
+        help_text=(
+            "Enable the background scribe agent."
+            " Auto-enables when Google or Slack collectors are detected."
+        ),
         input_type="flag",
         help_hint=(
             "Background agent that monitors notifications,"
@@ -1275,7 +1282,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_SCAN_INTERVAL_MINUTES",
         group="Scribe",
         label="Scan Interval (minutes)",
-        help_text="How often the scribe agent scans for new data",
+        help_text="How often the scribe scans for new information. Minimum 1.",
         input_type="int",
         visible=_scribe_enabled,
         validate_fn=_validate_scan_interval_minutes,
@@ -1285,7 +1292,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_CWD",
         group="Scribe",
         label="Scribe Working Directory",
-        help_text="Working directory for the scribe agent",
+        help_text="Working directory for the scribe session.",
         input_type="text",
         visible=_scribe_enabled,
         help_hint=f"Default: {get_data_dir() / 'scribe'}. Does not need to be a git repo.",
@@ -1298,7 +1305,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_MODEL",
         group="Scribe",
         label="Scribe Model",
-        help_text="Claude model for the scribe agent (default: inherits default_model)",
+        help_text="Model override for the scribe session.",
         input_type="choice",
         choices_fn=get_model_choices,
         validate_fn=_warn_unrecognized_model,
@@ -1309,7 +1316,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_IMPORTANCE_KEYWORDS",
         group="Scribe",
         label="Importance Keywords",
-        help_text="Comma-separated keywords that raise message importance (e.g. urgent,deadline)",
+        help_text=(
+            "Comma-separated keywords that flag a message as high-priority"
+            " (e.g. `urgent,deadline`)."
+        ),
         input_type="text",
         visible=_scribe_enabled,
         help_hint=(
@@ -1322,7 +1332,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_QUIET_HOURS",
         group="Scribe",
         label="Quiet Hours",
-        help_text="Time window for reduced alerts, format HH:MM-HH:MM (e.g. 22:00-07:00)",
+        help_text=(
+            "Time window for reduced alerts, format `HH:MM-HH:MM`"
+            " (e.g. `22:00-07:00`). Only level-5 alerts are surfaced during this window."
+        ),
         input_type="text",
         visible=_scribe_enabled,
         validate_fn=_validate_quiet_hours,
@@ -1334,7 +1347,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_GOOGLE_ENABLED",
         group="Scribe Google",
         label="Enable Google Collector",
-        help_text="Enable the Google Workspace data collector for scribe",
+        help_text=(
+            "Enable the Google Workspace data collector for scribe."
+            " Auto-detected when workspace-mcp is installed and Google credentials exist."
+        ),
         input_type="flag",
         visible=lambda cfg: _scribe_enabled(cfg) and _workspace_mcp_installed(),
     ),
@@ -1344,7 +1360,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_SLACK_ENABLED",
         group="Scribe Slack",
         label="Enable Scribe Slack Collector",
-        help_text="Enable the Slack data collector for the scribe agent",
+        help_text=(
+            "Enable the Slack data collector."
+            " Auto-detected when Playwright is installed and browser auth exists."
+        ),
         input_type="flag",
         visible=lambda cfg: _scribe_enabled(cfg) and is_extra_installed("playwright"),
     ),
@@ -1353,7 +1372,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_SLACK_BROWSER",
         group="Scribe Slack",
         label="Scribe Slack Browser",
-        help_text="Playwright browser for the Slack collector",
+        help_text="Browser for Slack monitoring.",
         input_type="choice",
         choices=("chrome", "firefox", "webkit"),
         visible=_scribe_slack_enabled,
@@ -1363,7 +1382,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS",
         group="Scribe Slack",
         label="Monitored Slack Channels",
-        help_text="Comma-separated Slack channel IDs for the scribe collector",
+        help_text="Comma-separated Slack channel IDs to monitor.",
         input_type="text",
         visible=lambda _config: False,  # Hidden from init — use `summon auth slack channels`
     ),
@@ -1373,7 +1392,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_GLOBAL_PM_SCAN_INTERVAL_MINUTES",
         group="Global PM",
         label="Scan Interval (minutes)",
-        help_text="How often the Global PM scans all projects",
+        help_text="How often the Global PM scans all projects (minutes, minimum 1).",
         input_type="int",
         advanced=True,
         validate_fn=_validate_scan_interval_minutes,
@@ -1383,7 +1402,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_GLOBAL_PM_CWD",
         group="Global PM",
         label="Global PM Working Directory",
-        help_text="Working directory for the Global PM",
+        help_text=(
+            "Working directory for the Global PM."
+            " Must be an absolute path. Defaults to `<data-dir>/global-pm`."
+        ),
         input_type="text",
         advanced=True,
         help_hint=f"Default: {get_data_dir() / 'global-pm'}. Does not need to be a git repo.",
@@ -1398,7 +1420,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_GLOBAL_PM_MODEL",
         group="Global PM",
         label="Global PM Model",
-        help_text="Claude model for the Global PM (default: inherits default_model)",
+        help_text="Claude model for the Global PM. Defaults to `SUMMON_DEFAULT_MODEL`.",
         input_type="choice",
         choices_fn=get_model_choices,
         validate_fn=_warn_unrecognized_model,
@@ -1411,7 +1433,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_MAX_INLINE_CHARS",
         group="Display",
         label="Max Inline Thinking Chars",
-        help_text="Thinking content longer than this is uploaded as a file instead of inline",
+        help_text=(
+            "Maximum characters for inline Slack messages."
+            " Responses longer than this are uploaded as files."
+        ),
         input_type="int",
         advanced=True,
         help_hint="Sensible range: 500-10000. Default 2500.",
@@ -1422,7 +1447,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_PERMISSION_DEBOUNCE_MS",
         group="Behavior",
         label="Permission Debounce (ms)",
-        help_text="Milliseconds to debounce permission prompts",
+        help_text=(
+            "Milliseconds to wait before posting a permission request to Slack."
+            " Batches rapid tool approvals into a single message."
+        ),
         input_type="int",
         advanced=True,
     ),
@@ -1431,7 +1459,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_PERMISSION_TIMEOUT_S",
         group="Behavior",
         label="Permission Timeout (s)",
-        help_text="Seconds to wait for user approval before auto-denying (0 = no timeout)",
+        help_text=(
+            "Seconds to wait for user approval before auto-denying a permission request."
+            " Default is 15 minutes. Set to `0` to disable the timeout (wait indefinitely)."
+        ),
         input_type="int",
         advanced=True,
         validate_fn=_validate_permission_timeout,
@@ -1441,7 +1472,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_NO_UPDATE_CHECK",
         group="Behavior",
         label="Disable Update Check",
-        help_text="Disable automatic update checks on startup",
+        help_text="Disable the background PyPI update check on `summon start`.",
         input_type="flag",
         advanced=True,
     ),
@@ -1450,7 +1481,12 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SAFE_WRITE_DIRS",
         group="Behavior",
         label="Safe Write Directories",
-        help_text="Comma-separated dirs where writes are always allowed (e.g. hack/)",
+        help_text=(
+            "Comma-separated directories where writes are allowed without entering containment"
+            " (e.g. `hack/,.dev/`). Relative paths resolve against the project root"
+            " (the `cwd` passed to the session); absolute paths also work."
+            " Tilde (`~`) is expanded to the home directory."
+        ),
         input_type="text",
         advanced=True,
         help_hint=(
@@ -1464,7 +1500,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_ENABLE_THINKING",
         group="Thinking",
         label="Enable Thinking",
-        help_text="Pass ThinkingConfigAdaptive to the Claude SDK",
+        help_text=(
+            "Enable extended thinking (passes `ThinkingConfigAdaptive` to the Claude SDK)."
+            " Set to `false` to disable."
+        ),
         input_type="flag",
         advanced=True,
     ),
@@ -1473,7 +1512,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_SHOW_THINKING",
         group="Thinking",
         label="Show Thinking",
-        help_text="Route thinking blocks to the Slack turn thread",
+        help_text=(
+            "Route thinking block content to the Slack turn thread so thinking is visible."
+            " By default thinking is processed but not posted."
+        ),
         input_type="flag",
         advanced=True,
     ),
@@ -1483,7 +1525,10 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_AUTO_CLASSIFIER_ENABLED",
         group="Auto Mode",
         label="Auto Classifier",
-        help_text="Enable Sonnet classifier for automatic tool approval",
+        help_text=(
+            "Enable the Sonnet classifier for automatic tool approval."
+            " When enabled, the classifier activates on worktree entry."
+        ),
         input_type="flag",
         advanced=True,
     ),
@@ -1492,7 +1537,11 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_AUTO_MODE_ENVIRONMENT",
         group="Auto Mode",
         label="Environment Context",
-        help_text="Environment description for the classifier (e.g. 'production server')",
+        help_text=(
+            "Environment description for the classifier"
+            " (e.g. `production server`, `staging environment`)."
+            " Provides context for safety decisions."
+        ),
         input_type="text",
         advanced=True,
     ),
@@ -1501,7 +1550,11 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_AUTO_MODE_DENY",
         group="Auto Mode",
         label="Deny Rules",
-        help_text="Custom deny rules (newline-separated, overrides defaults)",
+        help_text=(
+            "Custom deny rules (newline-separated)."
+            " Overrides the built-in deny rules when set."
+            " Any tool matching a deny rule is blocked."
+        ),
         input_type="text",
         advanced=True,
     ),
@@ -1510,7 +1563,11 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         env_key="SUMMON_AUTO_MODE_ALLOW",
         group="Auto Mode",
         label="Allow Rules",
-        help_text="Custom allow rules (newline-separated, overrides defaults)",
+        help_text=(
+            "Custom allow rules (newline-separated)."
+            " Overrides the built-in allow rules when set."
+            " Tools matching an allow rule (with no deny match) are approved."
+        ),
         input_type="text",
         advanced=True,
     ),
