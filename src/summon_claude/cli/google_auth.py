@@ -1064,6 +1064,78 @@ def _check_google_status(
     return all_ok
 
 
+def _check_google_status_data(account: str | None = None) -> dict:  # noqa: PLR0911
+    """Return Google auth status as a dict for --json output.
+
+    Never includes credential file paths or secrets.
+    """
+    try:
+        from auth.credential_store import LocalDirectoryCredentialStore  # noqa: PLC0415
+    except ImportError:
+        return {"provider": "google", "status": "not_configured", "reason": "not_installed"}
+
+    base_dir = get_google_credentials_dir()
+    if not base_dir.exists():
+        return {"provider": "google", "status": "not_configured"}
+
+    if account is not None:
+        account_dir = base_dir / account
+        if not account_dir.exists():
+            return {"provider": "google", "status": "not_configured"}
+        dirs_to_check = [(account, account_dir)]
+    else:
+        from summon_claude.config import discover_google_accounts  # noqa: PLC0415
+
+        discovered = discover_google_accounts()
+        if not discovered:
+            has_client_env = any(
+                (base_dir / d / "client_env").exists()
+                for d in base_dir.iterdir()
+                if d.is_dir() and not d.name.startswith(".")
+            )
+            if has_client_env:
+                return {"provider": "google", "status": "not_configured", "reason": "setup_only"}
+            return {"provider": "google", "status": "not_configured"}
+        dirs_to_check = [(a.label, base_dir / a.label) for a in discovered]
+
+    accounts_data: list[dict] = []
+    all_ok = True
+    for acct_label, creds_dir in dirs_to_check:
+        store = LocalDirectoryCredentialStore(str(creds_dir))
+        users = store.list_users()
+        if not users:
+            all_ok = False
+            continue
+
+        for user in users:
+            cred = store.get_credential(user)
+            if not cred:
+                all_ok = False
+                continue
+
+            if cred.valid:
+                acct_status = "authenticated"
+            elif cred.expired and cred.refresh_token:
+                acct_status = "expired_refreshable"
+                all_ok = False
+            else:
+                acct_status = "invalid"
+                all_ok = False
+
+            granted = set(cred.scopes or [])
+            access = _describe_granted_scopes(granted)
+            entry: dict = {"label": acct_label, "email": user, "status": acct_status}
+            if access:
+                entry["access"] = access
+            accounts_data.append(entry)
+
+    if not accounts_data:
+        return {"provider": "google", "status": "not_configured"}
+
+    overall = "authenticated" if all_ok else "error"
+    return {"provider": "google", "status": overall, "accounts": accounts_data}
+
+
 def google_status(account: str | None = None) -> None:
     """Check Google Workspace authentication status (CLI entry point)."""
     if account is not None:

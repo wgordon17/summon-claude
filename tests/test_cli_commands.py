@@ -1275,6 +1275,74 @@ class TestAuthStatus:
         assert "saved 2 days ago" in result.output
 
 
+class TestAuthStatusJSON:
+    """Tests for summon auth status --json flag."""
+
+    def test_auth_status_json_no_providers(self, tmp_path):
+        """--json outputs all four providers as not_configured."""
+        import json
+
+        with (
+            patch(
+                "summon_claude.cli.auth._check_github_status_data",
+                return_value={"provider": "github", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_google_status_data",
+                return_value={"provider": "google", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_jira_status_data",
+                return_value={"provider": "jira", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_slack_status_data",
+                return_value={"provider": "slack", "status": "not_configured"},
+            ),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert len(data["providers"]) == 4
+        assert all(p["status"] == "not_configured" for p in data["providers"])
+
+    def test_auth_status_json_github_configured(self, tmp_path):
+        """--json includes GitHub login and scopes."""
+        import json
+
+        with (
+            patch(
+                "summon_claude.cli.auth._check_github_status_data",
+                return_value={
+                    "provider": "github",
+                    "status": "authenticated",
+                    "login": "testuser",
+                    "scopes": "repo",
+                },
+            ),
+            patch(
+                "summon_claude.cli.auth._check_google_status_data",
+                return_value={"provider": "google", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_jira_status_data",
+                return_value={"provider": "jira", "status": "not_configured"},
+            ),
+            patch(
+                "summon_claude.cli.auth._check_slack_status_data",
+                return_value={"provider": "slack", "status": "not_configured"},
+            ),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["auth", "status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        github = data["providers"][0]
+        assert github["login"] == "testuser"
+        assert github["scopes"] == "repo"
+
+
 class TestGitHubAuthCLI:
     """Tests for auth github login/logout Click commands."""
 

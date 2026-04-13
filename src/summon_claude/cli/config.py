@@ -424,6 +424,40 @@ def _check_github_status(*, prefix: str = "", quiet: bool = False) -> bool | Non
     return True
 
 
+def _check_github_status_data() -> dict:
+    """Return GitHub auth status as a dict for --json output.
+
+    Never includes token values.
+    """
+    import aiohttp  # noqa: PLC0415
+
+    from summon_claude.github_auth import (  # noqa: PLC0415
+        GitHubAuthError,
+        load_token,
+        validate_token,
+    )
+
+    token = load_token()
+    if not token:
+        return {"provider": "github", "status": "not_configured"}
+
+    try:
+        result = asyncio.run(validate_token(token))
+    except (OSError, aiohttp.ClientError, GitHubAuthError):
+        return {
+            "provider": "github",
+            "status": "authenticated",
+            "note": "validation skipped — network error",
+        }
+
+    if result is None:
+        return {"provider": "github", "status": "error", "error": "token invalid"}
+
+    login = re.sub(r"[^a-zA-Z0-9-]", "", result["login"]) or "unknown"
+    scopes = re.sub(r"[^\x20-\x7e]", "", result["scopes"])
+    return {"provider": "github", "status": "authenticated", "login": login, "scopes": scopes}
+
+
 def get_upgrade_command() -> str:
     """Detect install method from sys.executable and return the upgrade command."""
     exe = sys.executable or ""

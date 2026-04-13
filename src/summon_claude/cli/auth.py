@@ -28,12 +28,14 @@ import click
 
 from summon_claude.cli.config import (
     _check_github_status,
+    _check_github_status_data,
     github_auth_cmd,
     github_logout,
 )
 from summon_claude.cli.formatting import format_tag
 from summon_claude.cli.google_auth import (
     _check_google_status,
+    _check_google_status_data,
     google_auth,
     google_logout,
     google_setup,
@@ -49,6 +51,62 @@ from summon_claude.cli.slack_auth import (
 from summon_claude.config import get_workspace_config_path
 
 # ---------------------------------------------------------------------------
+# Data-returning helpers for --json output
+# ---------------------------------------------------------------------------
+
+
+def _check_jira_status_data() -> dict:
+    from summon_claude.jira_auth import (  # noqa: PLC0415
+        check_jira_status,
+        get_jira_site_name,
+        jira_credentials_exist,
+    )
+
+    if not jira_credentials_exist():
+        return {"provider": "jira", "status": "not_configured"}
+    err = check_jira_status()
+    if err:
+        return {"provider": "jira", "status": "error", "error": err}
+    site = get_jira_site_name()
+    result: dict = {"provider": "jira", "status": "authenticated"}
+    if site:
+        result["site"] = re.sub(r"[^\x20-\x7e]", "", site)[:80]
+    return result
+
+
+def _check_slack_status_data() -> dict:
+    import json as _json  # noqa: PLC0415
+
+    wcp = get_workspace_config_path()
+    if not wcp.exists():
+        return {"provider": "slack", "status": "not_configured"}
+    try:
+        workspace = _json.loads(wcp.read_text())
+        url = re.sub(r"[^\x20-\x7e]", "", workspace.get("url", "unknown"))
+    except (_json.JSONDecodeError, OSError, AttributeError):
+        return {"provider": "slack", "status": "error", "error": "corrupted config"}
+    existing = _check_existing_slack_auth()
+    if existing:
+        import datetime as _dt  # noqa: PLC0415
+
+        try:
+            saved_dt = _dt.datetime.strptime(  # noqa: DTZ007
+                existing["saved"],
+                "%Y-%m-%d %H:%M UTC",
+            )
+            saved_iso = saved_dt.replace(tzinfo=_dt.UTC).isoformat()
+        except ValueError:
+            saved_iso = existing["saved"]
+        return {
+            "provider": "slack",
+            "status": "authenticated",
+            "workspace_url": url,
+            "saved_at": saved_iso,
+        }
+    return {"provider": "slack", "status": "expired", "workspace_url": url}
+
+
+# ---------------------------------------------------------------------------
 # summon auth
 # ---------------------------------------------------------------------------
 
@@ -59,9 +117,22 @@ def cmd_auth() -> None:
 
 
 @cmd_auth.command("status")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.pass_context
-def auth_status(ctx: click.Context) -> None:  # noqa: PLR0912, PLR0915
+def auth_status(ctx: click.Context, as_json: bool) -> None:  # noqa: PLR0912, PLR0915
     """Show authentication status for all configured providers."""
+    if as_json:
+        import json as _json  # noqa: PLC0415
+
+        providers = [
+            _check_github_status_data(),
+            _check_google_status_data(),
+            _check_jira_status_data(),
+            _check_slack_status_data(),
+        ]
+        click.echo(_json.dumps({"providers": providers}, indent=2))
+        return
+
     quiet = ctx.obj.get("quiet", False) if ctx.obj else False
 
     any_configured = False
