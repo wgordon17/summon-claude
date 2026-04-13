@@ -65,7 +65,7 @@ def _classify_commands() -> _ClassifyResult:
         if has_handler:
             continue
 
-        if has_block:
+        if has_block and defn.block_reason is not None:
             if defn.block_reason == _CLI_ONLY:
                 cli_only.append((name, list(defn.aliases)))
             else:

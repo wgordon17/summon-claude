@@ -70,9 +70,6 @@ def _check_secret_repr() -> None:
         )
 
 
-_check_secret_repr()
-
-
 def _slugify(group: str) -> str:
     """Convert a group name to a marker slug (lowercase, spaces to hyphens)."""
     return group.lower().replace(" ", "-")
@@ -186,6 +183,8 @@ def generate(content: str, tables: dict[str, str]) -> str:
 
 def main() -> int:
     check_only = "--check" in sys.argv
+
+    _check_secret_repr()  # fail fast if secret/repr invariant is violated
 
     tables = get_group_tables()
     content = _DOC_PATH.read_text(encoding="utf-8")

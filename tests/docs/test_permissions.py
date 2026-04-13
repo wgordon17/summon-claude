@@ -65,13 +65,10 @@ def test_auto_approve_tools_match(docs_dir: Path) -> None:
         if "---" in cell or "Tool" in cell:
             continue
         # Extract all backtick-wrapped names from this cell
-        names = re.findall(r"`([^`]+)`", cell)
-        for name in names:
-            # Split on " / " for multi-name entries like `Read` / `Cat`
-            for part in re.split(r"\s*/\s*", name):
-                stripped = part.strip()
-                if stripped:
-                    doc_tools.add(stripped)
+        # The ` / ` separator is between backtick pairs, so findall
+        # already returns individual names (e.g., "Read", "Cat")
+        for name in re.findall(r"`([^`]+)`", cell):
+            doc_tools.add(name)
 
     assert doc_tools, "No tools found in auto-approved table — check table format"
 
