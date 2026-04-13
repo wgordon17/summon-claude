@@ -127,11 +127,6 @@ FUZZY_DEFAULTS: dict[str, str | None] = {
     # Global PM — None defaults rendered as descriptive prose
     "SUMMON_GLOBAL_PM_CWD": None,
     "SUMMON_GLOBAL_PM_MODEL": None,
-    # Empty-string defaults rendered as _(empty)_ by generate_env_docs.py
-    "SUMMON_SAFE_WRITE_DIRS": None,
-    "SUMMON_AUTO_MODE_ENVIRONMENT": None,
-    "SUMMON_AUTO_MODE_DENY": None,
-    "SUMMON_AUTO_MODE_ALLOW": None,
 }
 
 # Matches a markdown table row: | cell | cell | ...

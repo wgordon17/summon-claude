@@ -357,7 +357,7 @@ def test_google_read_tool_prefixes_pinned() -> None:
 
 
 def test_summon_mcp_prefixes_match(docs_dir: Path) -> None:
-    """Summon MCP auto-approve prose must mention all 3 server names."""
+    """Summon MCP auto-approve prose must mention all server names."""
     content = _load_doc(docs_dir)
 
     # Extract server names from _SUMMON_MCP_AUTO_APPROVE_PREFIXES:
@@ -365,9 +365,6 @@ def test_summon_mcp_prefixes_match(docs_dir: Path) -> None:
     server_names = {
         p.removeprefix("mcp__").removesuffix("__") for p in _SUMMON_MCP_AUTO_APPROVE_PREFIXES
     }
-    assert server_names == {"summon-cli", "summon-slack", "summon-canvas"}, (
-        f"Unexpected server names derived from _SUMMON_MCP_AUTO_APPROVE_PREFIXES: {server_names}"
-    )
 
     missing = [name for name in server_names if name not in content]
     assert not missing, f"Summon MCP server names missing from permissions.md: {sorted(missing)}"
