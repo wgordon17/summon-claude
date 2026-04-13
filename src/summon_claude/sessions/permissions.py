@@ -1000,7 +1000,6 @@ class PermissionHandler:
         approve_session_value = f"approve_session:{batch_id}"
         deny_value = f"deny:{batch_id}"
 
-        # Build diff preview blocks for Edit/str_replace_editor requests
         diff_blocks = _build_diff_preview_blocks(requests)
 
         blocks = [
@@ -1553,41 +1552,44 @@ def _build_ask_user_blocks(request_id: str, questions: list[dict]) -> list[dict]
 
 
 _DIFF_PREVIEW_MAX_CHARS = 8000  # Well under Slack's 12K markdown block limit
+_DIFF_PREVIEW_MAX_INPUT_LINES = 500  # Cap input before computing unified_diff
+_WRITE_PREVIEW_MAX_LINES = 30
 
 
 def _build_diff_preview_blocks(requests: list[PendingRequest]) -> list[dict[str, Any]]:
-    """Build Slack markdown blocks showing diff previews for Edit/Write tool requests.
+    """Build Slack markdown blocks with diff/content previews for a permission batch.
 
-    Returns blocks to insert between the header and action buttons in the
-    approval message.  Uses the ``type: markdown`` block (March 2026) with
-    fenced ``diff`` code blocks for syntax highlighting.  If the block type
-    is unsupported by the workspace, Slack silently drops it and renders the
-    ``text`` fallback — no breakage.
+    Scans *requests* for Edit/str_replace_editor/Write tools and generates
+    previews.  Non-file tools are silently skipped.  Uses ``type: markdown``
+    blocks with fenced ``diff`` code blocks for syntax highlighting.  If the
+    block type is unsupported, Slack silently drops it — no breakage.
     """
     previews: list[str] = []
     for req in requests:
         if req.tool_name in ("Edit", "str_replace_editor") and "old_string" in req.input_data:
-            filepath = req.input_data.get("path", req.input_data.get("file_path", "file"))
+            filepath = _extract_file_path(req.tool_name, req.input_data) or "file"
             old_str = req.input_data.get("old_string", "")
             new_str = req.input_data.get("new_string", "")
-            diff_lines = list(
+            old_lines = old_str.splitlines(keepends=True)[:_DIFF_PREVIEW_MAX_INPUT_LINES]
+            new_lines = new_str.splitlines(keepends=True)[:_DIFF_PREVIEW_MAX_INPUT_LINES]
+            diff_text = "".join(
                 difflib.unified_diff(
-                    old_str.splitlines(keepends=True),
-                    new_str.splitlines(keepends=True),
+                    old_lines,
+                    new_lines,
                     fromfile=f"a/{filepath}",
                     tofile=f"b/{filepath}",
                 )
             )
-            if diff_lines:
-                previews.append("".join(diff_lines))
+            if diff_text:
+                previews.append(diff_text)
         elif req.tool_name == "Write":
-            filepath = req.input_data.get("file_path", req.input_data.get("path", ""))
+            filepath = _extract_file_path(req.tool_name, req.input_data)
             content = req.input_data.get("content", "")
             if filepath and content:
                 lines = content.splitlines()
-                preview = "\n".join(lines[:30])
-                if len(lines) > 30:
-                    preview += f"\n... ({len(lines) - 30} more lines)"
+                preview = "\n".join(lines[:_WRITE_PREVIEW_MAX_LINES])
+                if len(lines) > _WRITE_PREVIEW_MAX_LINES:
+                    preview += f"\n... ({len(lines) - _WRITE_PREVIEW_MAX_LINES} more lines)"
                 previews.append(f"# New file: {filepath}\n{preview}")
 
     if not previews:
@@ -1596,6 +1598,8 @@ def _build_diff_preview_blocks(requests: list[PendingRequest]) -> list[dict[str,
     combined = "\n".join(previews)
     if len(combined) > _DIFF_PREVIEW_MAX_CHARS:
         combined = combined[:_DIFF_PREVIEW_MAX_CHARS] + "\n... (truncated)"
+    # Escape triple backticks to prevent code fence breakout
+    combined = combined.replace("```", "\u2019\u2019\u2019")
 
     return [{"type": "markdown", "text": f"```diff\n{combined}\n```"}]
 

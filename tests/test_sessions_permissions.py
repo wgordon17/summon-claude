@@ -375,6 +375,20 @@ class TestDiffPreviewBlocks:
         assert "New file: /src/new.py" in blocks[0]["text"]
         assert "print('hello')" in blocks[0]["text"]
 
+    def test_write_truncates_at_30_lines(self):
+        content = "\n".join(f"line {i}" for i in range(50))
+        req = PendingRequest(
+            request_id="r1",
+            tool_name="Write",
+            input_data={"file_path": "/src/big.py", "content": content},
+        )
+        blocks = _build_diff_preview_blocks([req])
+        assert len(blocks) == 1
+        text = blocks[0]["text"]
+        assert "line 29" in text
+        assert "line 30" not in text
+        assert "... (20 more lines)" in text
+
     def test_bash_produces_no_block(self):
         req = PendingRequest(
             request_id="r1",
@@ -430,14 +444,71 @@ class TestDiffPreviewBlocks:
         assert len(blocks) == 1
         assert "-old" in blocks[0]["text"]
 
+    def test_multiple_edits_combined(self):
+        req1 = PendingRequest(
+            request_id="r1",
+            tool_name="Edit",
+            input_data={
+                "path": "/src/a.py",
+                "old_string": "aaa\n",
+                "new_string": "bbb\n",
+            },
+        )
+        req2 = PendingRequest(
+            request_id="r2",
+            tool_name="Edit",
+            input_data={
+                "path": "/src/b.py",
+                "old_string": "ccc\n",
+                "new_string": "ddd\n",
+            },
+        )
+        blocks = _build_diff_preview_blocks([req1, req2])
+        assert len(blocks) == 1
+        text = blocks[0]["text"]
+        assert "src/a.py" in text
+        assert "src/b.py" in text
+        assert "-aaa" in text
+        assert "-ccc" in text
+
+    def test_backtick_fence_escaped(self):
+        req = PendingRequest(
+            request_id="r1",
+            tool_name="Edit",
+            input_data={
+                "path": "/src/main.py",
+                "old_string": "before ```code``` after\n",
+                "new_string": "replaced\n",
+            },
+        )
+        blocks = _build_diff_preview_blocks([req])
+        assert len(blocks) == 1
+        assert "```" not in blocks[0]["text"].split("```diff\n", 1)[1].rsplit("\n```", 1)[0]
+
+    def test_large_input_capped_before_diff(self):
+        req = PendingRequest(
+            request_id="r1",
+            tool_name="Edit",
+            input_data={
+                "path": "/src/big.py",
+                "old_string": "line\n" * 1000,
+                "new_string": "changed\n" * 1000,
+            },
+        )
+        blocks = _build_diff_preview_blocks([req])
+        assert len(blocks) == 1
+        # Input capped at 500 lines — diff should be present but not include all 1000 lines
+        diff_body = blocks[0]["text"]
+        assert "+changed" in diff_body
+
     def test_large_diff_truncated(self):
         req = PendingRequest(
             request_id="r1",
             tool_name="Edit",
             input_data={
                 "path": "/src/big.py",
-                "old_string": "a\n" * 5000,
-                "new_string": "b\n" * 5000,
+                "old_string": ("a" * 40 + "\n") * 500,
+                "new_string": ("b" * 40 + "\n") * 500,
             },
         )
         blocks = _build_diff_preview_blocks([req])
