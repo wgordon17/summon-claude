@@ -407,13 +407,10 @@ def test_permission_flow_table_constants(docs_dir: Path) -> None:
 # Test 10: All collection constants in permissions.py are tested
 # ---------------------------------------------------------------------------
 
-# Constants that are tested indirectly or are implementation details
-_INTENTIONALLY_UNTESTED: frozenset[str] = frozenset(
-    {
-        "_JIRA_MCP_PREFIX",  # used internally, not a standalone permission list
-        "_WRITE_TOOL_PATH_KEYS",  # implementation detail, not a permission list
-    }
-)
+# No intentionally untested constants — _JIRA_MCP_PREFIX (str) and
+# _WRITE_TOOL_PATH_KEYS (dict) are excluded by the isinstance(frozenset|tuple)
+# filter in the test below, so they don't need explicit exclusion.
+_INTENTIONALLY_UNTESTED: frozenset[str] = frozenset()
 
 
 def test_all_permission_constants_are_covered() -> None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -102,13 +101,55 @@ def test_all_commands_are_documented(docs_dir: Path) -> None:
 
 def test_generated_sections_match() -> None:
     """commands.md generated sections must be up to date with COMMAND_ACTIONS."""
-    result = subprocess.run(
-        ["uv", "run", "python", "scripts/generate_commands_docs.py", "--check"],
-        capture_output=True,
-        text=True,
-        cwd=_REPO_ROOT,
-    )
-    assert result.returncode == 0, (
-        f"commands.md is stale — run `make docs-commands` to regenerate\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}"
-    )
+    from scripts.generate_commands_docs import generate
+
+    doc_path = _REPO_ROOT / "docs" / "reference" / "commands.md"
+    content = doc_path.read_text(encoding="utf-8")
+    updated = generate(content)
+    assert content == updated, "commands.md is stale — run `make docs-commands` to regenerate"
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — _classify_commands produces non-empty, disjoint categories
+# ---------------------------------------------------------------------------
+
+
+def test_classify_commands_categories() -> None:
+    """_classify_commands must produce non-empty, disjoint categories."""
+    from scripts.generate_commands_docs import _classify_commands
+
+    passthrough, blocked_specific, cli_only = _classify_commands()
+
+    assert passthrough, "No passthrough commands — classification may be broken"
+    assert blocked_specific, "No blocked-specific commands — classification may be broken"
+    assert cli_only, "No CLI-only commands — classification may be broken"
+
+    # Names should be disjoint across categories
+    pt_names = {name for name, _ in passthrough}
+    bs_names = {name for name, _ in blocked_specific}
+    co_names = {name for name, _ in cli_only}
+
+    overlap_pt_bs = pt_names & bs_names
+    overlap_pt_co = pt_names & co_names
+    overlap_bs_co = bs_names & co_names
+
+    errors: list[str] = []
+    if overlap_pt_bs:
+        errors.append(f"In both passthrough and blocked-specific: {sorted(overlap_pt_bs)}")
+    if overlap_pt_co:
+        errors.append(f"In both passthrough and cli-only: {sorted(overlap_pt_co)}")
+    if overlap_bs_co:
+        errors.append(f"In both blocked-specific and cli-only: {sorted(overlap_bs_co)}")
+    assert not errors, "\n".join(errors)
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — _build_cli_only_list handles empty input
+# ---------------------------------------------------------------------------
+
+
+def test_build_cli_only_list_empty() -> None:
+    """_build_cli_only_list([]) must return empty string."""
+    from scripts.generate_commands_docs import _build_cli_only_list
+
+    assert _build_cli_only_list([]) == ""

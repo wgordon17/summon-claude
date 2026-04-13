@@ -197,7 +197,7 @@ Some Claude CLI commands are blocked in Slack sessions because they depend on a 
 | `!context` | Use `!status` for context info |
 | `!cost` | Use `!status` for cost info |
 | `!insights` | Generates a local HTML report — not viewable in Slack |
-| `!login` | Not available in Slack sessions. |
+| `!login` | Not available in Slack sessions |
 | `!release-notes` | Not available in Slack sessions |
 <!-- /commands:blocked-specific -->
 

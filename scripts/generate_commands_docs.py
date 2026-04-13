@@ -103,6 +103,8 @@ def _build_cli_only_list(entries: list[tuple[str, list[str]]]) -> str:
             parts.append(f"`!{name}` ({alias_str})")
         else:
             parts.append(f"`!{name}`")
+    if not parts:
+        return ""
     return ", ".join(parts) + "\n"
 
 

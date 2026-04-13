@@ -256,7 +256,7 @@ The full permission evaluation order in `handle()`:
 | 4 | Static auto-approve (`_AUTO_APPROVE_TOOLS`) | Allow |
 | 5 | GitHub deny-list (`_GITHUB_MCP_REQUIRE_APPROVAL`) | Always HITL |
 | 6 | GitHub auto-approve (prefix matching) | Allow |
-| 6a | Google MCP (read-only prefix → Allow; all others → HITL) | Allow or HITL |
+| 6a | Google MCP (`_GOOGLE_READ_TOOL_PREFIXES`: read-only prefix → Allow; all others → HITL) | Allow or HITL |
 | 6b | Jira hard-deny (`_JIRA_MCP_HARD_DENY`) | Always Deny |
 | 6c | Jira auto-approve (prefix + exact matching) | Allow |
 | 7 | Summon MCP auto-approve (prefix matching) | Allow |

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """Generate docs/reference/environment-variables.md from CONFIG_OPTIONS.
 
 Replaces content between ``<!-- config:GROUP -->`` / ``<!-- /config:GROUP -->``
@@ -75,7 +75,7 @@ def _slugify(group: str) -> str:
     return group.lower().replace(" ", "-")
 
 
-def _derive_type(opt: Any, field_info: Any) -> str:  # type: ignore[type-arg]
+def _derive_type(opt: Any, field_info: Any) -> str:
     """Derive the doc Type column value from a ConfigOption and its FieldInfo."""
     # Secret fields always render as "secret"
     if opt.input_type == "secret":
@@ -103,14 +103,15 @@ def _derive_type(opt: Any, field_info: Any) -> str:  # type: ignore[type-arg]
     return type_map.get(py_type, py_type)
 
 
-def _derive_default(opt: Any, field_info: Any) -> str | None:  # type: ignore[type-arg]
+def _derive_default(opt: Any, field_info: Any) -> str | None:
     """Return the Default column string, or None for 3-column (secret) tables."""
     if opt.env_key in _DEFAULT_OVERRIDES:
         return _DEFAULT_OVERRIDES[opt.env_key]
 
+    from pydantic_core import PydanticUndefined
+
     default = field_info.default
-    pydantic_undefined = "PydanticUndefined"
-    if str(default) == pydantic_undefined:
+    if default is PydanticUndefined:
         return None  # Required field; 3-col table or no default shown
 
     if isinstance(default, bool):
@@ -127,7 +128,7 @@ def get_group_tables() -> dict[str, str]:
     from summon_claude.config import CONFIG_OPTIONS, SummonConfig
 
     # Group options preserving order
-    groups: dict[str, list] = {}
+    groups: dict[str, list[Any]] = {}
     for opt in CONFIG_OPTIONS:
         slug = _slugify(opt.group)
         groups.setdefault(slug, []).append(opt)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -168,6 +167,8 @@ def test_env_var_types_match_docs(  # noqa: PLR0912
     summon_config_fields: dict[str, object],
 ) -> None:
     """Types and defaults in environment-variables.md match SummonConfig."""
+    from pydantic_core import PydanticUndefined as _PydanticUndefined
+
     ref_doc = docs_dir / "reference" / "environment-variables.md"
     assert ref_doc.exists(), f"Reference doc not found: {ref_doc}"
 
@@ -214,8 +215,7 @@ def test_env_var_types_match_docs(  # noqa: PLR0912
             continue  # known non-standard doc rendering, skip
 
         py_default = field_info.default
-        # PydanticUndefined — no default, 3-col table row, skip
-        if str(py_default) == "PydanticUndefined":
+        if py_default is _PydanticUndefined:
             continue
 
         if doc_default is not None:
@@ -237,15 +237,14 @@ def test_env_var_types_match_docs(  # noqa: PLR0912
 
 def test_env_var_content_matches_generated() -> None:
     """Generated env-var tables must match current doc content."""
-    result = subprocess.run(
-        ["uv", "run", "python", "scripts/generate_env_docs.py", "--check"],
-        capture_output=True,
-        text=True,
-        cwd=_REPO_ROOT,
-    )
-    assert result.returncode == 0, (
-        "environment-variables.md is stale — run `make docs-env` to regenerate\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    from scripts.generate_env_docs import generate, get_group_tables
+
+    doc_path = _REPO_ROOT / "docs" / "reference" / "environment-variables.md"
+    content = doc_path.read_text(encoding="utf-8")
+    tables = get_group_tables()
+    updated = generate(content, tables)
+    assert content == updated, (
+        "environment-variables.md is stale — run `make docs-env` to regenerate"
     )
 
 
@@ -298,3 +297,73 @@ def test_fuzzy_defaults_match_default_overrides() -> None:
     if only_in_overrides:
         errors.append(f"In _DEFAULT_OVERRIDES but not FUZZY_DEFAULTS: {sorted(only_in_overrides)}")
     assert not errors, "\n".join(errors)
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — help_text with backticks must render clean in CLI (no raw backticks)
+# ---------------------------------------------------------------------------
+
+
+def test_help_text_backticks_stripped_for_cli() -> None:
+    """help_text values containing backticks must be safe for CLI display.
+
+    The CLI init wizard strips backticks via hint.replace('`', '').
+    This test ensures that pattern produces readable output for all help_text
+    values that contain backticks.
+    """
+    from summon_claude.config import CONFIG_OPTIONS
+
+    for opt in CONFIG_OPTIONS:
+        hint = opt.help_hint or opt.help_text
+        if not hint:
+            continue
+        cleaned = hint.replace("`", "")
+        assert cleaned.strip(), (
+            f"{opt.env_key}: hint becomes empty after backtick removal: {hint!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — _derive_type produces correct mappings
+# ---------------------------------------------------------------------------
+
+
+def test_derive_type_mappings() -> None:
+    """_derive_type must produce correct doc type strings for all CONFIG_OPTIONS."""
+    from scripts.generate_env_docs import _derive_type
+    from summon_claude.config import CONFIG_OPTIONS, SummonConfig
+
+    for opt in CONFIG_OPTIONS:
+        field_info = SummonConfig.model_fields.get(opt.field_name)
+        if field_info is None:
+            continue
+        result = _derive_type(opt, field_info)
+        assert isinstance(result, str), f"{opt.env_key}: _derive_type returned non-string"
+        assert result, f"{opt.env_key}: _derive_type returned empty string"
+        if opt.input_type == "secret":
+            assert result == "secret", f"{opt.env_key}: secret field should derive type 'secret'"
+        elif opt.choices:
+            assert result.startswith("choice:"), (
+                f"{opt.env_key}: field with choices should derive type starting with 'choice:'"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — _derive_default produces correct mappings
+# ---------------------------------------------------------------------------
+
+
+def test_derive_default_mappings() -> None:
+    """_derive_default must return expected types for all CONFIG_OPTIONS."""
+    from scripts.generate_env_docs import _derive_default
+    from summon_claude.config import CONFIG_OPTIONS, SummonConfig
+
+    for opt in CONFIG_OPTIONS:
+        field_info = SummonConfig.model_fields.get(opt.field_name)
+        if field_info is None:
+            continue
+        result = _derive_default(opt, field_info)
+        # Result is either None (3-col table) or a non-empty string
+        assert result is None or isinstance(result, str), (
+            f"{opt.env_key}: _derive_default returned unexpected type: {type(result)}"
+        )

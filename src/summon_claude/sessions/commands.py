@@ -408,7 +408,7 @@ COMMAND_ACTIONS: dict[str, CommandDef] = {
     ),
     "login": CommandDef(
         description="Log in to Claude",
-        block_reason="Not available in Slack sessions.",
+        block_reason="Not available in Slack sessions",
     ),
     # --- Blocked CLI-only ---
     "config": CommandDef(description=_CLI_ONLY, block_reason=_CLI_ONLY, aliases=["settings"]),
