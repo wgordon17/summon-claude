@@ -370,9 +370,9 @@ def github_logout() -> None:
 
     removed = remove_token()
     if removed:
-        click.echo("GitHub token removed.")
+        click.echo("GitHub credentials removed.")
     else:
-        click.echo("No GitHub token stored.")
+        click.echo("No GitHub credentials stored.")
 
 
 def _check_github_status(*, prefix: str = "", quiet: bool = False) -> bool | None:

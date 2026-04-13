@@ -1230,7 +1230,7 @@ class TestSlackRemoveCommand:
             result = runner.invoke(cli, ["auth", "slack", "logout"])
 
         assert result.exit_code == 0
-        assert "No external Slack workspace configured" in result.output
+        assert "No Slack credentials stored." in result.output
 
     def test_slack_remove_confirmed(self, tmp_path):
         """auth slack logout deletes auth state and config when confirmed."""

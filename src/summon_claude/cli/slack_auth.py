@@ -385,6 +385,17 @@ def slack_status() -> None:
     except (json.JSONDecodeError, OSError):
         click.echo("Workspace config is corrupted. Re-run: summon auth slack login")
         return
+
+    from summon_claude.cli.formatting import format_tag  # noqa: PLC0415
+
+    url = workspace.get("url", "N/A")
+    existing = _check_existing_slack_auth()
+    if existing:
+        tag = format_tag("PASS")
+        click.echo(f"{tag} Slack: authenticated (workspace: {url}, saved {existing['age']})")
+    else:
+        click.echo(f"{format_tag('FAIL')} Slack: auth expired or missing ({url})")
+    click.echo()
     click.echo(f"Workspace URL: {workspace.get('url', 'N/A')}")
     user_id = workspace.get("user_id", "")
     click.echo(f"User ID: {user_id or 'not set (re-run `summon auth slack login` to add)'}")
@@ -411,13 +422,15 @@ def slack_status() -> None:
 
 
 def slack_remove() -> None:
-    """Remove external Slack workspace auth state."""
+    """Remove stored Slack credentials."""
     config_path = get_workspace_config_path()
     if not config_path.exists():
-        click.echo("No external Slack workspace configured.")
+        click.echo("No Slack credentials stored.")
         return
 
-    if not click.confirm("Remove Slack auth state? This cannot be undone."):
+    if not click.confirm(
+        "Remove Slack credentials? Reconfigure by running 'summon auth slack login' again.",
+    ):
         return
 
     try:
@@ -443,7 +456,7 @@ def slack_remove() -> None:
     with contextlib.suppress(FileNotFoundError):
         config_path.unlink()
 
-    click.echo("Slack auth state removed.")
+    click.echo("Slack credentials removed.")
 
 
 def slack_channels(*, refresh: bool = False) -> None:

@@ -236,7 +236,7 @@ def auth_slack_login(workspace: str) -> None:
 
 @auth_slack.command("logout")
 def auth_slack_logout() -> None:
-    """Remove external Slack workspace auth state."""
+    """Remove stored Slack credentials."""
     slack_remove()
 
 
@@ -418,10 +418,14 @@ def auth_jira_logout() -> None:
 @auth_jira.command("status")
 def auth_jira_status() -> None:
     """Check Jira authentication status."""
-    from summon_claude.jira_auth import check_jira_status  # noqa: PLC0415
+    from summon_claude.jira_auth import check_jira_status, get_jira_site_name  # noqa: PLC0415
 
     err = check_jira_status()
     if err is None:
-        click.echo("Jira: authenticated")
+        site = get_jira_site_name()
+        if site:
+            site = re.sub(r"[^\x20-\x7e]", "", site)[:80]
+        site_suffix = f" (site: {site})" if site else ""
+        click.echo(f"{format_tag('PASS')} Jira: authenticated{site_suffix}")
     else:
-        click.echo(f"Jira: {err}")
+        click.echo(f"{format_tag('FAIL')} Jira: {err}")

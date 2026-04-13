@@ -1384,7 +1384,7 @@ class TestGitHubAuthCLI:
             result = runner.invoke(cli, ["auth", "github", "logout"])
 
         assert result.exit_code == 0
-        assert "removed" in result.output
+        assert "GitHub credentials removed." in result.output
 
     def test_github_logout_no_token(self):
         with patch("summon_claude.github_auth.remove_token", return_value=False):
@@ -1392,7 +1392,7 @@ class TestGitHubAuthCLI:
             result = runner.invoke(cli, ["auth", "github", "logout"])
 
         assert result.exit_code == 0
-        assert "No GitHub token" in result.output
+        assert "No GitHub credentials stored." in result.output
 
 
 class TestConfigSetChoiceValidation:
