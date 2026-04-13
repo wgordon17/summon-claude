@@ -1172,5 +1172,8 @@ def google_logout(account: str | None = None) -> None:
             click.echo(f"No Google credentials found for account '{acct.label}'.")
             continue
         for f in cred_files:
-            f.unlink(missing_ok=True)
+            try:
+                f.unlink(missing_ok=True)
+            except OSError as e:
+                click.echo(f"Could not remove {f.name}: {e}", err=True)
         click.echo(f"Google credentials removed ({acct.label}).")
