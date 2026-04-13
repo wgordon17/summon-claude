@@ -31,6 +31,7 @@ _CONFIG_BLOCK_RE = re.compile(
 # whose rendered form in the doc differs from str(py_default).
 # Keys are SUMMON_* env var names. Values are the string to put in the Default
 # column, or None for secret 3-column tables (no Default column).
+# Cross-ref: FUZZY_DEFAULTS in tests/docs/test_env_vars.py covers the same set.
 _DEFAULT_OVERRIDES: dict[str, str | None] = {
     # Credentials — 3-column table, no Default column
     "SUMMON_SLACK_BOT_TOKEN": None,

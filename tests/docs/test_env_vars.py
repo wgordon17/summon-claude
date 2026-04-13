@@ -106,7 +106,8 @@ _TYPE_MAP: dict[str, str] = {
     "bool": "boolean",
 }
 
-# Defaults that docs render differently than Python repr
+# Defaults that docs render differently than Python repr.
+# Cross-ref: _DEFAULT_OVERRIDES in scripts/generate_env_docs.py covers the same set.
 FUZZY_DEFAULTS: dict[str, str | None] = {
     # None / missing-value fields rendered as descriptive prose in docs
     "SUMMON_SCRIBE_ENABLED": None,  # auto-detect (None → bool at model_validator)
