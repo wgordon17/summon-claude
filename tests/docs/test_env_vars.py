@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from tests.docs.conftest import parse_env_var_refs
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 pytestmark = pytest.mark.docs
 
@@ -123,6 +126,11 @@ FUZZY_DEFAULTS: dict[str, str | None] = {
     # Global PM — None defaults rendered as descriptive prose
     "SUMMON_GLOBAL_PM_CWD": None,
     "SUMMON_GLOBAL_PM_MODEL": None,
+    # Empty-string defaults rendered as _(empty)_ by generate_env_docs.py
+    "SUMMON_SAFE_WRITE_DIRS": None,
+    "SUMMON_AUTO_MODE_ENVIRONMENT": None,
+    "SUMMON_AUTO_MODE_DENY": None,
+    "SUMMON_AUTO_MODE_ALLOW": None,
 }
 
 # Matches a markdown table row: | cell | cell | ...
@@ -224,3 +232,50 @@ def test_env_var_types_match_docs(  # noqa: PLR0912
     if mismatches:
         detail = "\n".join(f"  {m}" for m in mismatches)
         pytest.fail(f"Type/default mismatches in environment-variables.md:\n{detail}")
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — generated env-var tables must match current doc content
+# ---------------------------------------------------------------------------
+
+
+def test_env_var_content_matches_generated() -> None:
+    """Generated env-var tables must match current doc content."""
+    result = subprocess.run(
+        ["uv", "run", "python", "scripts/generate_env_docs.py", "--check"],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+    )
+    assert result.returncode == 0, (
+        "environment-variables.md is stale — run `make docs-env` to regenerate\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — input_type='secret' and repr=False must always agree
+# ---------------------------------------------------------------------------
+
+
+def test_secret_fields_input_type_repr_agree() -> None:
+    """input_type='secret' and repr=False must always agree."""
+    from summon_claude.config import CONFIG_OPTIONS, SummonConfig
+
+    secret_by_input_type = {opt.env_key for opt in CONFIG_OPTIONS if opt.input_type == "secret"}
+    secret_by_repr: set[str] = set()
+    prefix = SummonConfig.model_config.get("env_prefix", "SUMMON_")
+    for field_name, field_info in SummonConfig.model_fields.items():
+        env_key = f"{prefix}{field_name.upper()}"
+        if not field_info.repr:
+            secret_by_repr.add(env_key)
+
+    input_type_only = secret_by_input_type - secret_by_repr
+    repr_only = secret_by_repr - secret_by_input_type
+
+    errors = []
+    if input_type_only:
+        errors.append(f"input_type='secret' but repr=True: {sorted(input_type_only)}")
+    if repr_only:
+        errors.append(f"repr=False but input_type!='secret': {sorted(repr_only)}")
+    assert not errors, "\n".join(errors)
