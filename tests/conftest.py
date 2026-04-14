@@ -107,6 +107,12 @@ def _reset_install_mode(monkeypatch):
 
     Without this, ``uv run pytest`` sets VIRTUAL_ENV and the repo has
     pyproject.toml, so every test would detect local mode.
+
+    Invariant: _detect_install_mode only calls _get_git_main_repo_root when
+    VIRTUAL_ENV is set (config.py line 126: ``if venv_str and ...``).
+    Deleting VIRTUAL_ENV prevents the git subprocess from running.  If this
+    condition ever changes, tests that don't mock subprocess.run will call
+    real git — add a subprocess mock here if that happens.
     """
     from summon_claude.config import (
         _detect_install_mode,
@@ -250,32 +256,25 @@ def mock_registry(**overrides: object) -> AsyncMock:
     return ctx
 
 
-def _global_xdg_dir(env_var: str, default_rel: str) -> Path:
-    """Replicate _xdg_dir() logic without the local-mode short-circuit."""
-    xdg = os.environ.get(env_var, "").strip()
-    if xdg:
-        p = Path(xdg)
-        if p.is_absolute():
-            return p / "summon"
-    candidate = Path.home() / default_rel / "summon"
-    if (Path.home() / default_rel).exists():
-        return candidate
-    return Path.home() / ".summon"
-
-
 @pytest.fixture(autouse=True, scope="session")
 def _guard_no_global_xdg_writes():
     """Assert that no test writes to the real global XDG data/config directories.
 
     Detects net-new file/directory creation in the global summon data and
     config paths. Does NOT detect overwrites of existing files.
-    """
-    real_data_dir = _global_xdg_dir("XDG_DATA_HOME", ".local/share")
-    real_config_dir = _global_xdg_dir("XDG_CONFIG_HOME", ".config")
 
-    def _snapshot(p: Path) -> set[str]:
+    Uses production _xdg_dir() directly (without the local-mode short-circuit
+    in get_data_dir/get_config_dir) to avoid silent divergence if production
+    logic is updated.
+    """
+    from summon_claude.config import _xdg_dir
+
+    real_data_dir = _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
+    real_config_dir = _xdg_dir("XDG_CONFIG_HOME", ".config/summon", "summon")
+
+    def _snapshot(p: Path) -> set[Path]:
         try:
-            return {e.name for e in p.iterdir()}
+            return set(p.rglob("*"))
         except OSError:
             return set()
 
@@ -287,8 +286,10 @@ def _guard_no_global_xdg_writes():
     new_data = after_data - before_data
     new_config = after_config - before_config
     assert not new_data, (
-        f"Tests wrote to global XDG data dir {real_data_dir}: new entries {new_data}"
+        f"Tests wrote to global XDG data dir {real_data_dir}: "
+        f"new entries {{{', '.join(str(p) for p in new_data)}}}"
     )
     assert not new_config, (
-        f"Tests wrote to global XDG config dir {real_config_dir}: new entries {new_config}"
+        f"Tests wrote to global XDG config dir {real_config_dir}: "
+        f"new entries {{{', '.join(str(p) for p in new_config)}}}"
     )

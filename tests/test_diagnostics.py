@@ -442,6 +442,43 @@ class TestDatabaseCheck:
         assert result.status == "fail"
         assert "behind" in result.message.lower()
 
+    async def test_db_schema_ahead(self, check: DatabaseCheck, tmp_path: Path) -> None:
+        from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION
+
+        db_file = tmp_path / "registry.db"
+        db_file.write_bytes(b"")
+
+        mock_db = MagicMock()
+
+        def _mock_execute(sql, *_args):
+            ctx = MagicMock()
+            if "PRAGMA integrity_check" in sql:
+                ctx.fetchone = AsyncMock(return_value=("ok",))
+            elif "SELECT COUNT" in sql:
+                ctx.fetchone = AsyncMock(return_value=(0,))
+            ctx.__aenter__ = AsyncMock(return_value=ctx)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        mock_db.execute = _mock_execute
+
+        mock_reg = MagicMock()
+        mock_reg.__aenter__ = AsyncMock(return_value=mock_reg)
+        mock_reg.__aexit__ = AsyncMock(return_value=False)
+        mock_reg.db = mock_db
+
+        with (
+            patch("summon_claude.config.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.sessions.registry.SessionRegistry", return_value=mock_reg),
+            patch(
+                "summon_claude.sessions.migrations.get_schema_version",
+                return_value=CURRENT_SCHEMA_VERSION + 1,
+            ),
+        ):
+            result = await check.run(None)
+        assert result.status == "warn"
+        assert "ahead" in result.message.lower()
+
     async def test_db_open_failure(self, check: DatabaseCheck, tmp_path: Path) -> None:
         db_file = tmp_path / "registry.db"
         db_file.write_bytes(b"")

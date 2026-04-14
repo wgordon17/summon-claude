@@ -86,7 +86,7 @@ def _get_git_main_repo_root(cwd: Path) -> Path | None:
         if result.returncode != 0:
             return None
         raw_path = result.stdout.decode().strip().splitlines()[0]
-        if not raw_path or len(raw_path) >= 4096:
+        if not raw_path or len(raw_path) >= 4096:  # sanity check: PATH_MAX is 4096 on Linux
             return None
         resolved = (cwd / raw_path).resolve().parent
         if not resolved.is_relative_to(Path.home()):

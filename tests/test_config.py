@@ -481,8 +481,6 @@ class TestGetGitMainRepoRoot:
         """Normal repo: --git-common-dir returns '.git' (relative) → parent of resolved .git."""
         from summon_claude.config import _get_git_main_repo_root
 
-        _get_git_main_repo_root.cache_clear()
-
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
         fake_result = MagicMock()
@@ -495,13 +493,11 @@ class TestGetGitMainRepoRoot:
         ):
             result = _get_git_main_repo_root(tmp_path)
 
-        assert result == tmp_path
+        assert result == tmp_path.resolve()
 
     def test_worktree_returns_main_repo_root(self, tmp_path):
         """Worktree: --git-common-dir returns absolute path to main repo's .git directory."""
         from summon_claude.config import _get_git_main_repo_root
-
-        _get_git_main_repo_root.cache_clear()
 
         # Simulate main repo at tmp_path/main, worktree at tmp_path/wt
         main_git = tmp_path / "main" / ".git"
@@ -519,13 +515,11 @@ class TestGetGitMainRepoRoot:
         ):
             result = _get_git_main_repo_root(worktree_dir)
 
-        assert result == tmp_path / "main"
+        assert result == (tmp_path / "main").resolve()
 
     def test_git_failure_returns_none(self, tmp_path):
         """Non-zero exit code (not a git repo) returns None."""
         from summon_claude.config import _get_git_main_repo_root
-
-        _get_git_main_repo_root.cache_clear()
 
         fake_result = MagicMock()
         fake_result.returncode = 128
@@ -542,8 +536,6 @@ class TestGetGitMainRepoRoot:
 
         from summon_claude.config import _get_git_main_repo_root
 
-        _get_git_main_repo_root.cache_clear()
-
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 5)):
             result = _get_git_main_repo_root(tmp_path)
 
@@ -552,8 +544,6 @@ class TestGetGitMainRepoRoot:
     def test_git_not_installed_returns_none(self, tmp_path):
         """FileNotFoundError (git not installed) returns None."""
         from summon_claude.config import _get_git_main_repo_root
-
-        _get_git_main_repo_root.cache_clear()
 
         with patch("subprocess.run", side_effect=FileNotFoundError):
             result = _get_git_main_repo_root(tmp_path)
@@ -564,8 +554,6 @@ class TestGetGitMainRepoRoot:
         """Empty stdout (edge case) returns None."""
         from summon_claude.config import _get_git_main_repo_root
 
-        _get_git_main_repo_root.cache_clear()
-
         fake_result = MagicMock()
         fake_result.returncode = 0
         fake_result.stdout = b""
@@ -575,11 +563,22 @@ class TestGetGitMainRepoRoot:
 
         assert result is None
 
+    def test_path_too_long_returns_none(self, tmp_path):
+        """Path >= 4096 chars (PATH_MAX) is rejected as a sanity check."""
+        from summon_claude.config import _get_git_main_repo_root
+
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = (b"x" * 4096) + b"\n"
+
+        with patch("subprocess.run", return_value=fake_result):
+            result = _get_git_main_repo_root(tmp_path)
+
+        assert result is None
+
     def test_path_outside_home_returns_none(self, tmp_path):
         """Security gate: git returns a path that resolves outside Path.home() → None."""
         from summon_claude.config import _get_git_main_repo_root
-
-        _get_git_main_repo_root.cache_clear()
 
         # git reports a .git dir under /opt — outside the mocked home of /home/testuser
         fake_result = MagicMock()
@@ -736,6 +735,27 @@ class TestDetectInstallModeWorktree:
             patch("subprocess.run", side_effect=subprocess.TimeoutExpired("git", 5)),
             patch("summon_claude.config.Path.home", return_value=tmp_path.parent),
         ):
+            mode, root = _detect_install_mode()
+
+        assert mode == "global"
+        assert root is None
+
+    def test_relative_virtual_env_is_ignored(self, tmp_path, monkeypatch):
+        """Relative VIRTUAL_ENV path is not absolute → is_absolute() guard skips it → global.
+
+        No subprocess.run mock needed: is_absolute() returns False before
+        _get_git_main_repo_root is ever called.
+        """
+        from summon_claude.config import _detect_install_mode
+
+        self._clear_caches()
+
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("VIRTUAL_ENV", ".venv")  # relative path
+
+        with patch("summon_claude.config.Path.home", return_value=tmp_path.parent):
             mode, root = _detect_install_mode()
 
         assert mode == "global"
