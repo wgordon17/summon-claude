@@ -58,14 +58,11 @@ def _classify_commands() -> _ClassifyResult:
         if ":" in name:
             continue
 
-        has_handler = defn.handler is not None
-        has_block = defn.block_reason is not None
-
         # handler present → local (skip)
-        if has_handler:
+        if defn.handler is not None:
             continue
 
-        if has_block and defn.block_reason is not None:
+        if defn.block_reason is not None:
             if defn.block_reason == _CLI_ONLY:
                 cli_only.append((name, list(defn.aliases)))
             else:
