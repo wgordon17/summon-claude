@@ -612,3 +612,108 @@ class TestCleanupInteractive:
             result = runner.invoke(cli, ["session", "cleanup"])
         assert result.exit_code == 0
         assert "Cleaned up 1 stale session(s)." in result.output
+
+
+# ---------------------------------------------------------------------------
+# _init_select — init wizard interactive selector
+# ---------------------------------------------------------------------------
+
+
+class TestInitSelect:
+    """Tests for _init_select() in cli/__init__.py."""
+
+    def test_empty_options_returns_none(self):
+        """Empty options list returns None immediately."""
+        from summon_claude.cli import _init_select
+
+        ctx = _make_ctx()
+        assert _init_select([], "Pick:", ctx) is None
+
+    def test_non_interactive_fallback_selects_option(self):
+        """Non-interactive fallback returns selected option by number."""
+        from summon_claude.cli import _init_select
+
+        ctx = _make_ctx()
+        runner = CliRunner()
+        result_container = {}
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            result_container["result"] = _init_select(
+                ["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=0
+            )
+
+        result = runner.invoke(cmd, input="2\n")
+        assert result.exit_code == 0
+        assert result_container["result"] == "beta"
+
+    def test_non_interactive_default_accepted_on_enter(self):
+        """Pressing Enter in non-interactive mode selects the default."""
+        from summon_claude.cli import _init_select
+
+        ctx = _make_ctx()
+        runner = CliRunner()
+        result_container = {}
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            result_container["result"] = _init_select(
+                ["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=1
+            )
+
+        result = runner.invoke(cmd, input="\n")
+        assert result.exit_code == 0
+        assert result_container["result"] == "beta"
+
+    def test_non_interactive_abort_returns_none(self):
+        """Ctrl+C / EOF during non-interactive prompt returns None."""
+        from summon_claude.cli import _init_select
+
+        ctx = _make_ctx()
+        runner = CliRunner()
+        result_container = {}
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            result_container["result"] = _init_select(["alpha", "beta"], "Pick:", click_ctx)
+
+        runner.invoke(cmd, input="")
+        assert result_container.get("result") is None
+
+    def test_interactive_calls_pick_with_default_index(self):
+        """TTY mode calls pick.pick with the correct default_index."""
+        from summon_claude.cli import _init_select
+
+        ctx = _make_ctx()
+        with (
+            patch("summon_claude.cli.interactive.sys.stdin") as mock_stdin,
+            patch("pick.pick", return_value=("beta", 1)) as mock_pick,
+        ):
+            mock_stdin.isatty.return_value = True
+            result = _init_select(["alpha", "beta", "gamma"], "Pick:", ctx, default_index=1)
+        assert result == "beta"
+        mock_pick.assert_called_once_with(
+            ["alpha", "beta", "gamma"],
+            "Pick:  (↑/↓ to select, Enter to confirm)",
+            indicator=">",
+            default_index=1,
+        )
+
+    def test_interactive_keyboard_interrupt_returns_none(self):
+        """KeyboardInterrupt during pick.pick returns None."""
+        from summon_claude.cli import _init_select
+
+        ctx = _make_ctx()
+        with (
+            patch("summon_claude.cli.interactive.sys.stdin") as mock_stdin,
+            patch("pick.pick", side_effect=KeyboardInterrupt),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = _init_select(["alpha", "beta"], "Pick:", ctx)
+        assert result is None

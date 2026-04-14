@@ -49,6 +49,7 @@ from summon_claude.cli.hooks import (
     run_post_worktree_cli,
     uninstall_hooks,
 )
+from summon_claude.cli.interactive import is_interactive
 from summon_claude.cli.project import (
     async_project_add,
     async_project_list,
@@ -612,8 +613,6 @@ def _init_select(
     Uses pick for TTY sessions, numbered fallback otherwise.
     Returns the selected option string, or None on cancel.
     """
-    from summon_claude.cli.interactive import is_interactive  # noqa: PLC0415
-
     if not options:
         return None
 
@@ -644,7 +643,7 @@ def _init_select(
         )
     except (KeyboardInterrupt, click.Abort):
         return None
-    return options[int(choice) - 1]
+    return options[choice - 1]
 
 
 @cli.command("init")
