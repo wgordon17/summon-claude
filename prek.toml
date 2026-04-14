@@ -33,7 +33,7 @@ hooks = [
   { id = "py-test", name = "Full Python tests (make py-test)", entry = "make py-test", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"], priority = 10 },
   { id = "py-test-slack", name = "Slack integration tests (make py-test-slack)", entry = "make py-test-slack", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"], priority = 10 },
   { id = "py-test-llm", name = "LLM classifier tests (make py-test-llm)", entry = "make py-test-llm", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"], priority = 10 },
-  { id = "docs-test-links", name = "Doc link check", entry = "make docs-test-links", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"], priority = 10 },
+  { id = "docs-test-links", name = "Doc link check (make docs-test-links)", entry = "make docs-test-links", language = "system", files = '\.(md|yml|yaml)$', pass_filenames = false, stages = ["pre-push"], priority = 10 },
 ]
 
 [[repos]]

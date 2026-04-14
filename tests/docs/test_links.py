@@ -103,7 +103,7 @@ def _fetch(url: str, method: str = "HEAD") -> tuple[int, str]:
     raise AssertionError("unreachable")
 
 
-def _check_url(url: str) -> tuple[bool, str]:  # noqa: PLR0911
+def _check_url(url: str) -> tuple[bool, str]:
     """Check if URL is reachable and canonical (no redirects). Returns (ok, detail)."""
     try:
         status, final_url = _fetch(url, "HEAD")
@@ -117,8 +117,6 @@ def _check_url(url: str) -> tuple[bool, str]:  # noqa: PLR0911
             return False, f"HTTP {e.code}"
     except URLError as e:
         return False, str(e.reason)
-    except TimeoutError:
-        return False, "timeout"
     if status >= 400:
         return False, f"status={status}"
     if final_url != url:
