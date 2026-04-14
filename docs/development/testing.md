@@ -224,7 +224,7 @@ make docs-test
 | `test_env_vars.py` | `SUMMON_*` env vars in docs match `SummonConfig` fields |
 | `test_mcp_tools.py` | MCP tool docs match source tool schemas and counts |
 | `test_bash_codeblocks.py` | `summon` commands in bash blocks execute successfully |
-| `test_links.py` | External URLs in docs return 2xx/3xx (rejects redirects) |
+| `test_links.py` | External URLs in docs return 2xx/3xx (rejects redirects). Network tests use `link_check` marker; run separately via `make docs-test-links` |
 
 ### `notest` markers
 
@@ -248,20 +248,23 @@ The `notest` attribute is invisible to documentation readers — markdown render
 
 ### CI integration
 
-- **`test` job:** `make py-test` runs guard tests (CLI, env vars, MCP, prompts) + bash code blocks + link checks. `make docs-test` runs markdown code block validation separately
+- **`test` job:** `make py-test` runs guard tests (CLI, env vars, MCP, prompts) + bash code blocks. `make docs-test` runs markdown code block validation separately
+- **`link-check` job:** `make docs-test-links` runs external URL link validation (advisory — visible red X on failure, does not block merge)
 - **`slack-integration` job:** Runs bash CLI tests with real credentials (Tier 2 commands like `summon config show`)
 
 ---
 
 ## CI Testing
 
-The `ci.yaml` workflow runs three parallel jobs on every PR to `main`:
+The `ci.yaml` workflow runs parallel jobs on every PR to `main`:
 
 1. **`lint`** — `make py-lint` (ruff check + format)
 2. **`typecheck`** — `make py-typecheck` (pyright)
 3. **`test`** — `make py-test` + `make docs-test` (full pytest suite + markdown code block validation)
+4. **`docs`** — `mkdocs build --strict` (docs build check, PRs only)
+5. **`link-check`** — `make docs-test-links` (external URL validation, advisory — does not block merge)
 
-All three jobs run independently in parallel. Slack integration tests run only on pushes to `main`.
+Jobs 1–4 are required status checks. Job 5 is advisory (visible red X on failure, but does not block merge). Slack integration tests run only on pushes to `main`.
 
 **Debugging CI failures:**
 
