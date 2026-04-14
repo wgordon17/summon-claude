@@ -604,6 +604,49 @@ def _ensure_gitignore() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _init_select(
+    options: list[str], title: str, ctx: click.Context, default_index: int = 0
+) -> str | None:
+    """Interactive selector for init wizard choice fields.
+
+    Uses pick for TTY sessions, numbered fallback otherwise.
+    Returns the selected option string, or None on cancel.
+    """
+    from summon_claude.cli.interactive import is_interactive  # noqa: PLC0415
+
+    if not options:
+        return None
+
+    if is_interactive(ctx):
+        import pick  # noqa: PLC0415
+
+        try:
+            selected, _ = pick.pick(
+                options,
+                f"{title}  (↑/↓ to select, Enter to confirm)",
+                indicator=">",
+                default_index=default_index,
+            )
+            return str(selected)
+        except KeyboardInterrupt:
+            return None
+
+    # Non-interactive fallback: numbered list
+    click.echo(title)
+    for i, opt in enumerate(options, 1):
+        marker = "*" if i - 1 == default_index else " "
+        click.echo(f"    {marker} {i}) {opt}")
+    try:
+        choice = click.prompt(
+            "    Select",
+            type=click.IntRange(1, len(options)),
+            default=default_index + 1,
+        )
+    except (KeyboardInterrupt, click.Abort):
+        return None
+    return options[int(choice) - 1]
+
+
 @cli.command("init")
 @click.pass_context
 def cmd_init(ctx: click.Context) -> None:
@@ -797,12 +840,12 @@ def cmd_init(ctx: click.Context) -> None:
                     # Existing custom model not in choices: insert it before "other"
                     insert_idx = choices.index("other") if "other" in choices else len(choices)
                     choices = [*choices[:insert_idx], prompt_default, *choices[insert_idx:]]
-                value = click.prompt(
-                    f"    {opt.label}",
-                    type=click.Choice(choices, case_sensitive=False) if choices else None,
-                    default=prompt_default or None,
-                    show_default=True,
-                )
+                # Pre-select the default choice index for the interactive picker
+                default_idx = 0
+                if prompt_default and prompt_default in choices:
+                    default_idx = choices.index(prompt_default)
+                result = _init_select(choices, f"    {opt.label}", ctx, default_idx)
+                value = result if result is not None else (prompt_default or "")
                 # Sentinel post-processing
                 if value.startswith("default ("):
                     value = ""

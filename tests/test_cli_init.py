@@ -30,7 +30,7 @@ _REQUIRED_INPUTS = [
 
 _NON_ADVANCED_TAIL = [
     "",  # default_model (Enter = keep default sentinel)
-    "high",  # default_effort
+    "3",  # default_effort (choice: 3=high)
     "",  # channel_prefix (Enter = keep default "summon")
     "n",  # scribe_enabled
     "n",  # advanced settings
@@ -88,7 +88,7 @@ class TestMergeExisting:
                 [
                     *_REQUIRED_INPUTS,
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "my-prefix",  # channel_prefix — explicitly re-confirm existing value
                     "n",  # scribe_enabled
                     "n",  # advanced settings
@@ -194,7 +194,7 @@ class TestCtrlCAndDraftResume:
                     "xapp-new",  # app token
                     "abcdef012345",  # signing secret
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix (Enter to keep "draft-prefix" from draft as default)
                     "n",  # scribe_enabled
                     "n",  # advanced settings
@@ -256,7 +256,7 @@ class TestIntValidation:
                 [
                     *_REQUIRED_INPUTS,
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "y",  # scribe_enabled
                     "0",  # scan_interval — invalid (< 1)
@@ -308,7 +308,7 @@ class TestClearMechanism:
                     "",  # app token (Enter = keep existing xapp-old)
                     "",  # signing secret (Enter = keep existing abc123)
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "y",  # scribe_enabled (keep enabled)
                     "",  # scan_interval (Enter = keep default)
@@ -350,7 +350,7 @@ class TestClearMechanism:
                     "",  # app token (keep)
                     "",  # signing secret (keep)
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "y",  # scribe_enabled
                     "clear",  # scan_interval — clear it
@@ -612,7 +612,7 @@ class TestTextValidation:
                 [
                     *_REQUIRED_INPUTS,
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "UPPER_CASE",  # channel_prefix — invalid
                     "valid-prefix",  # channel_prefix — valid retry
                     "n",  # scribe_enabled

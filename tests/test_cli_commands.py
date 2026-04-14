@@ -68,8 +68,8 @@ class TestCmdInit:
                     "xoxb-valid-bot-token",  # slack_bot_token (secret)
                     "xapp-valid-app-token",  # slack_app_token (secret)
                     "abcdef012345",  # signing_secret (secret, hex)
-                    "default (auto)",  # default_model (choice → select "default (auto)")
-                    "high",  # default_effort (choice)
+                    "",  # default_model (choice: Enter accepts default)
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix (text, accept default)
                     "n",  # scribe_enabled (flag)
                     "n",  # Configure advanced settings? (no)
@@ -114,14 +114,14 @@ class TestCmdInit:
                     "xoxb-valid-bot-token",  # slack_bot_token
                     "xapp-valid-app-token",  # slack_app_token
                     "abcdef012345",  # signing_secret
-                    "default (auto)",  # default_model (choice)
-                    "high",  # default_effort
+                    "",  # default_model (choice: Enter accepts default)
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "y",  # Configure advanced settings? (YES)
                     "",  # global_pm_scan_interval_minutes (accept default)
                     "",  # global_pm_cwd (accept default)
-                    "default (auto)",  # global_pm_model (choice)
+                    "",  # global_pm_model (choice: Enter accepts default)
                     "",  # max_inline_chars (accept default)
                     "",  # permission_debounce_ms (accept default)
                     "",  # permission_timeout_s (accept default)
@@ -178,8 +178,8 @@ class TestCmdInit:
                     "",  # slack_bot_token (keep existing)
                     "",  # slack_app_token (keep existing)
                     "",  # signing_secret (keep existing)
-                    "",  # default_model (choice: Enter → "default (auto)")
-                    "high",  # default_effort
+                    "",  # default_model (choice: Enter accepts default)
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -232,7 +232,7 @@ class TestCmdInit:
                     "",  # slack_app_token (keep existing)
                     "",  # signing_secret (keep existing)
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -290,7 +290,7 @@ class TestCmdInit:
                     "",  # slack_app_token (keep existing)
                     "",  # signing_secret (keep existing)
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -396,7 +396,7 @@ class TestCmdInit:
                     "xapp-valid-app-token",
                     "abcdef012345",
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "",  # github_pat
@@ -441,9 +441,9 @@ class TestCmdInit:
                     "xoxb-valid-bot-token",
                     "xapp-valid-app-token",
                     "abcdef012345",
-                    "other",  # default_model: select "other" sentinel
+                    "7",  # default_model: select "other" (7th in fallback list)
                     "my-fine-tuned-model",  # default_model: custom model entry
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -487,9 +487,9 @@ class TestCmdInit:
                     "xoxb-valid-bot-token",
                     "xapp-valid-app-token",
                     "abcdef012345",
-                    "other",  # default_model: select "other" sentinel
+                    "7",  # default_model: select "other" (7th in fallback list)
                     "",  # default_model (custom): empty → skip
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -539,9 +539,9 @@ class TestCmdInit:
                     "",  # slack_bot_token (keep existing)
                     "",  # slack_app_token (keep existing)
                     "",  # signing_secret (keep existing)
-                    "other",  # default_model: select "other" sentinel
+                    "7",  # default_model: select "other" (7th in fallback list)
                     "",  # default_model (custom): empty → fall back to current_value
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -590,8 +590,8 @@ class TestCmdInit:
                     "",  # slack_bot_token (keep existing)
                     "",  # slack_app_token (keep existing)
                     "",  # signing_secret (keep existing)
-                    "my-fine-tuned-model",  # default_model: select the dynamically-inserted custom
-                    "high",  # default_effort
+                    "",  # default_model: Enter selects dynamically-inserted custom (default)
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -635,8 +635,8 @@ class TestCmdInit:
                     "xoxb-valid-bot-token",
                     "xapp-valid-app-token",
                     "abcdef012345",
-                    "default (auto)",  # default_model
-                    "high",  # default_effort
+                    "",  # default_model (choice: Enter accepts default)
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -680,8 +680,8 @@ class TestCmdInit:
                     "xoxb-valid-bot-token",
                     "xapp-valid-app-token",
                     "abcdef012345",
-                    "default (auto)",  # default_model
-                    "high",  # default_effort
+                    "",  # default_model (choice: Enter accepts default)
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -723,8 +723,8 @@ class TestCmdInit:
                     "xoxb-valid-bot-token",
                     "xapp-valid-app-token",
                     "abcdef012345",
-                    "default (auto)",  # default_model
-                    "high",  # default_effort
+                    "",  # default_model (choice: Enter accepts default)
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # Configure advanced settings?
@@ -1603,7 +1603,7 @@ class TestInitPydanticValidationError:
                     "xapp-valid-app-token",
                     "abcdef012345",
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "n",  # advanced settings
@@ -1662,7 +1662,7 @@ class TestInitTextValidateFnRetry:
                     "xapp-valid-app-token",
                     "abcdef012345",
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "UPPER",  # channel_prefix — invalid
                     "valid-prefix",  # channel_prefix — valid (retry)
                     "n",  # scribe_enabled
@@ -1701,7 +1701,7 @@ class TestInitTextValidateFnRetry:
                     "xapp-valid-app-token",
                     "abcdef012345",
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "y",  # scribe_enabled
                     "0",  # scribe_scan_interval_minutes — invalid (< 1)
