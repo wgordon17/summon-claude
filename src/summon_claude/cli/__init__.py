@@ -605,44 +605,39 @@ def _ensure_gitignore() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _init_select(
-    options: list[str], title: str, ctx: click.Context, default_index: int = 0
-) -> str | None:
+def _init_select(options: list[str], title: str, ctx: click.Context, default_index: int = 0) -> str:
     """Interactive selector for init wizard choice fields.
 
     Uses pick for TTY sessions, numbered fallback otherwise.
-    Returns the selected option string, or None on cancel.
+    Returns the selected option string.  Raises KeyboardInterrupt / click.Abort
+    on Ctrl-C so the caller's draft-save handler can fire.
     """
     if not options:
-        return None
+        return ""
 
     if is_interactive(ctx):
         import pick  # noqa: PLC0415
 
-        try:
-            selected, _ = pick.pick(
-                options,
-                f"{title}  (↑/↓ to select, Enter to confirm)",
-                indicator=">",
-                default_index=default_index,
-            )
-            return str(selected)
-        except KeyboardInterrupt:
-            return None
+        # KeyboardInterrupt propagates to cmd_init's draft-save handler
+        selected, _ = pick.pick(
+            options,
+            f"{title}  (↑/↓ to select, Enter to confirm)",
+            indicator=">",
+            default_index=default_index,
+        )
+        return str(selected)
 
     # Non-interactive fallback: numbered list
     click.echo(title)
     for i, opt in enumerate(options, 1):
         marker = "*" if i - 1 == default_index else " "
         click.echo(f"    {marker} {i}) {opt}")
-    try:
-        choice = click.prompt(
-            "    Select",
-            type=click.IntRange(1, len(options)),
-            default=default_index + 1,
-        )
-    except (KeyboardInterrupt, click.Abort):
-        return None
+    # KeyboardInterrupt / click.Abort propagate to cmd_init's draft-save handler
+    choice = click.prompt(
+        "    Select",
+        type=click.IntRange(1, len(options)),
+        default=default_index + 1,
+    )
     return options[choice - 1]
 
 
@@ -843,8 +838,7 @@ def cmd_init(ctx: click.Context) -> None:
                 default_idx = 0
                 if prompt_default and prompt_default in choices:
                     default_idx = choices.index(prompt_default)
-                result = _init_select(choices, f"    {opt.label}", ctx, default_idx)
-                value = result if result is not None else (prompt_default or "")
+                value = _init_select(choices, f"    {opt.label}", ctx, default_idx)
                 # Sentinel post-processing
                 if value.startswith("default ("):
                     value = ""

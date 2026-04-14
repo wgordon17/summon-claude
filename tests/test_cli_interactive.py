@@ -622,12 +622,12 @@ class TestCleanupInteractive:
 class TestInitSelect:
     """Tests for _init_select() in cli/__init__.py."""
 
-    def test_empty_options_returns_none(self):
-        """Empty options list returns None immediately."""
+    def test_empty_options_returns_empty_string(self):
+        """Empty options list returns empty string immediately."""
         from summon_claude.cli import _init_select
 
         ctx = _make_ctx()
-        assert _init_select([], "Pick:", ctx) is None
+        assert _init_select([], "Pick:", ctx) == ""
 
     def test_non_interactive_fallback_selects_option(self):
         """Non-interactive fallback returns selected option by number."""
@@ -669,22 +669,22 @@ class TestInitSelect:
         assert result.exit_code == 0
         assert result_container["result"] == "beta"
 
-    def test_non_interactive_abort_returns_none(self):
-        """Ctrl+C / EOF during non-interactive prompt returns None."""
+    def test_non_interactive_abort_raises(self):
+        """Ctrl+C / EOF during non-interactive prompt propagates click.Abort."""
         from summon_claude.cli import _init_select
 
         ctx = _make_ctx()
         runner = CliRunner()
-        result_container = {}
 
         @click.command()
         @click.pass_context
         def cmd(click_ctx):
             click_ctx.obj = ctx.obj
-            result_container["result"] = _init_select(["alpha", "beta"], "Pick:", click_ctx)
+            _init_select(["alpha", "beta"], "Pick:", click_ctx)
 
-        runner.invoke(cmd, input="")
-        assert result_container.get("result") is None
+        result = runner.invoke(cmd, input="")
+        # click.Abort propagates → CliRunner catches it as non-zero exit
+        assert result.exit_code != 0
 
     def test_interactive_calls_pick_with_default_index(self):
         """TTY mode calls pick.pick with the correct default_index."""
@@ -705,15 +705,17 @@ class TestInitSelect:
             default_index=1,
         )
 
-    def test_interactive_keyboard_interrupt_returns_none(self):
-        """KeyboardInterrupt during pick.pick returns None."""
+    def test_interactive_keyboard_interrupt_propagates(self):
+        """KeyboardInterrupt during pick.pick propagates for draft-save."""
+        import pytest
+
         from summon_claude.cli import _init_select
 
         ctx = _make_ctx()
         with (
             patch("summon_claude.cli.interactive.sys.stdin") as mock_stdin,
             patch("pick.pick", side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
         ):
             mock_stdin.isatty.return_value = True
-            result = _init_select(["alpha", "beta"], "Pick:", ctx)
-        assert result is None
+            _init_select(["alpha", "beta"], "Pick:", ctx)
