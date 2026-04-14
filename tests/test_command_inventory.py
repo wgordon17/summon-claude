@@ -61,8 +61,10 @@ class TestExpectedCommands:
         "model",
         "compact",
         "effort",
+        "auto",
         "summon",
         "diff",
+        "show",
         "changes",
     }
     EXPECTED_PASSTHROUGH = {

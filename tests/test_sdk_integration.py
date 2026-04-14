@@ -9,6 +9,7 @@ child subprocesses via an autouse fixture. Run with::
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -37,10 +38,13 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def _strip_claudecode(monkeypatch):
+@pytest.fixture(autouse=True, scope="session")
+def _strip_claudecode():
     """Remove CLAUDECODE env var so SDK subprocesses don't detect nesting."""
-    monkeypatch.delenv("CLAUDECODE", raising=False)
+    old = os.environ.pop("CLAUDECODE", None)
+    yield
+    if old is not None:
+        os.environ["CLAUDECODE"] = old
 
 
 # Common options applied to all SDK sessions.
@@ -252,14 +256,20 @@ class TestThinkingConfigIntegration:
             f"got content types: {[type(b).__name__ for m in assistant_msgs for b in m.content]}"
         )
 
+    @pytest.mark.xfail(
+        reason="Claude 4.x always returns ThinkingBlocks regardless of ThinkingConfigDisabled",
+        strict=False,
+    )
     async def test_disabled_thinking_produces_no_thinking_blocks(self):
         """ThinkingConfigDisabled(type='disabled') should produce no ThinkingBlocks."""
         with tempfile.TemporaryDirectory() as cwd:
+            # Empty setting_sources: user settings (e.g. alwaysThinkingEnabled)
+            # must not override the explicit ThinkingConfigDisabled being tested.
             options = ClaudeAgentOptions(
                 cwd=cwd,
                 max_turns=1,
                 thinking=ThinkingConfigDisabled(type="disabled"),
-                **_COMMON_OPTS,
+                setting_sources=[],
             )
             async with ClaudeSDKClient(options) as client:
                 await client.query("What is 2 + 2?")

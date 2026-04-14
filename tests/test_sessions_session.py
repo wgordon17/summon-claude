@@ -4975,6 +4975,50 @@ class TestDiffFileReturncode:
 
         rt.client.upload.assert_not_called()
 
+    async def test_diff_file_outside_cwd_posts_warning(self, tmp_path):
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        await session._handle_diff_file(rt, "/etc/passwd", "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("outside the session directory" in p for p in posted)
+        rt.client.upload.assert_not_called()
+
+    async def test_diff_file_outside_cwd_no_subprocess(self, tmp_path):
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            await session._handle_diff_file(rt, "/etc/passwd", "thread_1")
+
+        mock_exec.assert_not_called()
+
+    async def test_diff_file_large_diff_posts_truncation_warning(self, tmp_path):
+        from summon_claude.sessions import session as session_mod
+
+        (tmp_path / "big.py").write_text("x")
+        session = make_session(cwd=str(tmp_path))
+        session._is_git_repo = True
+        session._changed_files = {}
+        rt = make_rt(AsyncMock())
+
+        large_stdout = b"x" * 100
+
+        with (
+            patch.object(session_mod, "_MAX_UPLOAD_CHARS", 50),
+            patch("asyncio.create_subprocess_exec", return_value=_make_proc(0, large_stdout)),
+        ):
+            await session._handle_diff_file(rt, "big.py", "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("truncated" in p.lower() for p in posted)
+        rt.client.upload.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # TestDiffFileUntracked
@@ -5270,8 +5314,8 @@ class TestDiffAllUntracked:
         # Early exit before scanning untracked files because tracked diff > cap
         assert no_index_calls["count"] == 0
 
-    async def test_diff_all_overflow_count_accurate_under_50(self, tmp_path):
-        """When <50 files and size limit triggers, overflow count must match reality."""
+    async def test_diff_all_parallel_gather_with_budget_break(self, tmp_path):
+        """All untracked files are diffed in parallel; budget-filter trims post-gather."""
         from summon_claude.sessions import session as session_mod
 
         session = make_session(cwd=str(tmp_path))
@@ -5299,18 +5343,15 @@ class TestDiffAllUntracked:
         ):
             await session._handle_diff_all(rt, "thread_1")
 
-        # Should NOT say "50 more" or "40 more" — there are only 10 total
-        if rt.client.upload.called:
-            uploaded = rt.client.upload.call_args.kwargs.get("content", "")
-            if "more untracked" in uploaded:
-                # Extract the number from "... and N more untracked files"
-                import re
-
-                m = re.search(r"(\d+) more untracked", uploaded)
-                assert m is not None
-                reported = int(m.group(1))
-                # Can't report more skipped files than actually exist
-                assert reported <= 10, f"Reported {reported} overflow but only 10 files exist"
+        # Upload is always called: combined exceeds cap and gets truncated
+        rt.client.upload.assert_called_once()
+        # Truncation warning must be posted
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("truncated" in p.lower() for p in posted)
+        # All 10 files are diffed in parallel, then budget-filtered post-gather.
+        # With tracked=95 chars and cap=100, only 1 file's output (13 chars) fits
+        # before budget break at idx=1 (95+13=108 > 100); remaining 9 become overflow.
+        assert calls["count"] == 10  # all ran in parallel
 
 
 # ---------------------------------------------------------------------------
@@ -5419,4 +5460,18 @@ class TestShowCommand:
 
         posted = [str(c) for c in rt.client.post.call_args_list]
         assert any("outside the session directory" in p.lower() for p in posted)
+        rt.client.upload.assert_not_called()
+
+    async def test_show_file_generic_oserror(self, tmp_path):
+        session = make_session(cwd=str(tmp_path))
+        rt = make_rt(AsyncMock())
+
+        with patch(
+            "summon_claude.sessions.session._read_bounded",
+            side_effect=OSError(22, "Invalid argument"),
+        ):
+            await session._handle_show_file(rt, "weird.bin", "thread_1")
+
+        posted = [str(c) for c in rt.client.post.call_args_list]
+        assert any("invalid argument" in p.lower() for p in posted)
         rt.client.upload.assert_not_called()

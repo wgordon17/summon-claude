@@ -1110,3 +1110,36 @@ class TestDiffHandler:
         context = make_context()
         result = await dispatch("diff", [], context)
         assert result.metadata.get("diff_all") is True
+
+    async def test_diff_with_file_sets_diff_file_metadata(self, make_context):
+        """!diff <file> should set metadata['diff_file'] to the given path."""
+        context = make_context()
+        result = await dispatch("diff", ["src/foo.py"], context)
+        assert result.metadata.get("diff_file") == "src/foo.py"
+        assert result.text is None
+        assert result.suppress_queue is True
+
+
+# ------------------------------------------------------------------
+# !show command handler tests
+# ------------------------------------------------------------------
+
+
+class TestShowHandler:
+    """Tests for !show command dispatch."""
+
+    async def test_show_no_args_returns_usage(self, make_context):
+        """!show with no args should return usage text."""
+        context = make_context()
+        result = await dispatch("show", [], context)
+        assert result.text is not None
+        assert "Usage" in result.text
+        assert result.suppress_queue is True
+
+    async def test_show_with_file_sets_show_file_metadata(self, make_context):
+        """!show <file> should set metadata['show_file'] to the given path."""
+        context = make_context()
+        result = await dispatch("show", ["src/foo.py"], context)
+        assert result.metadata.get("show_file") == "src/foo.py"
+        assert result.text is None
+        assert result.suppress_queue is True
