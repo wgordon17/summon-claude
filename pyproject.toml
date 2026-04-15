@@ -126,6 +126,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # CLI: click.echo for output; slack handler unused args; cmd_start has many required statements
 "src/summon_claude/cli/__init__.py" = ["ARG001", "PLR0911", "PLR0912", "PLR0913", "PLR0915"]
+# cli/interactive: interactive_select has 4 keyword-only params (default_index, catch_interrupt, back_label, hint)
+"src/summon_claude/cli/interactive.py" = ["PLR0913"]
 # cli/stop: async_stop has many branches/returns (interactive + stop_all + single session)
 "src/summon_claude/cli/stop.py" = ["PLR0911", "PLR0912"]
 # cli/session: session_logs_impl has many branches/returns; cleanup has many branches/statements

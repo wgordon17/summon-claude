@@ -49,7 +49,7 @@ from summon_claude.cli.hooks import (
     run_post_worktree_cli,
     uninstall_hooks,
 )
-from summon_claude.cli.interactive import is_interactive
+from summon_claude.cli.interactive import _init_select
 from summon_claude.cli.project import (
     async_project_add,
     async_project_list,
@@ -603,42 +603,6 @@ def _ensure_gitignore() -> None:
 # ---------------------------------------------------------------------------
 # Top-level commands: init, config
 # ---------------------------------------------------------------------------
-
-
-def _init_select(options: list[str], title: str, ctx: click.Context, default_index: int = 0) -> str:
-    """Interactive selector for init wizard choice fields.
-
-    Uses pick for TTY sessions, numbered fallback otherwise.
-    Returns the selected option string.  Raises KeyboardInterrupt / click.Abort
-    on Ctrl-C so the caller's draft-save handler can fire.
-    """
-    if not options:
-        return ""
-
-    if is_interactive(ctx):
-        import pick  # noqa: PLC0415
-
-        # KeyboardInterrupt propagates to cmd_init's draft-save handler
-        selected, _ = pick.pick(
-            options,
-            f"{title}  (↑/↓ to select, Enter to confirm)",
-            indicator=">",
-            default_index=default_index,
-        )
-        return str(selected)
-
-    # Non-interactive fallback: numbered list
-    click.echo(title)
-    for i, opt in enumerate(options, 1):
-        marker = "*" if i - 1 == default_index else " "
-        click.echo(f"    {marker} {i}) {opt}")
-    # KeyboardInterrupt / click.Abort propagate to cmd_init's draft-save handler
-    choice = click.prompt(
-        "    Select",
-        type=click.IntRange(1, len(options)),
-        default=default_index + 1,
-    )
-    return options[choice - 1]
 
 
 @cli.command("init")
