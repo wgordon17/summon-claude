@@ -6,7 +6,9 @@
 name: "Spike: GitHub 504"
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - spike/github-504-link-check
 
 jobs:
   spike-no-auth:
