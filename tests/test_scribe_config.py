@@ -1043,21 +1043,6 @@ class TestGoogleScopeHelpers:
         assert "gmail (read-write)" in desc
         assert "calendar (read-write)" in desc
 
-    def test_describe_granted_scopes_legacy_rw(self) -> None:
-        """Legacy rw scopes (gmail.modify, calendar) show as read-write."""
-        from summon_claude.cli.google_auth import (
-            GOOGLE_SCOPE_PREFIX,
-            _describe_granted_scopes,
-        )
-
-        # gmail.modify — legacy Gmail rw scope
-        desc = _describe_granted_scopes({f"{GOOGLE_SCOPE_PREFIX}gmail.modify"})
-        assert "gmail (read-write)" in desc
-
-        # calendar (full) — legacy Calendar rw scope
-        desc = _describe_granted_scopes({f"{GOOGLE_SCOPE_PREFIX}calendar"})
-        assert "calendar (read-write)" in desc
-
     def test_load_google_client_credentials_from_env(self):
         """_load_google_client_credentials reads from environment variables."""
         from pathlib import Path

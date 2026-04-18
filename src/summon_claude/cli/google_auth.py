@@ -738,8 +738,7 @@ def _describe_granted_scopes(granted: set[str]) -> str:
         ro_scopes = {
             s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["ro"]
         }
-        legacy_rw = _LEGACY_RW_SCOPES.get(svc, set())
-        if (rw_scopes | legacy_rw) & granted:
+        if rw_scopes & granted:
             parts.append(f"{svc} (read-write)")
         elif ro_scopes & granted:
             parts.append(f"{svc} (read-only)")
@@ -750,14 +749,6 @@ _GOOGLE_WRITE_PROMPTS: dict[str, str] = {
     "gmail": "Send and compose emails, manage labels and email settings",
     "calendar": "Create, edit, and delete calendar events",
     "drive": "Create, edit, and delete Google Drive files",
-}
-
-# Legacy rw scopes that predate the narrowed scope set.  A credential
-# containing any of these is treated as having write access for that
-# service, even though the new rw tier no longer requests them.
-_LEGACY_RW_SCOPES: dict[str, set[str]] = {
-    "gmail": {f"{GOOGLE_SCOPE_PREFIX}gmail.modify"},
-    "calendar": {f"{GOOGLE_SCOPE_PREFIX}calendar"},
 }
 
 
@@ -890,8 +881,7 @@ def google_auth(account: str | None = None) -> None:
         rw_scopes = {
             s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}" for s in tiers["rw"]
         }
-        legacy_rw = _LEGACY_RW_SCOPES.get(svc, set())
-        if (rw_scopes | legacy_rw) & granted:
+        if rw_scopes & granted:
             existing_rw.add(svc)
 
     # Ask which services need write access.
