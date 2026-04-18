@@ -49,6 +49,7 @@ from summon_claude.cli.hooks import (
     run_post_worktree_cli,
     uninstall_hooks,
 )
+from summon_claude.cli.interactive import interactive_select
 from summon_claude.cli.project import (
     async_project_add,
     async_project_list,
@@ -794,15 +795,29 @@ def cmd_init(ctx: click.Context) -> None:
                     elif choices:
                         prompt_default = choices[0]
                 elif choices and prompt_default not in choices:
-                    # Existing custom model not in choices: insert it before "other"
-                    insert_idx = choices.index("other") if "other" in choices else len(choices)
-                    choices = [*choices[:insert_idx], prompt_default, *choices[insert_idx:]]
-                value = click.prompt(
+                    if "other" in choices:
+                        # Free-text field: insert old custom value before "other"
+                        insert_idx = choices.index("other")
+                        choices = [*choices[:insert_idx], prompt_default, *choices[insert_idx:]]
+                    else:
+                        # Frozen list: old value is invalid, fall back to first option
+                        # and scrub stale value so it can't leak through the merge
+                        prompt_default = choices[0] if choices else ""
+                        existing.pop(opt.env_key, None)
+                # Pre-select the default choice index for the interactive picker
+                default_idx = 0
+                if prompt_default and prompt_default in choices:
+                    default_idx = choices.index(prompt_default)
+                result = interactive_select(
+                    choices,
                     f"    {opt.label}",
-                    type=click.Choice(choices, case_sensitive=False) if choices else None,
-                    default=prompt_default or None,
-                    show_default=True,
+                    ctx,
+                    default_index=default_idx,
+                    catch_interrupt=False,
+                    back_label=False,
+                    hint="(↑/↓ to select, Enter to confirm)",
                 )
+                value = result[0] if result else ""
                 # Sentinel post-processing
                 if value.startswith("default ("):
                     value = ""

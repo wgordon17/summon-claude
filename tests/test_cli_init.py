@@ -30,7 +30,7 @@ _REQUIRED_INPUTS = [
 
 _NON_ADVANCED_TAIL = [
     "",  # default_model (Enter = keep default sentinel)
-    "high",  # default_effort
+    "3",  # default_effort (choice: 3=high)
     "",  # channel_prefix (Enter = keep default "summon")
     "n",  # scribe_enabled
     "n",  # advanced settings
@@ -88,7 +88,7 @@ class TestMergeExisting:
                 [
                     *_REQUIRED_INPUTS,
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "my-prefix",  # channel_prefix — explicitly re-confirm existing value
                     "n",  # scribe_enabled
                     "n",  # advanced settings
@@ -125,6 +125,60 @@ class TestMergeExisting:
         written = parse_env_file(config_file)
         # "false" is non-default (default is True), so it must be preserved
         assert written.get("SUMMON_AUTO_CLASSIFIER_ENABLED") == "false"
+
+
+# ---------------------------------------------------------------------------
+# Test 2b: frozen-list choice fields reject stale values
+# ---------------------------------------------------------------------------
+
+
+class TestFrozenListChoices:
+    def test_frozen_list_does_not_insert_stale_value(self, tmp_path):
+        """A choice field without 'other' must not re-insert a removed option."""
+        config_file = tmp_path / "config.env"
+        write_env_file(
+            config_file,
+            {
+                "SUMMON_SLACK_BOT_TOKEN": "xoxb-old",
+                "SUMMON_SLACK_APP_TOKEN": "xapp-old",
+                "SUMMON_SLACK_SIGNING_SECRET": "abc123",
+                # "extreme" is not a valid effort level
+                "SUMMON_DEFAULT_EFFORT": "extreme",
+            },
+        )
+
+        inputs = _make_inputs()
+        result = _run_init(config_file, inputs)
+
+        assert result.exit_code == 0, result.output
+        written = parse_env_file(config_file)
+        # Stale value must not survive — either absent (default selected) or valid
+        effort = written.get("SUMMON_DEFAULT_EFFORT")
+        assert effort is None or effort in {"low", "medium", "high", "max"}
+        # "extreme" must not appear in the picker output
+        assert "extreme" not in result.output
+
+    def test_free_text_choice_inserts_custom_value(self, tmp_path):
+        """A model choice field with 'other' preserves an unlisted custom model."""
+        config_file = tmp_path / "config.env"
+        write_env_file(
+            config_file,
+            {
+                "SUMMON_SLACK_BOT_TOKEN": "xoxb-old",
+                "SUMMON_SLACK_APP_TOKEN": "xapp-old",
+                "SUMMON_SLACK_SIGNING_SECRET": "abc123",
+                "SUMMON_DEFAULT_MODEL": "claude-custom-model",
+            },
+        )
+
+        # Enter on default_model to accept the inserted custom model
+        inputs = _make_inputs()
+        result = _run_init(config_file, inputs)
+
+        assert result.exit_code == 0, result.output
+        written = parse_env_file(config_file)
+        # The custom model should be preserved (inserted before "other")
+        assert written.get("SUMMON_DEFAULT_MODEL") == "claude-custom-model"
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +248,7 @@ class TestCtrlCAndDraftResume:
                     "xapp-new",  # app token
                     "abcdef012345",  # signing secret
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix (Enter to keep "draft-prefix" from draft as default)
                     "n",  # scribe_enabled
                     "n",  # advanced settings
@@ -256,7 +310,7 @@ class TestIntValidation:
                 [
                     *_REQUIRED_INPUTS,
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "y",  # scribe_enabled
                     "0",  # scan_interval — invalid (< 1)
@@ -308,7 +362,7 @@ class TestClearMechanism:
                     "",  # app token (Enter = keep existing xapp-old)
                     "",  # signing secret (Enter = keep existing abc123)
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "y",  # scribe_enabled (keep enabled)
                     "",  # scan_interval (Enter = keep default)
@@ -350,7 +404,7 @@ class TestClearMechanism:
                     "",  # app token (keep)
                     "",  # signing secret (keep)
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "",  # channel_prefix
                     "y",  # scribe_enabled
                     "clear",  # scan_interval — clear it
@@ -612,7 +666,7 @@ class TestTextValidation:
                 [
                     *_REQUIRED_INPUTS,
                     "",  # default_model
-                    "high",  # default_effort
+                    "3",  # default_effort (choice: 3=high)
                     "UPPER_CASE",  # channel_prefix — invalid
                     "valid-prefix",  # channel_prefix — valid retry
                     "n",  # scribe_enabled

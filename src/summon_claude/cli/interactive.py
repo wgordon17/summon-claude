@@ -102,37 +102,63 @@ LOG_PICKER_HEADER = (
 
 
 def interactive_select(
-    options: list[str], title: str, ctx: click.Context
+    options: list[str],
+    title: str,
+    ctx: click.Context,
+    *,
+    default_index: int = 0,
+    catch_interrupt: bool = True,
+    back_label: bool = True,
+    hint: str = "(ctrl+c to exit)",
 ) -> tuple[str, int] | None:
-    """Present an interactive selection menu. Returns (selected_option, index) or None."""
+    """Present an interactive selection menu. Returns (selected_option, index) or None.
+
+    Args:
+        default_index: Pre-selected option index (clamped to valid range).
+        catch_interrupt: When True, catches KeyboardInterrupt and returns None.
+            When False, lets KeyboardInterrupt propagate to the caller.
+        back_label: When True, appends a "← Back" option in interactive mode.
+        hint: Text appended to the title's first line in interactive mode.
+    """
     if not options:
         return None
+
+    default_index = max(0, min(default_index, len(options) - 1))
 
     if is_interactive(ctx):
         import pick  # noqa: PLC0415
 
-        picker_options = [*options, _BACK_LABEL]
+        picker_options = [*options, _BACK_LABEL] if back_label else options
         # Append hint to first line only (title may contain \n for subheaders)
         lines = title.split("\n", 1)
-        lines[0] += "  (ctrl+c to exit)"
-        hint = "\n".join(lines)
+        lines[0] += f"  {hint}"
+        picker_title = "\n".join(lines)
         try:
-            result = pick.pick(picker_options, hint, indicator=">")
+            result = pick.pick(
+                picker_options, picker_title, indicator=">", default_index=default_index
+            )
         except KeyboardInterrupt:
-            return None
+            if catch_interrupt:
+                return None
+            raise
         idx = int(result[1])
-        if idx >= len(options):
+        if back_label and idx >= len(options):
             return None
         return (str(result[0]), idx)
 
     # Non-interactive fallback: numbered list with click.prompt
     click.echo(title)
     for i, opt in enumerate(options, 1):
-        click.echo(f"  {i}) {opt}")
+        marker = "*" if i - 1 == default_index else " "
+        click.echo(f"  {marker} {i}) {opt}")
     try:
-        choice = click.prompt("Select", type=click.IntRange(1, len(options)))
+        choice = click.prompt(
+            "Select", type=click.IntRange(1, len(options)), default=default_index + 1
+        )
     except (KeyboardInterrupt, click.Abort):
-        return None
+        if catch_interrupt:
+            return None
+        raise
     return (options[choice - 1], choice - 1)
 
 

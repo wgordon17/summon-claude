@@ -225,8 +225,8 @@ class TestInteractiveSelect:
         assert result.exit_code == 0
         assert result_container["result"] == ("Option B", 1)
         assert "Pick one:" in result.output
-        assert "1) Option A" in result.output
-        assert "2) Option B" in result.output
+        assert "* 1) Option A" in result.output
+        assert "  2) Option B" in result.output
 
     def test_non_interactive_abort_returns_none(self):
         """Ctrl+C during click.prompt returns None instead of raising."""
@@ -259,6 +259,7 @@ class TestInteractiveSelect:
             ["Option A", "Option B", "\u2190 Back"],
             "Pick one:  (ctrl+c to exit)",
             indicator=">",
+            default_index=0,
         )
 
     def test_interactive_hint_on_first_line_with_multiline_title(self):
@@ -285,6 +286,47 @@ class TestInteractiveSelect:
             mock_stdin.isatty.return_value = True
             result = interactive_select(["Option A", "Option B"], "Pick one:", ctx)
         assert result is None
+
+    def test_interactive_interrupt_propagates_when_catch_interrupt_false(self):
+        """KeyboardInterrupt propagates when catch_interrupt=False."""
+        import pytest
+
+        ctx = _make_ctx()
+        with (
+            patch("summon_claude.cli.interactive.sys.stdin") as mock_stdin,
+            patch("pick.pick", side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            mock_stdin.isatty.return_value = True
+            interactive_select(["A"], "Pick:", ctx, catch_interrupt=False)
+
+    def test_interactive_no_back_label(self):
+        """back_label=False omits Back option from picker list."""
+        ctx = _make_ctx()
+        with (
+            patch("summon_claude.cli.interactive.sys.stdin") as mock_stdin,
+            patch("pick.pick", return_value=("A", 0)) as mock_pick,
+        ):
+            mock_stdin.isatty.return_value = True
+            result = interactive_select(["A", "B"], "Pick:", ctx, back_label=False)
+        assert result == ("A", 0)
+        # Without back_label, picker_options should NOT include "← Back"
+        called_options = mock_pick.call_args[0][0]
+        assert called_options == ["A", "B"]
+
+    def test_non_interactive_abort_propagates_when_catch_interrupt_false(self):
+        """click.Abort propagates when catch_interrupt=False in non-interactive mode."""
+        ctx = _make_ctx()
+        runner = CliRunner()
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            interactive_select(["A", "B"], "Pick:", click_ctx, catch_interrupt=False)
+
+        result = runner.invoke(cmd, input="")
+        assert result.exit_code != 0
 
 
 # ---------------------------------------------------------------------------
@@ -612,3 +654,192 @@ class TestCleanupInteractive:
             result = runner.invoke(cli, ["session", "cleanup"])
         assert result.exit_code == 0
         assert "Cleaned up 1 stale session(s)." in result.output
+
+
+# ---------------------------------------------------------------------------
+# interactive_select with init-wizard kwargs (catch_interrupt=False, back_label=False)
+# ---------------------------------------------------------------------------
+
+# The init wizard previously used a thin _init_select wrapper.  These tests
+# exercise interactive_select directly with the same kwargs the wizard passes.
+
+_INIT_HINT = "(↑/↓ to select, Enter to confirm)"
+
+
+def _init_select(
+    options: list[str],
+    title: str,
+    ctx: click.Context,
+    default_index: int = 0,
+) -> str:
+    """Test helper: call interactive_select with init-wizard kwargs and unwrap."""
+    result = interactive_select(
+        options,
+        title,
+        ctx,
+        default_index=default_index,
+        catch_interrupt=False,
+        back_label=False,
+        hint=_INIT_HINT,
+    )
+    return result[0] if result else ""
+
+
+class TestInitSelect:
+    """Tests for interactive_select() with init-wizard kwargs."""
+
+    def test_empty_options_returns_empty_string(self):
+        """Empty options list returns None (empty string after unwrap)."""
+        ctx = _make_ctx()
+        assert _init_select([], "Pick:", ctx) == ""
+
+    def test_non_interactive_fallback_selects_option(self):
+        """Non-interactive fallback returns selected option by number."""
+        ctx = _make_ctx()
+        runner = CliRunner()
+        result_container = {}
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            result_container["result"] = _init_select(
+                ["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=0
+            )
+
+        result = runner.invoke(cmd, input="2\n")
+        assert result.exit_code == 0
+        assert result_container["result"] == "beta"
+
+    def test_non_interactive_default_accepted_on_enter(self):
+        """Pressing Enter in non-interactive mode selects the default."""
+        ctx = _make_ctx()
+        runner = CliRunner()
+        result_container = {}
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            result_container["result"] = _init_select(
+                ["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=1
+            )
+
+        result = runner.invoke(cmd, input="\n")
+        assert result.exit_code == 0
+        assert result_container["result"] == "beta"
+
+    def test_non_interactive_abort_raises(self):
+        """Ctrl+C / EOF during non-interactive prompt propagates click.Abort."""
+        ctx = _make_ctx()
+        runner = CliRunner()
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            _init_select(["alpha", "beta"], "Pick:", click_ctx)
+
+        result = runner.invoke(cmd, input="")
+        # click.Abort propagates → CliRunner catches it as non-zero exit
+        assert result.exit_code != 0
+
+    def test_interactive_calls_pick_with_default_index(self):
+        """TTY mode calls pick.pick with the correct default_index."""
+        ctx = _make_ctx()
+        with (
+            patch("summon_claude.cli.interactive.is_interactive", return_value=True),
+            patch("pick.pick", return_value=("beta", 1)) as mock_pick,
+        ):
+            result = _init_select(["alpha", "beta", "gamma"], "Pick:", ctx, default_index=1)
+        assert result == "beta"
+        mock_pick.assert_called_once_with(
+            ["alpha", "beta", "gamma"],
+            f"Pick:  {_INIT_HINT}",
+            indicator=">",
+            default_index=1,
+        )
+
+    def test_interactive_keyboard_interrupt_propagates(self):
+        """KeyboardInterrupt during pick.pick propagates for draft-save."""
+        import pytest
+
+        ctx = _make_ctx()
+        with (
+            patch("summon_claude.cli.interactive.is_interactive", return_value=True),
+            patch("pick.pick", side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _init_select(["alpha", "beta"], "Pick:", ctx)
+
+    def test_no_interactive_flag_uses_fallback_not_pick(self):
+        """no_interactive=True forces numbered-list fallback even when stdin is a TTY."""
+        ctx = _make_ctx(no_interactive=True)
+        runner = CliRunner()
+        result_container = {}
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            result_container["result"] = _init_select(
+                ["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=0
+            )
+
+        with patch("pick.pick") as mock_pick:
+            result = runner.invoke(cmd, input="2\n")
+
+        assert result.exit_code == 0
+        assert result_container["result"] == "beta"
+        mock_pick.assert_not_called()
+
+    def test_non_interactive_marker_on_default(self):
+        """Non-interactive fallback shows '*' marker on the default option."""
+        ctx = _make_ctx()
+        runner = CliRunner()
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            _init_select(["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=0)
+
+        result = runner.invoke(cmd, input="\n")
+        assert "* 1) alpha" in result.output
+        assert "* 2)" not in result.output
+        assert "* 3)" not in result.output
+
+    def test_non_interactive_marker_on_non_first_default(self):
+        """Non-interactive fallback shows '*' on the correct non-first option."""
+        ctx = _make_ctx()
+        runner = CliRunner()
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            _init_select(["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=1)
+
+        result = runner.invoke(cmd, input="\n")
+        assert "* 1)" not in result.output
+        assert "* 2) beta" in result.output
+        assert "* 3)" not in result.output
+
+    def test_default_index_clamped_to_valid_range(self):
+        """Out-of-bounds default_index is clamped to last valid option."""
+        ctx = _make_ctx()
+        runner = CliRunner()
+        result_container = {}
+
+        @click.command()
+        @click.pass_context
+        def cmd(click_ctx):
+            click_ctx.obj = ctx.obj
+            result_container["result"] = _init_select(
+                ["alpha", "beta", "gamma"], "Pick:", click_ctx, default_index=99
+            )
+
+        result = runner.invoke(cmd, input="\n")
+        assert result.exit_code == 0
+        # Clamped to index 2 (last option), so Enter selects "gamma"
+        assert result_container["result"] == "gamma"
