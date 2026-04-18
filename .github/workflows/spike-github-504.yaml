@@ -1,0 +1,150 @@
+# One-off spike: test whether GITHUB_TOKEN mitigates 504s on GitHub URLs
+# from shared GHA runner IPs.
+#
+# Trigger manually via: gh workflow run spike-github-504.yaml
+# Delete this workflow after results are collected.
+name: "Spike: GitHub 504"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  spike-no-auth:
+    name: "Spike (no auth)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run spike WITHOUT token
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          URLS = [
+              "https://github.com/summon-claude/homebrew-summon",
+              "https://github.com/arxanas/git-branchless",
+              "https://github.com/taylorwilsdon/google_workspace_mcp",
+              "https://github.com/summon-claude/summon-claude/releases",
+              "https://github.com/summon-claude/summon-claude/issues",
+          ]
+          TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+          def req(url, method, token=""):
+              hdrs = {"User-Agent": "summon-claude-docs-linkcheck/1.0"}
+              if token:
+                  hdrs["Authorization"] = f"token {token}"
+              rl = {}
+              start = time.time()
+              for attempt in range(4):
+                  try:
+                      r = Request(url, headers=hdrs, method=method)
+                      with urlopen(r, timeout=10) as resp:
+                          for h in ("X-RateLimit-Remaining","X-RateLimit-Limit","Retry-After"):
+                              v = resp.headers.get(h)
+                              if v: rl[h] = v
+                          return resp.status, time.time()-start, rl
+                  except HTTPError as e:
+                      for h in ("X-RateLimit-Remaining","X-RateLimit-Limit","Retry-After"):
+                          v = e.headers.get(h) if e.headers else None
+                          if v: rl[h] = v
+                      if e.code < 500: return f"HTTP {e.code}", time.time()-start, rl
+                      if attempt == 3: return f"HTTP {e.code}", time.time()-start, rl
+                  except (URLError, TimeoutError) as e:
+                      if attempt == 3: return f"ERR: {e}", time.time()-start, rl
+                  time.sleep(2 * (2**attempt))
+              return "ERR: unreachable", time.time()-start, rl
+
+          auth = "WITH" if TOKEN else "WITHOUT"
+          print(f"\n{'='*60}")
+          print(f"  GitHub 504 Spike — {auth} token")
+          print(f"{'='*60}\n")
+
+          fails = 0
+          for url in URLS:
+              for method in ("HEAD", "GET"):
+                  status, elapsed, rl = req(url, method, TOKEN)
+                  ok = isinstance(status, int) and status < 400
+                  if not ok: fails += 1
+                  marker = "OK" if ok else "FAIL"
+                  rl_info = f" {json.dumps(rl)}" if rl else ""
+                  print(f"  [{marker:4s}] {method:4s} {url}")
+                  print(f"         -> {status} ({elapsed:.1f}s){rl_info}")
+                  time.sleep(0.5)
+              print()
+
+          print(f"\n  Result: {len(URLS)*2 - fails}/{len(URLS)*2} passed, {fails} failed\n")
+          sys.exit(1 if fails > 0 else 0)
+          PYEOF
+        continue-on-error: true
+
+  spike-with-token:
+    name: "Spike (with GITHUB_TOKEN)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run spike WITH token
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          URLS = [
+              "https://github.com/summon-claude/homebrew-summon",
+              "https://github.com/arxanas/git-branchless",
+              "https://github.com/taylorwilsdon/google_workspace_mcp",
+              "https://github.com/summon-claude/summon-claude/releases",
+              "https://github.com/summon-claude/summon-claude/issues",
+          ]
+          TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+          def req(url, method, token=""):
+              hdrs = {"User-Agent": "summon-claude-docs-linkcheck/1.0"}
+              if token:
+                  hdrs["Authorization"] = f"token {token}"
+              rl = {}
+              start = time.time()
+              for attempt in range(4):
+                  try:
+                      r = Request(url, headers=hdrs, method=method)
+                      with urlopen(r, timeout=10) as resp:
+                          for h in ("X-RateLimit-Remaining","X-RateLimit-Limit","Retry-After"):
+                              v = resp.headers.get(h)
+                              if v: rl[h] = v
+                          return resp.status, time.time()-start, rl
+                  except HTTPError as e:
+                      for h in ("X-RateLimit-Remaining","X-RateLimit-Limit","Retry-After"):
+                          v = e.headers.get(h) if e.headers else None
+                          if v: rl[h] = v
+                      if e.code < 500: return f"HTTP {e.code}", time.time()-start, rl
+                      if attempt == 3: return f"HTTP {e.code}", time.time()-start, rl
+                  except (URLError, TimeoutError) as e:
+                      if attempt == 3: return f"ERR: {e}", time.time()-start, rl
+                  time.sleep(2 * (2**attempt))
+              return "ERR: unreachable", time.time()-start, rl
+
+          auth = "WITH" if TOKEN else "WITHOUT"
+          print(f"\n{'='*60}")
+          print(f"  GitHub 504 Spike — {auth} token")
+          print(f"{'='*60}\n")
+
+          fails = 0
+          for url in URLS:
+              for method in ("HEAD", "GET"):
+                  status, elapsed, rl = req(url, method, TOKEN)
+                  ok = isinstance(status, int) and status < 400
+                  if not ok: fails += 1
+                  marker = "OK" if ok else "FAIL"
+                  rl_info = f" {json.dumps(rl)}" if rl else ""
+                  print(f"  [{marker:4s}] {method:4s} {url}")
+                  print(f"         -> {status} ({elapsed:.1f}s){rl_info}")
+                  time.sleep(0.5)
+              print()
+
+          print(f"\n  Result: {len(URLS)*2 - fails}/{len(URLS)*2} passed, {fails} failed\n")
+          sys.exit(1 if fails > 0 else 0)
+          PYEOF
+        continue-on-error: true
