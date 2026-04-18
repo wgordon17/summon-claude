@@ -222,8 +222,12 @@ make docs-test
 | Test file | What it checks |
 |-----------|---------------|
 | `test_cli_commands.py` | CLI commands in docs match Click definitions |
-| `test_env_vars.py` | `SUMMON_*` env vars in docs match `SummonConfig` fields |
+| `test_env_vars.py` | `SUMMON_*` env vars in docs match `SummonConfig` fields and generated content |
 | `test_mcp_tools.py` | MCP tool docs match source tool schemas and counts |
+| `test_session_commands.py` | Session/passthrough/blocked command tables match `COMMAND_ACTIONS` |
+| `test_permissions.py` | Permission tables match source permission constants |
+| `test_configuration.py` | Configuration group sections match `CONFIG_OPTIONS` groups |
+| `test_prompts.py` | Prompt sections match source prompt constants |
 | `test_bash_codeblocks.py` | `summon` commands in bash blocks execute successfully |
 | `test_links.py` | External URLs in docs return 2xx with no redirect. Network tests use `link_check` marker; run separately via `make docs-test-links` |
 
@@ -249,7 +253,7 @@ The `notest` attribute is invisible to documentation readers — markdown render
 
 ### CI integration
 
-- **`test` job:** `make py-test` runs guard tests (CLI, env vars, MCP, prompts) + bash code blocks. `make docs-test` runs markdown code block validation separately
+- **`test` job:** `make py-test` runs all guard tests (CLI commands, env vars, MCP tools, prompts, session commands, permissions, configuration) + bash code blocks. `make docs-test` runs doc guard tests with generated-content freshness checks
 - **`link-check` job:** `make docs-test-links` runs external URL link validation (advisory — visible red X on failure, does not block merge)
 
 ---
@@ -260,7 +264,7 @@ The `ci.yaml` workflow runs parallel jobs on every PR to `main`:
 
 1. **`lint`** — `make py-lint` (ruff check + format)
 2. **`typecheck`** — `make py-typecheck` (pyright)
-3. **`test`** — `make py-test` + `make docs-test` (full pytest suite + markdown code block validation)
+3. **`test`** — `make py-test` + `make docs-test` (full pytest suite + generated-content freshness + doc guard tests)
 4. **`docs`** — `mkdocs build --strict` (docs build check, PRs only)
 5. **`link-check`** — `make docs-test-links` (external URL validation, advisory — does not block merge)
 
