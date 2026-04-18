@@ -713,7 +713,7 @@ def cmd_init(ctx: click.Context) -> None:
             default = get_config_default(opt)
 
             # Show contextual guidance — help_hint preferred, help_text as fallback
-            hint = opt.help_hint or opt.help_text
+            hint = opt.resolve_help_hint() or opt.help_text
             if hint:
                 click.echo(click.style(f"    {hint.replace('`', '')}", dim=True))
             # Show env var name for cross-reference with docs

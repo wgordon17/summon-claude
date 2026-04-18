@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -661,15 +666,55 @@ def find_workspace_mcp_bin() -> Path:
     return Path(sys.executable).parent / "workspace-mcp"
 
 
+# Sentinel for detecting whether dotenv_settings.env_file was explicitly set to None
+_SENTINEL = object()
+
+
 class SummonConfig(BaseSettings):
     """Main configuration loaded from environment variables (SUMMON_ prefix) or .env file."""
 
     model_config = SettingsConfigDict(
         env_prefix="SUMMON_",
-        env_file=(str(get_config_file()), ".env"),  # global first, local overrides
+        # env_file is intentionally absent here — resolved lazily in
+        # settings_customise_sources() so that get_config_file() is not called
+        # at class-definition time (import time).  Calling it eagerly would
+        # populate _detect_install_mode()'s LRU cache with real paths before
+        # test fixtures can patch _xdg_dir / get_local_root.
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Defer env_file resolution to instantiation time (not import time).
+
+        Constructs a fresh DotEnvSettingsSource with the config file path
+        resolved at call time, so get_config_file() is evaluated lazily.
+
+        When ``_env_file=None`` is passed to the constructor (e.g. in tests),
+        pydantic-settings sets ``dotenv_settings.env_file = None``.  We honour
+        that override: a None env_file means "no dotenv loading" so we pass
+        the original dotenv_settings through unchanged (it will load nothing).
+        """
+        # Honour _env_file=None override: the passed dotenv_settings already has
+        # env_file=None, so use it directly (reads nothing — intended for tests).
+        effective_env_file = getattr(dotenv_settings, "env_file", _SENTINEL)
+        if effective_env_file is None:
+            return (init_settings, env_settings, dotenv_settings, file_secret_settings)
+        # Normal path: resolve the real config file path lazily at instantiation.
+        lazy_dotenv = DotEnvSettingsSource(
+            settings_cls,
+            env_file=(str(get_config_file()), ".env"),  # global first, local overrides
+            env_file_encoding="utf-8",
+        )
+        return (init_settings, env_settings, lazy_dotenv, file_secret_settings)
 
     # Slack credentials — repr=False to prevent leakage in logs/tracebacks
     slack_bot_token: str = Field(repr=False)
@@ -1021,12 +1066,19 @@ class ConfigOption:
     input_type: str  # 'text', 'secret', 'choice', 'flag', 'int'
     required: bool = False
     advanced: bool = False  # Hidden behind "Configure advanced settings?" in init wizard
-    help_hint: str | None = None  # Contextual guidance shown before prompt in init wizard
+    # Contextual guidance shown before prompt in init wizard
+    help_hint: str | Callable[[], str] | None = None
     choices: tuple[str, ...] | None = None
     choices_fn: Callable[[], list[str]] | None = None
     visible: Callable[[dict[str, str]], bool] | None = None
     validate_fn: Callable[[str], str | None] | None = None
     format_hint: str | None = None  # Short format pattern shown before secret prompts
+
+    def resolve_help_hint(self) -> str | None:
+        """Return the resolved help_hint string, calling it if it is a callable."""
+        if callable(self.help_hint):
+            return self.help_hint()
+        return self.help_hint
 
 
 @functools.cache
@@ -1333,7 +1385,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Working directory for the scribe session.",
         input_type="text",
         visible=_scribe_enabled,
-        help_hint=f"Default: {get_data_dir() / 'scribe'}. Does not need to be a git repo.",
+        help_hint=lambda: f"Default: {get_data_dir() / 'scribe'}. Does not need to be a git repo.",
         validate_fn=lambda v: (
             None if not v or Path(v).expanduser().is_absolute() else "Must be an absolute path"
         ),
@@ -1446,7 +1498,9 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         ),
         input_type="text",
         advanced=True,
-        help_hint=f"Default: {get_data_dir() / 'global-pm'}. Does not need to be a git repo.",
+        help_hint=lambda: (
+            f"Default: {get_data_dir() / 'global-pm'}. Does not need to be a git repo."
+        ),
         validate_fn=lambda v: (
             None
             if not v or Path(v).expanduser().is_absolute()

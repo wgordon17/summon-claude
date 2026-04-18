@@ -764,7 +764,11 @@ class TestDetectInstallModeWorktree:
     def test_get_config_dir_returns_summon_under_project_root_in_local_mode(
         self, tmp_path, monkeypatch
     ):
-        """(f) Integration: get_config_dir() → project_root/.summon/ in local mode."""
+        """(f) Integration: get_config_dir() → project_root/.summon/ in local mode.
+
+        Patches get_local_root explicitly to override the session-scoped
+        _isolate_data_dir fixture which pins it to None (global mode).
+        """
         from summon_claude.config import _detect_install_mode, get_config_dir
 
         self._clear_caches()
@@ -783,6 +787,7 @@ class TestDetectInstallModeWorktree:
         with (
             patch("subprocess.run", return_value=fake_result),
             patch("summon_claude.config.Path.home", return_value=tmp_path.parent),
+            patch("summon_claude.config.get_local_root", return_value=tmp_path),
         ):
             mode, root = _detect_install_mode()
             assert mode == "local"

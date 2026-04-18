@@ -45,6 +45,46 @@ def _isolate_summon_env():
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _guard_no_global_xdg_writes():
+    """Assert that no test writes to the real global XDG data/config directories.
+
+    Snapshots real XDG paths BEFORE _isolate_data_dir patches _xdg_dir, so the
+    snapshot contains actual filesystem paths. Detects net-new file/directory
+    creation in the global summon data and config paths.
+
+    ORDERING: This fixture must be defined before _isolate_data_dir so that
+    pytest's session-scope autouse ordering runs it first and the snapshot is
+    taken against the real (unpatched) _xdg_dir.
+    """
+    from summon_claude.config import _xdg_dir
+
+    real_data_dir = _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
+    real_config_dir = _xdg_dir("XDG_CONFIG_HOME", ".config/summon", "summon")
+
+    def _snapshot(p: Path) -> set[Path]:
+        try:
+            return set(p.rglob("*"))
+        except OSError:
+            return set()
+
+    before_data = _snapshot(real_data_dir)
+    before_config = _snapshot(real_config_dir)
+    yield
+    after_data = _snapshot(real_data_dir)
+    after_config = _snapshot(real_config_dir)
+    new_data = after_data - before_data
+    new_config = after_config - before_config
+    assert not new_data, (
+        f"Tests wrote to global XDG data dir {real_data_dir}: "
+        f"new entries {{{', '.join(str(p) for p in new_data)}}}"
+    )
+    assert not new_config, (
+        f"Tests wrote to global XDG config dir {real_config_dir}: "
+        f"new entries {{{', '.join(str(p) for p in new_config)}}}"
+    )
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _isolate_registry_db(tmp_path_factory):
     """Prevent tests from writing to the real registry.db."""
     db_dir = tmp_path_factory.mktemp("db")
@@ -57,33 +97,48 @@ def _isolate_registry_db(tmp_path_factory):
 
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_data_dir(tmp_path_factory):
-    """Prevent tests from writing log files or other data to the real data dir."""
+    """Prevent tests from writing log files or other data to the real data dir.
+
+    Uses 2 source-level patches instead of 13 per-module patches:
+
+    1. ``summon_claude.config._xdg_dir`` — redirects XDG directory resolution
+       to temp paths for both XDG_DATA_HOME and XDG_CONFIG_HOME callers.
+    2. ``summon_claude.config.get_local_root`` — returns None, forcing global
+       mode so get_data_dir()/get_config_dir() always delegate to _xdg_dir().
+
+    Why this covers ALL callers automatically:
+    When any module does ``from summon_claude.config import get_data_dir``, it
+    gets a reference to the *same function object*.  That function's body calls
+    ``_xdg_dir(...)`` by name — Python resolves ``_xdg_dir`` from config's
+    module namespace (LEGB rule) at call time.  Patching
+    ``summon_claude.config._xdg_dir`` therefore affects every caller regardless
+    of import style, with zero maintenance as new modules are added.
+    """
     data_dir = tmp_path_factory.mktemp("data")
     config_dir = tmp_path_factory.mktemp("config")
     (data_dir / "logs").mkdir()
+
+    def _fake_xdg_dir(env_var: str, default_subdir: str, xdg_subdir: str) -> Path:
+        """Route XDG data and config requests to isolated temp directories.
+
+        When a test explicitly sets XDG_DATA_HOME or XDG_CONFIG_HOME (e.g. to
+        test XDG path resolution), honour that value so the test sees realistic
+        behaviour.  For all other callers — which omit those env vars — return
+        the session-scoped temp directories so no writes reach the real XDG
+        paths.
+        """
+        explicit = os.environ.get(env_var, "").strip()
+        if explicit:
+            p = Path(explicit)
+            if p.is_absolute():
+                return p / xdg_subdir
+        if "DATA" in env_var or "share" in default_subdir:
+            return data_dir
+        return config_dir
+
     with (
-        # Per-module patches for static 'from summon_claude.config import X' bindings.
-        # Source-level patches are intentionally omitted: test modules that import
-        # get_config_dir/get_data_dir directly (e.g. test_cli_reset.py) would see
-        # inconsistent results if we patched the source but not their local binding.
-        patch("summon_claude.sessions.session.get_data_dir", return_value=data_dir),
-        patch("summon_claude.cli.session.get_data_dir", return_value=data_dir),
-        patch("summon_claude.cli.config.get_data_dir", return_value=data_dir),
-        patch("summon_claude.daemon.get_data_dir", return_value=data_dir),
-        patch("summon_claude.cli.__init__.get_data_dir", return_value=data_dir),
-        patch("summon_claude.cli.model_cache.get_data_dir", return_value=data_dir),
-        patch("summon_claude.cli.reset.get_data_dir", return_value=data_dir),
-        patch("summon_claude.sessions.manager.get_data_dir", return_value=data_dir),
-        patch("summon_claude.diagnostics.get_data_dir", return_value=data_dir),
-        # sessions.registry is covered by _isolate_registry_db (patches default_db_path
-        # directly); add as defense-in-depth for any direct get_data_dir callers.
-        patch("summon_claude.sessions.registry.get_data_dir", return_value=data_dir),
-        # get_config_dir per-module patches
-        patch("summon_claude.cli.reset.get_config_dir", return_value=config_dir),
-        patch("summon_claude.diagnostics.get_config_dir", return_value=config_dir),
-        patch("summon_claude.github_auth.get_config_dir", return_value=config_dir),
-        # jira_auth.get_config_dir is an inline import inside a function body —
-        # picks up the source-level patch automatically, no separate patch needed.
+        patch("summon_claude.config._xdg_dir", side_effect=_fake_xdg_dir),
+        patch("summon_claude.config.get_local_root", return_value=None),
     ):
         yield
 
@@ -247,42 +302,3 @@ def mock_registry(**overrides: object) -> AsyncMock:
     ctx.__aenter__ = AsyncMock(return_value=reg)
     ctx.__aexit__ = AsyncMock(return_value=False)
     return ctx
-
-
-@pytest.fixture(autouse=True, scope="session")
-def _guard_no_global_xdg_writes():
-    """Assert that no test writes to the real global XDG data/config directories.
-
-    Detects net-new file/directory creation in the global summon data and
-    config paths. Does NOT detect overwrites of existing files.
-
-    Uses production _xdg_dir() directly (without the local-mode short-circuit
-    in get_data_dir/get_config_dir) to avoid silent divergence if production
-    logic is updated.
-    """
-    from summon_claude.config import _xdg_dir
-
-    real_data_dir = _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
-    real_config_dir = _xdg_dir("XDG_CONFIG_HOME", ".config/summon", "summon")
-
-    def _snapshot(p: Path) -> set[Path]:
-        try:
-            return set(p.rglob("*"))
-        except OSError:
-            return set()
-
-    before_data = _snapshot(real_data_dir)
-    before_config = _snapshot(real_config_dir)
-    yield
-    after_data = _snapshot(real_data_dir)
-    after_config = _snapshot(real_config_dir)
-    new_data = after_data - before_data
-    new_config = after_config - before_config
-    assert not new_data, (
-        f"Tests wrote to global XDG data dir {real_data_dir}: "
-        f"new entries {{{', '.join(str(p) for p in new_data)}}}"
-    )
-    assert not new_config, (
-        f"Tests wrote to global XDG config dir {real_config_dir}: "
-        f"new entries {{{', '.join(str(p) for p in new_config)}}}"
-    )
