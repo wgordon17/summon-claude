@@ -490,7 +490,7 @@ GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
 GOOGLE_SERVICE_SCOPES: dict[str, dict[str, list[str]]] = {
     "gmail": {
         "ro": ["gmail.readonly"],
-        "rw": ["gmail.modify", "gmail.settings.basic"],
+        "rw": ["gmail.send", "gmail.compose", "gmail.labels", "gmail.settings.basic"],
     },
     "drive": {
         "ro": ["drive.readonly"],
@@ -498,7 +498,7 @@ GOOGLE_SERVICE_SCOPES: dict[str, dict[str, list[str]]] = {
     },
     "calendar": {
         "ro": ["calendar.readonly"],
-        "rw": ["calendar", "calendar.events"],
+        "rw": ["calendar.events"],
     },
     "docs": {
         "ro": ["documents.readonly"],

@@ -65,7 +65,7 @@ py-test-llm: ## Run LLM classifier integration tests (requires Claude CLI, makes
 	@echo "Running LLM classifier tests..."
 	uv run pytest tests/integration/test_classifier_llm.py -v -m llm
 
-py-test-quick: ## Run quick Python tests (excludes Slack and LLM integration, fail-fast)
+py-test-quick: ## Run quick Python tests (excludes Slack, LLM, and external link checks; fail-fast)
 	@echo "Running quick pytest..."
 	uv run pytest --maxfail=1 -q -m "not slack and not llm and not link_check"
 

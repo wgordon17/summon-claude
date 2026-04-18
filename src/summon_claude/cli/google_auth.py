@@ -719,10 +719,12 @@ def _google_scopes_for_services(services: list[str]) -> list[str]:
         tier = "rw" if mode == "rw" else "ro"
         entry = GOOGLE_SERVICE_SCOPES.get(name)
         if entry:
-            for s in entry[tier]:
-                full = s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}"
-                if full not in scopes:
-                    scopes.append(full)
+            tiers_to_include = ["ro", "rw"] if tier == "rw" else [tier]
+            for t in tiers_to_include:
+                for s in entry.get(t, []):
+                    full = s if s.startswith("https://") else f"{GOOGLE_SCOPE_PREFIX}{s}"
+                    if full not in scopes:
+                        scopes.append(full)
     return scopes
 
 
@@ -744,8 +746,8 @@ def _describe_granted_scopes(granted: set[str]) -> str:
 
 
 _GOOGLE_WRITE_PROMPTS: dict[str, str] = {
-    "gmail": "Send and compose emails via Gmail",
-    "calendar": "Create and edit Google Calendar events",
+    "gmail": "Send and compose emails, manage labels and email settings",
+    "calendar": "Create, edit, and delete calendar events",
     "drive": "Create, edit, and delete Google Drive files",
 }
 
@@ -918,9 +920,8 @@ def google_auth(account: str | None = None) -> None:
                 # didn't narrow any service (e.g. drop calendar write).
                 need_reauth = False
             elif has_required_scopes(granted, scopes):
-                # Granted scopes are broader than requested — user is
-                # dropping write access.  Re-auth with the smaller set.
-                click.echo("Re-authenticating to narrow scope access.\n")
+                # Granted scopes don't exactly match requested — re-auth to realign.
+                click.echo("Re-authenticating to update scope access.\n")
             else:
                 click.echo("Current credentials are missing some requested scopes.\n")
 

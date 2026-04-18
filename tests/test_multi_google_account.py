@@ -1037,7 +1037,7 @@ class TestScopesToServices:
     def test_rw_scope_also_matches(self) -> None:
         from summon_claude.config import _scopes_to_services
 
-        result = _scopes_to_services({"https://www.googleapis.com/auth/gmail.modify"})
+        result = _scopes_to_services({"https://www.googleapis.com/auth/gmail.send"})
         assert result == ["gmail"]
 
     def test_empty_scopes(self) -> None:
@@ -1069,8 +1069,8 @@ class TestScopesToServices:
 
         # gmail.readonly is stored as a short name in GOOGLE_SERVICE_SCOPES
         # but credentials store full URLs — verify the expansion works
-        result = _scopes_to_services({"https://www.googleapis.com/auth/calendar"})
-        assert result == ["calendar"]  # "calendar" is the rw scope
+        result = _scopes_to_services({"https://www.googleapis.com/auth/calendar.events"})
+        assert result == ["calendar"]  # "calendar.events" is in the rw tier
 
     def test_docs_scope_detected(self) -> None:
         from summon_claude.config import _scopes_to_services
@@ -1099,6 +1099,24 @@ class TestScopesToServices:
             }
             result = _scopes_to_services(full)
             assert service in result, f"Service {service!r} not detected from scopes {full}"
+
+    def test_ro_rw_tiers_disjoint(self) -> None:
+        """ro and rw tiers must be disjoint — _describe_granted_scopes assumes this.
+
+        Services where ro == rw (e.g. search/cse) are excluded — they have a single
+        scope with no meaningful tier distinction, so overlap is harmless.
+        """
+        from summon_claude.config import GOOGLE_SERVICE_SCOPES
+
+        for service, tiers in GOOGLE_SERVICE_SCOPES.items():
+            ro = set(tiers.get("ro", []))
+            rw = set(tiers.get("rw", []))
+            if ro == rw:
+                continue  # single-scope services (e.g. search/cse) — no tier distinction
+            overlap = ro & rw
+            assert not overlap, (
+                f"{service}: ro/rw overlap {overlap} would break _describe_granted_scopes"
+            )
 
 
 # ---------- Test detect_account_services ----------

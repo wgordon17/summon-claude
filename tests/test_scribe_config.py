@@ -943,20 +943,62 @@ class TestGoogleScopeHelpers:
         assert "gmail.readonly" in scope_names
         assert "calendar.readonly" in scope_names
         assert "drive.readonly" in scope_names
-        assert "gmail.modify" not in scope_names
-        assert "calendar" not in scope_names  # full calendar = write
+        assert "gmail.send" not in scope_names  # rw-only; must not appear for ro request
+        assert "gmail.compose" not in scope_names  # rw-only
+        assert "gmail.labels" not in scope_names  # rw-only
+        assert "calendar.events" not in scope_names  # rw-only; must not appear for ro request
 
     def test_google_scopes_readwrite(self):
-        """Read-write service specs produce write scopes."""
-        from summon_claude.cli.google_auth import _google_scopes_for_services
+        """Read-write service specs produce write scopes plus ro+rw union."""
+        from summon_claude.cli.google_auth import GOOGLE_SCOPE_PREFIX, _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["gmail:rw", "calendar:rw", "drive:rw"])
+        scope_names = [s.removeprefix(GOOGLE_SCOPE_PREFIX) for s in scopes]
+        assert "gmail.modify" not in scope_names
+        assert "gmail.send" in scope_names
+        assert "gmail.compose" in scope_names
+        assert "gmail.labels" in scope_names
+        assert "gmail.readonly" in scope_names
+        assert "gmail.settings.basic" in scope_names
+        assert "calendar.readonly" in scope_names
+        assert "calendar.events" in scope_names
+        assert "calendar" not in scope_names  # no full calendar scope
+        assert "drive" in scope_names  # full drive scope = write (unchanged)
+        assert "drive.readonly" in scope_names  # ro+rw union includes readonly
+
+    def test_google_scopes_mixed_ro_rw(self) -> None:
+        """Mixed ro/rw request: some services ro, some rw."""
+        from summon_claude.cli.google_auth import GOOGLE_SCOPE_PREFIX, _google_scopes_for_services
 
         scopes = _google_scopes_for_services(["gmail:rw", "calendar", "drive:rw"])
-        scope_names = {s.rsplit("/", 1)[-1] for s in scopes if "googleapis" in s}
-        assert "gmail.modify" in scope_names
+        scope_names = [s.removeprefix(GOOGLE_SCOPE_PREFIX) for s in scopes]
+        # gmail rw: gets ro+rw union
+        assert "gmail.send" in scope_names
+        assert "gmail.readonly" in scope_names
+        # calendar ro: gets only ro scopes
         assert "calendar.readonly" in scope_names
-        assert "drive" in scope_names  # full drive scope = write
-        assert "gmail.readonly" not in scope_names
-        assert "drive.readonly" not in scope_names
+        assert "calendar.events" not in scope_names  # rw-only, not requested
+        # drive rw: gets ro+rw union
+        assert "drive" in scope_names
+        assert "drive.readonly" in scope_names
+
+    def test_google_scopes_docs_rw_produces_union(self) -> None:
+        """docs:rw produces ro+rw union: {documents.readonly, documents}."""
+        from summon_claude.cli.google_auth import GOOGLE_SCOPE_PREFIX, _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["docs:rw"])
+        scope_names = {s.removeprefix(GOOGLE_SCOPE_PREFIX) for s in scopes}
+        assert "documents.readonly" in scope_names  # ro tier included
+        assert "documents" in scope_names  # rw tier included
+
+    def test_google_scopes_search_rw_deduplicates(self) -> None:
+        """search:rw deduplicates when ro == rw (both are 'cse'): single cse scope."""
+        from summon_claude.cli.google_auth import GOOGLE_SCOPE_PREFIX, _google_scopes_for_services
+
+        scopes = _google_scopes_for_services(["search:rw"])
+        scope_names = [s.removeprefix(GOOGLE_SCOPE_PREFIX) for s in scopes]
+        cse_count = scope_names.count("cse")
+        assert cse_count == 1, f"Expected 'cse' exactly once, got {cse_count}"
 
     def test_google_scopes_unknown_service_skipped(self):
         """Unknown services are silently skipped."""
@@ -974,10 +1016,31 @@ class TestGoogleScopeHelpers:
 
         granted = {
             f"{GOOGLE_SCOPE_PREFIX}gmail.readonly",
-            f"{GOOGLE_SCOPE_PREFIX}calendar",
+            f"{GOOGLE_SCOPE_PREFIX}calendar.events",
         }
         desc = _describe_granted_scopes(granted)
         assert "gmail (read-only)" in desc
+        assert "calendar (read-write)" in desc
+
+    def test_describe_granted_scopes_combined_ro_rw(self) -> None:
+        """When both ro and rw scopes are granted, report as read-write."""
+        from summon_claude.cli.google_auth import (
+            GOOGLE_SCOPE_PREFIX,
+            _describe_granted_scopes,
+        )
+
+        # Simulate what _google_scopes_for_services produces for gmail:rw
+        granted = {
+            f"{GOOGLE_SCOPE_PREFIX}gmail.readonly",
+            f"{GOOGLE_SCOPE_PREFIX}gmail.send",
+            f"{GOOGLE_SCOPE_PREFIX}gmail.compose",
+            f"{GOOGLE_SCOPE_PREFIX}gmail.labels",
+            f"{GOOGLE_SCOPE_PREFIX}gmail.settings.basic",
+            f"{GOOGLE_SCOPE_PREFIX}calendar.readonly",
+            f"{GOOGLE_SCOPE_PREFIX}calendar.events",
+        }
+        desc = _describe_granted_scopes(granted)
+        assert "gmail (read-write)" in desc
         assert "calendar (read-write)" in desc
 
     def test_load_google_client_credentials_from_env(self):

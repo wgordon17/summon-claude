@@ -325,7 +325,7 @@ This page covers common problems and their solutions. Issues are grouped by cate
 ???+ tip "Google scope error when using a tool"
     **Symptom:** A Google tool fails with "this tool requires write access that was not granted."
 
-    **Cause:** The tool needs write scopes (e.g., `gmail.modify`) but only read-only scopes were granted during `summon auth google login`.
+    **Cause:** The tool needs write scopes (e.g., `gmail.send`) but only read-only scopes were granted during `summon auth google login`.
 
     **Fix:** Re-run the auth flow and grant write access to the relevant service:
     ```{ .bash .notest }
