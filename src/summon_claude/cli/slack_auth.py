@@ -380,7 +380,10 @@ def slack_status() -> None:
         click.echo("Workspace config is corrupted. Re-run: summon auth slack login")
         return
 
-    from summon_claude.cli.formatting import auth_status_line  # noqa: PLC0415
+    from summon_claude.cli.formatting import (  # noqa: PLC0415
+        auth_authenticated_msg,
+        auth_status_line,
+    )
 
     url = workspace.get("url", "N/A")
     existing = _check_existing_slack_auth()
@@ -389,7 +392,9 @@ def slack_status() -> None:
             auth_status_line(
                 "Slack",
                 status="authenticated",
-                message=f"authenticated (workspace: {url}, saved {existing['age']})",
+                message=auth_authenticated_msg(
+                    detail=f"workspace: {url}, saved {existing['age']}",
+                ),
             )
         )
     else:

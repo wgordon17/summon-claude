@@ -34,6 +34,7 @@ from summon_claude.cli.config import (
     github_logout,
 )
 from summon_claude.cli.formatting import (
+    auth_authenticated_msg,
     auth_cancelled,
     auth_login_success,
     auth_not_configured_msg,
@@ -159,7 +160,7 @@ def _check_jira_status(*, prefix: str = "", quiet: bool = False) -> bool | None:
             auth_status_line(
                 "Jira",
                 status="authenticated",
-                message=f"authenticated ({detail})" if detail else "authenticated",
+                message=auth_authenticated_msg(detail=detail) if detail else "authenticated",
                 prefix=prefix,
             )
         )
@@ -223,7 +224,9 @@ def auth_status(ctx: click.Context, as_json: bool) -> None:
                     auth_status_line(
                         "Slack",
                         status="authenticated",
-                        message=f"authenticated (workspace: {url}, saved {age})",
+                        message=auth_authenticated_msg(
+                            detail=f"workspace: {url}, saved {age}",
+                        ),
                         prefix="  ",
                     )
                 )
