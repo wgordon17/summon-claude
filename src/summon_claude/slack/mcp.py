@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import urllib.parse
 from collections.abc import Awaitable, Callable
@@ -66,11 +65,6 @@ _VALID_FORMATS = frozenset({"summary", "raw", "ai"})
 
 logger = logging.getLogger(__name__)
 
-# Serializes CLAUDECODE env var manipulation across concurrent sessions.
-# The SDK subprocess inherits the parent env at fork time — we must ensure
-# only one task mutates os.environ at a time during client startup.
-_ai_env_lock = asyncio.Lock()
-
 
 _AI_MAX_INPUT_CHARS = 150_000  # ~37K tokens, well within Haiku's context
 _AI_TIMEOUT_SECONDS = 30
@@ -101,18 +95,8 @@ async def _ai_summarize(messages: list[dict[str, Any]], *, cwd: str = ".") -> st
             "Include timestamps and user IDs for reference."
         ),
     )
-    # Hold lock only through subprocess spawn, not the full query.
-    async with _ai_env_lock:
-        saved = os.environ.pop("CLAUDECODE", None)
-        try:
-            client_ctx = ClaudeSDKClient(options)
-            haiku = await client_ctx.__aenter__()
-        except BaseException:
-            if saved is not None:
-                os.environ["CLAUDECODE"] = saved
-            raise
-        if saved is not None:
-            os.environ["CLAUDECODE"] = saved
+    client_ctx = ClaudeSDKClient(options)
+    haiku = await client_ctx.__aenter__()
 
     try:
         await haiku.query(f"Summarize:\n\n{raw}")

@@ -789,34 +789,6 @@ class TestAISummarizeFunction:
         finally:
             os.environ.pop("CLAUDECODE", None)
 
-    async def test_clears_claudecode_for_subprocess(self):
-        """CLAUDECODE is removed from env before ClaudeSDKClient is created."""
-        import os
-
-        from claude_agent_sdk import ClaudeSDKClient
-
-        from summon_claude.slack.mcp import _ai_summarize
-
-        os.environ["CLAUDECODE"] = "original"
-        captured_env: dict[str, str | None] = {}
-
-        def spy_init(self, *args, **kwargs):
-            captured_env["CLAUDECODE"] = os.environ.get("CLAUDECODE")
-            raise RuntimeError("stop before subprocess")
-
-        try:
-            with pytest.MonkeyPatch.context() as mp:
-                mp.setattr(ClaudeSDKClient, "__init__", spy_init)
-                with pytest.raises(RuntimeError, match="stop before subprocess"):
-                    await _ai_summarize([{"ts": "1.0", "text": "hello"}])
-
-            # Env var was cleared before SDK client was created
-            assert captured_env["CLAUDECODE"] is None
-            # And restored after
-            assert os.environ.get("CLAUDECODE") == "original"
-        finally:
-            os.environ.pop("CLAUDECODE", None)
-
 
 class TestToolInventory:
     def test_all_expected_tools_present(self, mock_client):

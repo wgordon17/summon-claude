@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -97,8 +96,6 @@ async def query_sdk_models(
     """Spawn a throwaway SDK session to extract server_info.models.
 
     CLI-only: must be called via asyncio.run() in a single-threaded context.
-    Do NOT call from the daemon or any async context with concurrent tasks —
-    use the _ai_env_lock pattern from slack/mcp.py instead.
 
     Args:
         cli_version: CLI version string from check_claude_cli().version.
@@ -110,29 +107,24 @@ async def query_sdk_models(
     try:
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient  # noqa: PLC0415
 
-        saved = os.environ.pop("CLAUDECODE", None)
-        try:
-            # Inner coroutine gives wait_for a single awaitable covering both
-            # client startup (__aenter__ spawns subprocess) and the query.
-            async def _do_query() -> tuple[list[dict[str, str]], str | None, str | None] | None:
-                async with ClaudeSDKClient(
-                    ClaudeAgentOptions(
-                        cwd=str(Path.cwd()),
-                        stderr=lambda _line: None,
-                        setting_sources=[],
-                    )
-                ) as client:
-                    server_info = await client.get_server_info()
-                    if server_info is None:
-                        return None
-                    models = server_info.get("models", [])
-                    default_model = server_info.get("model")
-                    return (models, cli_version, default_model)
+        # Inner coroutine gives wait_for a single awaitable covering both
+        # client startup (__aenter__ spawns subprocess) and the query.
+        async def _do_query() -> tuple[list[dict[str, str]], str | None, str | None] | None:
+            async with ClaudeSDKClient(
+                ClaudeAgentOptions(
+                    cwd=str(Path.cwd()),
+                    stderr=lambda _line: None,
+                    setting_sources=[],
+                )
+            ) as client:
+                server_info = await client.get_server_info()
+                if server_info is None:
+                    return None
+                models = server_info.get("models", [])
+                default_model = server_info.get("model")
+                return (models, cli_version, default_model)
 
-            return await asyncio.wait_for(_do_query(), timeout=10)
-        finally:
-            if saved is not None:
-                os.environ["CLAUDECODE"] = saved
+        return await asyncio.wait_for(_do_query(), timeout=10)
     except Exception:
         logger.debug("Failed to query SDK models", exc_info=True)
         return None

@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -25,10 +24,6 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     TextBlock,
 )
-
-# Share the CLAUDECODE env var lock with slack/mcp.py to prevent races
-# when classifier and AI summarization run concurrently.
-from summon_claude.slack.mcp import _ai_env_lock as _classifier_env_lock
 
 if TYPE_CHECKING:
     from summon_claude.config import SummonConfig
@@ -306,19 +301,8 @@ class SummonAutoClassifier:
             env={"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"},
         )
 
-        # Serialize CLAUDECODE env var manipulation — hold lock through __aenter__
-        # (subprocess spawn), not just __init__. Matches slack/mcp.py pattern.
-        async with _classifier_env_lock:
-            saved = os.environ.pop("CLAUDECODE", None)
-            try:
-                client_ctx = ClaudeSDKClient(options)
-                client = await client_ctx.__aenter__()
-            except BaseException:
-                if saved is not None:
-                    os.environ["CLAUDECODE"] = saved
-                raise
-            if saved is not None:
-                os.environ["CLAUDECODE"] = saved
+        client_ctx = ClaudeSDKClient(options)
+        client = await client_ctx.__aenter__()
 
         # try/finally wraps everything from __aenter__ through __aexit__ —
         # ensures subprocess cleanup even if cancelled between lock release

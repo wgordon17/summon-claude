@@ -18,6 +18,19 @@ from summon_claude.sessions.scheduler import SessionScheduler
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _strip_claudecode():
+    """Remove CLAUDECODE env var so SDK subprocesses don't detect nesting.
+
+    Prevents Claude Code's nesting guard from blocking SDK subprocess spawns
+    when tests are run from within a Claude Code session.
+    """
+    old = os.environ.pop("CLAUDECODE", None)
+    yield
+    if old is not None:
+        os.environ["CLAUDECODE"] = old
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _isolate_summon_env():
     """Strip SUMMON_* env vars (except SUMMON_TEST_*) for the entire test session.
 

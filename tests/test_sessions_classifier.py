@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -396,40 +395,3 @@ class TestClassifyIntegration:
         assert result.reason == "dangerous"
         assert classifier._consecutive_blocks == 1
         assert classifier._total_blocks == 1
-
-    async def test_do_classify_env_lock_pops_and_restores_claudecode(self):
-        """CLAUDECODE env var is popped during spawn and restored after."""
-        classifier = SummonAutoClassifier(_make_config())
-
-        captured_env = {}
-
-        async def capture_aenter(self_ctx):
-            # At spawn time, CLAUDECODE should be absent
-            captured_env["during_spawn"] = os.environ.get("CLAUDECODE")
-            mock_client = AsyncMock()
-            mock_client.query = AsyncMock(return_value=None)
-
-            async def empty_response():
-                return
-                yield
-
-            mock_client.receive_response = empty_response
-            return mock_client
-
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = capture_aenter
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-        os.environ["CLAUDECODE"] = "test-session-id"
-        try:
-            with patch("summon_claude.sessions.classifier.ClaudeSDKClient", return_value=mock_ctx):
-                result = await classifier._do_classify("Bash", {"command": "ls"}, "")
-
-            # During spawn, CLAUDECODE should have been absent
-            assert captured_env["during_spawn"] is None
-            # After spawn, it should be restored
-            assert os.environ.get("CLAUDECODE") == "test-session-id"
-            # Empty response → parse failure → uncertain
-            assert result.decision == "uncertain"
-        finally:
-            os.environ.pop("CLAUDECODE", None)
