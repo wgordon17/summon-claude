@@ -81,7 +81,6 @@ _MAX_RETRIES = 3  # retries after first attempt (4 total attempts)
 
 
 def _is_github_url(url: str) -> bool:
-    """Check if URL points to github.com."""
     return urlparse(url).hostname == "github.com"
 
 
@@ -121,9 +120,10 @@ def _check_url(url: str) -> tuple[bool, str]:
         status, final_url = _fetch(url, "HEAD")
     except HTTPError as e:
         if e.code == 405 or (e.code >= 500 and _is_github_url(url)):
-            # 405: server doesn't support HEAD; retry with GET
-            # 5xx on github.com: shared runner IPs cause transient 504s on HEAD;
-            # GET often succeeds (different code path on GitHub's web frontend)
+            # 405: server doesn't support HEAD; retry with GET.
+            # 5xx on github.com: HEAD retries are already exhausted here (re-raised
+            # by _fetch); GET uses a separate retry budget and often succeeds via
+            # GitHub's different web frontend code path for GET vs HEAD.
             try:
                 status, final_url = _fetch(url, "GET")
             except (HTTPError, URLError) as e2:
@@ -363,10 +363,11 @@ class TestCheckUrl:
     def test_non_github_head_504_no_fallback(self) -> None:
         """HEAD 504 on non-GitHub URLs does NOT trigger GET fallback."""
         err_504 = HTTPError("http://example.com/page", 504, "Gateway Timeout", HTTPMessage(), None)
-        with patch("tests.docs.test_links._fetch", side_effect=err_504):
+        with patch("tests.docs.test_links._fetch", side_effect=err_504) as mock_fetch:
             ok, detail = _check_url("http://example.com/page")
         assert ok is False
         assert "504" in detail
+        mock_fetch.assert_called_once()  # GET fallback was NOT triggered
 
 
 @pytest.mark.link_check
