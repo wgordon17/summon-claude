@@ -103,4 +103,6 @@ jobs:
         run: uv sync --locked
 
       - name: Check external links
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: make docs-test-links
