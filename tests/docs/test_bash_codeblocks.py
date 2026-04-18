@@ -13,10 +13,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.docs]
+from tests.docs.conftest import DOCS_DIR
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_DOCS_DIR = _REPO_ROOT / "docs"
+pytestmark = [pytest.mark.docs]
 
 # Commands that require a running daemon, are interactive, or have side effects
 SKIP_COMMANDS: frozenset[str] = frozenset(
@@ -144,7 +143,7 @@ def _extract_summon_commands(block: str) -> list[str]:
 def _collect_testable_files() -> list[tuple[str, Path]]:
     """Collect markdown files that have executable bash blocks with summon commands."""
     testable: list[tuple[str, Path]] = []
-    for md_file in sorted(_DOCS_DIR.rglob("*.md")):
+    for md_file in sorted(DOCS_DIR.rglob("*.md")):
         content = md_file.read_text(encoding="utf-8")
         blocks = _extract_bash_blocks(content)
         commands: list[str] = []
@@ -152,7 +151,7 @@ def _collect_testable_files() -> list[tuple[str, Path]]:
             cmds = _extract_summon_commands(block)
             commands.extend(c for c in cmds if not _should_skip(c))
         if commands:
-            rel = str(md_file.relative_to(_DOCS_DIR))
+            rel = str(md_file.relative_to(DOCS_DIR))
             testable.append((rel, md_file))
     return testable
 
@@ -239,10 +238,10 @@ def _extract_notest_blocks(content: str) -> list[str]:
 def _collect_notest_files() -> list[tuple[str, Path]]:
     """Collect files with notest bash blocks containing bash keywords."""
     testable: list[tuple[str, Path]] = []
-    for md_file in sorted(_DOCS_DIR.rglob("*.md")):
+    for md_file in sorted(DOCS_DIR.rglob("*.md")):
         content = md_file.read_text(encoding="utf-8")
         if _extract_notest_blocks(content):
-            rel = str(md_file.relative_to(_DOCS_DIR))
+            rel = str(md_file.relative_to(DOCS_DIR))
             testable.append((rel, md_file))
     return testable
 
@@ -273,7 +272,7 @@ def test_bash_syntax_valid(md_file: Path | None) -> None:
             timeout=10,
         )
         assert result.returncode == 0, (
-            f"Bash syntax error in {md_file.relative_to(_DOCS_DIR)} notest block {i + 1}:\n"
+            f"Bash syntax error in {md_file.relative_to(DOCS_DIR)} notest block {i + 1}:\n"
             f"stderr: {result.stderr[:500]}\n"
             f"block: {block[:200]}"
         )

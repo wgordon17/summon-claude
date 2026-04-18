@@ -7,29 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from tests.docs.conftest import parse_cli_command_refs
+from tests.docs.conftest import DOCS_DIR, REPO_ROOT, parse_cli_command_refs
 
 pytestmark = pytest.mark.docs
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_DOCS_DIR = _REPO_ROOT / "docs"
-
 # Auto-generated files — excluded from all checks (circular or machine-written)
 _EXCLUDED_PATHS = {
-    _DOCS_DIR / "reference" / "cli.md",
-    _DOCS_DIR / "reference" / "api",
+    DOCS_DIR / "reference" / "cli.md",
+    DOCS_DIR / "reference" / "api",
 }
 
 # Human-authored docs where commands should be discoverable
 _HUMAN_DOCS = [
-    *(_DOCS_DIR / "getting-started").glob("*.md"),
-    *(_DOCS_DIR / "guide").glob("*.md"),
-    *(_DOCS_DIR / "concepts").glob("*.md"),
-    _DOCS_DIR / "troubleshooting.md",
+    *(DOCS_DIR / "getting-started").glob("*.md"),
+    *(DOCS_DIR / "guide").glob("*.md"),
+    *(DOCS_DIR / "concepts").glob("*.md"),
+    DOCS_DIR / "troubleshooting.md",
 ]
 
 # Commands not expected in getting-started/ or guide/ docs.
@@ -118,7 +111,7 @@ def test_documented_commands_exist(click_commands: set[str]) -> None:
     valid_first_words = _extract_first_words(click_commands)
     fabricated: list[tuple[str, Path]] = []
 
-    all_md = sorted(_DOCS_DIR.rglob("*.md"))
+    all_md = sorted(DOCS_DIR.rglob("*.md"))
     for md_file in all_md:
         if _is_excluded(md_file):
             continue
@@ -137,7 +130,7 @@ def test_documented_commands_exist(click_commands: set[str]) -> None:
             f"\nDocumented commands not found in Click ({len(fabricated)}):",
         ]
         for cmd, path in sorted(fabricated):
-            rel = path.relative_to(_REPO_ROOT)
+            rel = path.relative_to(REPO_ROOT)
             lines.append(f"  summon {cmd!r}  [{rel}]")
         pytest.fail("\n".join(lines))
 
@@ -227,6 +220,6 @@ def test_documented_options_exist(click_all_options: set[str]) -> None:
             f"\nDocumented flags not found in Click ({len(fabricated)}):",
         ]
         for flag, path in sorted(fabricated):
-            rel = path.relative_to(_REPO_ROOT)
+            rel = path.relative_to(REPO_ROOT)
             lines.append(f"  {flag!r}  [{rel}]")
         pytest.fail("\n".join(lines))

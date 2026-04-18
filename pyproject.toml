@@ -220,5 +220,6 @@ markers = [
     "llm: marks tests that make real LLM API calls (deselect with '-m \"not llm\"')",
     "xdist_group: groups tests to run on the same worker (pytest-xdist)",
     "docs: documentation validation tests",
+    "link_check: External URL link validation tests (network-dependent)",
 ]
 norecursedirs = [".cache", ".git"]

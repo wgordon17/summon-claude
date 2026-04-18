@@ -52,15 +52,15 @@ def parse_mcp_tool_refs(content: str) -> set[str]:
 # Path fixtures
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+DOCS_DIR = REPO_ROOT / "docs"
 
 
 @pytest.fixture(scope="session")
 def docs_dir() -> Path:
     """Path to the docs/ directory."""
-    d = _REPO_ROOT / "docs"
-    assert d.exists(), f"docs/ not found at {d}"
-    return d
+    assert DOCS_DIR.exists(), f"docs/ not found at {DOCS_DIR}"
+    return DOCS_DIR
 
 
 @pytest.fixture(scope="session")
@@ -97,7 +97,7 @@ def env_credentials() -> dict[str, str]:
     Primary: reads from ``<repo-parent>/summon-claude/.env``.
     Fallback: reads ``SUMMON_TEST_*`` env vars via :func:`_map_test_env_vars`.
     """
-    env_file = _REPO_ROOT.parent / "summon-claude" / ".env"
+    env_file = REPO_ROOT.parent / "summon-claude" / ".env"
     raw = dotenv_values(str(env_file)) if env_file.exists() else {}
     creds = {k: v for k, v in raw.items() if k.startswith("SUMMON_") and v is not None}
     if not creds:

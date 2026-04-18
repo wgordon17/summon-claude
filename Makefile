@@ -10,7 +10,7 @@ CURRENT_BRANCH := $(shell git branch --show-current)
 .PHONY: install lint test build clean all release
 .PHONY: py-install py-lint py-typecheck py-test py-test-slack py-test-llm py-test-quick py-build py-clean py-all
 .PHONY: repo-hooks-install repo-hooks-clean
-.PHONY: docs-prompts docs-serve docs-build docs-check docs-screenshots docs-terminal docs-test
+.PHONY: docs-prompts docs-serve docs-build docs-check docs-screenshots docs-terminal docs-test docs-test-links
 
 # Default target - auto-generated from inline ## comments
 help:
@@ -53,7 +53,7 @@ py-typecheck: ## Run pyright type checking
 
 py-test: ## Run full Python test suite (excludes Slack and LLM integration)
 	@echo "Running pytest..."
-	uv run pytest tests/ -v -m "not slack and not llm"
+	uv run pytest tests/ -v -m "not slack and not llm and not link_check"
 
 py-test-slack: ## Run Slack integration tests (requires credentials)
 	@echo "Running Slack integration tests..."
@@ -67,7 +67,7 @@ py-test-llm: ## Run LLM classifier integration tests (requires Claude CLI, makes
 
 py-test-quick: ## Run quick Python tests (excludes Slack and LLM integration, fail-fast)
 	@echo "Running quick pytest..."
-	uv run pytest --maxfail=1 -q -m "not slack and not llm"
+	uv run pytest --maxfail=1 -q -m "not slack and not llm and not link_check"
 
 py-build: ## Build sdist and wheel
 	uv build
@@ -99,8 +99,11 @@ docs-screenshots: ## Generate documentation screenshots (all sections)
 docs-terminal: ## Capture terminal output and inject into docs
 	uv run python scripts/docs-screenshots.py --section terminal
 
-docs-test: ## Run doc validation tests (guard tests, code blocks, link checks, markdown code blocks)
-	uv run pytest --markdown-docs docs/ tests/docs/ -v -m docs -n0
+docs-test: ## Run doc validation tests (guard tests, code blocks, markdown code blocks)
+	uv run pytest --markdown-docs docs/ tests/docs/ -v -m "docs and not link_check" -n0
+
+docs-test-links: ## Run external link validation tests (network-dependent)
+	uv run pytest tests/docs/test_links.py -v -m link_check
 
 # ============================================================================
 # REPO HOOKS
