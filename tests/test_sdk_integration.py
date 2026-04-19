@@ -222,6 +222,11 @@ class TestThinkingConfigIntegration:
     async def test_adaptive_thinking_produces_thinking_blocks(self):
         """ThinkingConfigAdaptive(type='adaptive') should produce ThinkingBlocks."""
         with tempfile.TemporaryDirectory() as cwd:
+            # CLI 2.1.69+ redacts ThinkingBlock.thinking by default;
+            # showThinkingSummaries must be enabled for non-empty content.
+            settings_dir = Path(cwd) / ".claude"
+            settings_dir.mkdir()
+            (settings_dir / "settings.local.json").write_text('{"showThinkingSummaries": true}')
             options = ClaudeAgentOptions(
                 cwd=cwd,
                 max_turns=1,
@@ -244,6 +249,10 @@ class TestThinkingConfigIntegration:
         assert len(thinking_blocks) > 0, (
             "Expected at least one ThinkingBlock with adaptive thinking enabled, "
             f"got content types: {[type(b).__name__ for m in assistant_msgs for b in m.content]}"
+        )
+        assert any(b.thinking.strip() for b in thinking_blocks), (
+            "Expected at least one ThinkingBlock with non-empty .thinking content. "
+            "If empty, check showThinkingSummaries is set in settings.local.json."
         )
 
     async def test_disabled_thinking_produces_no_thinking_blocks(self):
@@ -303,3 +312,78 @@ class TestSDKCommandInventory:
             pytest.skip("No server_info available")
         models = server_info.get("models", [])
         assert len(models) > 0, "Expected at least one model in server_info"
+
+
+# ------------------------------------------------------------------
+# Context usage integration tests (SDK 0.1.63+)
+# ------------------------------------------------------------------
+
+
+class TestContextUsage:
+    """Verify get_context_usage() returns valid data after a query."""
+
+    async def test_get_context_usage_returns_data(self):
+        """get_context_usage() returns token counts after a query."""
+        with tempfile.TemporaryDirectory() as cwd:
+            options = ClaudeAgentOptions(cwd=cwd, max_turns=1, **_COMMON_OPTS)
+            async with ClaudeSDKClient(options) as client:
+                await client.query("What is 2 + 2?")
+                async for _ in client.receive_response():
+                    pass
+                usage = await client.get_context_usage()
+        assert usage is not None
+        assert usage["totalTokens"] > 0
+        assert usage["maxTokens"] > 0
+        assert 0 < usage["percentage"] <= 100
+        assert "categories" in usage
+
+    async def test_get_sdk_context_usage_returns_context_usage(self):
+        """get_sdk_context_usage() maps SDK response to ContextUsage dataclass."""
+        from summon_claude.sessions.context import ContextUsage, get_sdk_context_usage
+
+        with tempfile.TemporaryDirectory() as cwd:
+            options = ClaudeAgentOptions(cwd=cwd, max_turns=1, **_COMMON_OPTS)
+            async with ClaudeSDKClient(options) as client:
+                await client.query("What is 2 + 2?")
+                async for _ in client.receive_response():
+                    pass
+                result = await get_sdk_context_usage(client)
+        assert isinstance(result, ContextUsage)
+        assert result.input_tokens > 0
+        assert result.context_window > 0
+        assert 0 < result.percentage <= 100
+
+
+# ------------------------------------------------------------------
+# ResultMessage fields integration tests (SDK 0.1.51+)
+# ------------------------------------------------------------------
+
+
+class TestResultMessageFields:
+    """Verify new ResultMessage fields are accessible."""
+
+    async def test_result_message_has_errors_field(self):
+        """ResultMessage should have an errors field on SDK 0.1.51+."""
+        with tempfile.TemporaryDirectory() as cwd:
+            options = ClaudeAgentOptions(cwd=cwd, max_turns=1, **_COMMON_OPTS)
+            async with ClaudeSDKClient(options) as client:
+                await client.query("What is 2 + 2?")
+                result_msg = None
+                async for msg in client.receive_response():
+                    if isinstance(msg, ResultMessage):
+                        result_msg = msg
+        assert result_msg is not None
+        errors = getattr(result_msg, "errors", "MISSING")
+        assert errors != "MISSING", "ResultMessage should have an 'errors' field"
+
+
+# ------------------------------------------------------------------
+# RateLimitEvent import test (SDK 0.1.49+)
+# ------------------------------------------------------------------
+
+
+def test_rate_limit_event_importable():
+    """RateLimitEvent type should be importable from claude_agent_sdk."""
+    from claude_agent_sdk import RateLimitEvent
+
+    assert RateLimitEvent is not None
