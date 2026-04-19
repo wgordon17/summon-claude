@@ -2087,6 +2087,8 @@ class SummonSession:
                 on_task_change=_on_task_change,
                 pm_status_ts=self._pm_status_ts,
                 ipc_queue=self._ipc_queue,
+                config=self._config,
+                triage_jira_cloud_id=jira_cloud_id,
             )
             mcp_servers["summon-cli"] = cli_mcp
 

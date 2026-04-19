@@ -66,8 +66,8 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     _ipc_queue_session: Callable[..., int] | None = None,
     _web_client: Any | None = None,
     pm_status_ts: str | None = None,
-    config: Any | None = None,  # noqa: ARG001 — used by Task 3 triage auto-detection
-    triage_jira_cloud_id: str | None = None,  # noqa: ARG001 — used by Task 3 triage auto-detection
+    config: Any | None = None,
+    triage_jira_cloud_id: str | None = None,
 ) -> list[SdkMcpTool]:
     """Create MCP tool instances for session lifecycle and scheduling.
 
@@ -212,7 +212,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             "required": ["name"],
         },
     )
-    async def session_start(args: dict) -> dict:  # noqa: PLR0911, PLR0912
+    async def session_start(args: dict) -> dict:  # noqa: PLR0911, PLR0912, PLR0915
         name = args.get("name", "")
         if not _SESSION_NAME_RE.match(name):
             return {
@@ -325,15 +325,57 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             logger.error("Failed to fetch calling session: %s", e)
             parent_project_id = None
 
-        from summon_claude.sessions.session import SessionOptions  # noqa: PLC0415
+        from summon_claude.sessions.prompts.pm import (  # noqa: PLC0415
+            _TRIAGE_SESSION_NAMES,
+            build_gh_triage_instructions,
+            build_jira_triage_instructions,
+        )
+        from summon_claude.sessions.session import (  # noqa: PLC0415
+            _TRIAGE_DISALLOWED_TOOLS,
+            SessionOptions,
+        )
+
+        # Triage-name auto-detection: auto-apply system_prompt_append + extra_disallowed_tools
+        # when name matches a known triage session type. The PM passes only the name —
+        # instructions are injected here to avoid LLM paraphrasing of multi-KB templates.
+        triage_system_prompt: str | None = None
+        triage_extra_disallowed: tuple[str, ...] | None = None
+        if name in _TRIAGE_SESSION_NAMES:
+            if system_prompt_val:
+                logger.warning(
+                    "session_start: name '%s' matches triage auto-detection, "
+                    "ignoring explicit system_prompt",
+                    name,
+                )
+            if name == "gh-triage":
+                stale_hours = config.github_triage_stale_pr_hours if config else 24
+                triage_system_prompt = build_gh_triage_instructions(stale_pr_hours=stale_hours)
+            elif name == "jira-triage":
+                jira_jql_val: str | None = None
+                if parent_project_id:
+                    try:
+                        proj = await registry.get_project(parent_project_id)
+                        if proj:
+                            jira_jql_val = proj.get("jira_jql")
+                    except Exception:
+                        logger.warning("Failed to fetch project JQL for jira-triage")
+                triage_system_prompt = build_jira_triage_instructions(
+                    jira_cloud_id=triage_jira_cloud_id or "",
+                    jira_jql=jira_jql_val,
+                )
+            triage_extra_disallowed = tuple(sorted(_TRIAGE_DISALLOWED_TOOLS))
+
+        effective_system_prompt = triage_system_prompt or system_prompt_val
+        effective_extra_disallowed = triage_extra_disallowed
 
         options = SessionOptions(
             cwd=target_cwd,
             name=name,
             model=model,
             project_id=parent_project_id,
-            system_prompt_append=system_prompt_val,
+            system_prompt_append=effective_system_prompt,
             initial_prompt=initial_prompt_val,
+            extra_disallowed_tools=effective_extra_disallowed,
         )
 
         # Enforce active-child cap before spawning (fail-closed)

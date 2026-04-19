@@ -109,6 +109,7 @@ See [GitHub Integration](../guide/github-integration.md) for setup details.
 | `SUMMON_GLOBAL_PM_SCAN_INTERVAL_MINUTES` | integer | `15` | How often the Global PM scans all projects (minutes, minimum 1). |
 | `SUMMON_GLOBAL_PM_CWD` | text | _(data dir)_ | Working directory for the Global PM. Must be an absolute path. Defaults to `<data-dir>/global-pm`. |
 | `SUMMON_GLOBAL_PM_MODEL` | text | _(inherit)_ | Claude model for the Global PM. Defaults to `SUMMON_DEFAULT_MODEL`. |
+| `SUMMON_GITHUB_TRIAGE_STALE_PR_HOURS` | integer | `24` | PRs idle longer than this are flagged as stale during triage. Minimum 1. |
 <!-- /config:global-pm -->
 
 ---
