@@ -301,7 +301,7 @@ def test_help_text_backticks_stripped_for_cli() -> None:
     from summon_claude.config import CONFIG_OPTIONS
 
     for opt in CONFIG_OPTIONS:
-        hint = opt.help_hint or opt.help_text
+        hint = opt.resolve_help_hint() or opt.help_text
         if not hint:
             continue
         cleaned = hint.replace("`", "")

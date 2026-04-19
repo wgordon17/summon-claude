@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import stat
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,7 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    SettingsConfigDict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,35 @@ def _find_project_root() -> Path | None:
     return None
 
 
+@functools.cache
+def get_git_main_repo_root(cwd: Path) -> Path | None:
+    """Return the main repo root for the given directory (worktree-aware).
+
+    For a normal git repo, returns the same directory (parent of .git/).
+    For a git worktree, returns the main repo root (not the worktree itself).
+    Returns None if not in a git repo or if git is unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],  # noqa: S607
+            capture_output=True,
+            timeout=5,
+            check=False,
+            cwd=cwd,
+        )
+        if result.returncode != 0:
+            return None
+        raw_path = result.stdout.decode().strip().splitlines()[0]
+        if not raw_path or len(raw_path) >= 4096:  # sanity check: PATH_MAX is 4096 on Linux
+            return None
+        resolved = (cwd / raw_path).resolve().parent
+        if not resolved.is_relative_to(Path.home().resolve()):
+            return None
+        return resolved
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, IndexError, UnicodeDecodeError):
+        return None
+
+
 @functools.lru_cache(maxsize=1)
 def _detect_install_mode() -> tuple[str, Path | None]:
     """Detect whether this is a local or global install.
@@ -91,12 +124,20 @@ def _detect_install_mode() -> tuple[str, Path | None]:
         if not project_root.is_relative_to(home):
             return ("global", None)
 
-    # Auto-detect: VIRTUAL_ENV under project root
+    # Auto-detect: VIRTUAL_ENV under project root (or main repo root for worktrees)
     venv_str = os.environ.get("VIRTUAL_ENV", "").strip()
     if venv_str and project_root is not None:
         venv_path = Path(venv_str)
-        if venv_path.is_absolute() and venv_path.resolve().is_relative_to(project_root.resolve()):
-            return ("local", project_root)
+        if venv_path.is_absolute():
+            if venv_path.resolve().is_relative_to(project_root.resolve()):
+                return ("local", project_root)
+            main_root = get_git_main_repo_root(project_root)
+            if (
+                main_root is not None
+                and main_root.resolve() != project_root.resolve()
+                and venv_path.resolve().is_relative_to(main_root.resolve())
+            ):
+                return ("local", project_root)
 
     return ("global", None)
 
@@ -628,10 +669,22 @@ class SummonConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="SUMMON_",
-        env_file=(str(get_config_file()), ".env"),  # global first, local overrides
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def __init__(self, /, **values: Any):
+        """Inject the config file path lazily when the caller doesn't specify one.
+
+        ``get_config_file()`` is called here (instantiation time) instead of in
+        ``model_config`` (class-definition / import time) so it runs AFTER test
+        fixtures can patch ``_xdg_dir`` and ``get_local_root``.
+
+        Pass ``_env_file=None`` to suppress dotenv loading (used by tests).
+        """
+        if "_env_file" not in values:
+            values["_env_file"] = (str(get_config_file()), ".env")
+        super().__init__(**values)
 
     # Slack credentials — repr=False to prevent leakage in logs/tracebacks
     slack_bot_token: str = Field(repr=False)
@@ -983,12 +1036,19 @@ class ConfigOption:
     input_type: str  # 'text', 'secret', 'choice', 'flag', 'int'
     required: bool = False
     advanced: bool = False  # Hidden behind "Configure advanced settings?" in init wizard
-    help_hint: str | None = None  # Contextual guidance shown before prompt in init wizard
+    # Contextual guidance shown before prompt in init wizard
+    help_hint: str | Callable[[], str] | None = None
     choices: tuple[str, ...] | None = None
     choices_fn: Callable[[], list[str]] | None = None
     visible: Callable[[dict[str, str]], bool] | None = None
     validate_fn: Callable[[str], str | None] | None = None
     format_hint: str | None = None  # Short format pattern shown before secret prompts
+
+    def resolve_help_hint(self) -> str | None:
+        """Return the resolved help_hint string, calling it if it is a callable."""
+        if callable(self.help_hint):
+            return self.help_hint()
+        return self.help_hint
 
 
 @functools.cache
@@ -1295,7 +1355,7 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Working directory for the scribe session.",
         input_type="text",
         visible=_scribe_enabled,
-        help_hint=f"Default: {get_data_dir() / 'scribe'}. Does not need to be a git repo.",
+        help_hint=lambda: f"Default: {get_data_dir() / 'scribe'}. Does not need to be a git repo.",
         validate_fn=lambda v: (
             None if not v or Path(v).expanduser().is_absolute() else "Must be an absolute path"
         ),
@@ -1408,7 +1468,9 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         ),
         input_type="text",
         advanced=True,
-        help_hint=f"Default: {get_data_dir() / 'global-pm'}. Does not need to be a git repo.",
+        help_hint=lambda: (
+            f"Default: {get_data_dir() / 'global-pm'}. Does not need to be a git repo."
+        ),
         validate_fn=lambda v: (
             None
             if not v or Path(v).expanduser().is_absolute()

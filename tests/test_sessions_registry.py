@@ -263,6 +263,41 @@ class TestPidAlive:
         assert _pid_alive(999999999) is False
 
 
+class TestSchemaMigrationWarning:
+    """Tests for the schema version mismatch warning in run_migrations()."""
+
+    async def test_warns_when_db_schema_newer_than_code(self, registry, caplog):
+        """DB stamped at CURRENT_SCHEMA_VERSION + 1 → warning logged."""
+        import logging
+
+        from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION, run_migrations
+
+        # Stamp the DB at one version ahead of the current code version
+        await registry.db.execute(
+            "INSERT OR REPLACE INTO schema_version (id, version) VALUES (1, ?)",
+            (CURRENT_SCHEMA_VERSION + 1,),
+        )
+        await registry.db.commit()
+
+        with caplog.at_level(logging.WARNING, logger="summon_claude.sessions.migrations"):
+            await run_migrations(registry.db)
+
+        assert any("newer than this code" in record.message for record in caplog.records)
+
+    async def test_no_warning_when_schema_matches_code(self, registry, caplog):
+        """DB at exactly CURRENT_SCHEMA_VERSION → no mismatch warning."""
+        import logging
+
+        from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION, run_migrations
+
+        # The registry fixture already runs all migrations; DB is at CURRENT_SCHEMA_VERSION.
+        # Just run migrations again — should be a no-op with no warning.
+        with caplog.at_level(logging.WARNING, logger="summon_claude.sessions.migrations"):
+            await run_migrations(registry.db)
+
+        assert not any("newer than this code" in record.message for record in caplog.records)
+
+
 class TestResolveSession:
     async def test_resolve_exact_id(self, registry):
         await registry.register("sess-resolve-1", 111, "/tmp")

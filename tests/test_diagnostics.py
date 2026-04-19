@@ -108,12 +108,13 @@ class TestRedactor:
         assert "12345678..." in result
 
     def test_redact_data_dir(self) -> None:
-        from summon_claude.diagnostics import _DATA_DIR
+        import summon_claude.diagnostics
 
-        if str(Path.home()) != _DATA_DIR:
-            text = f"opened {_DATA_DIR}/registry.db"
+        data_dir = str(summon_claude.diagnostics.get_data_dir())
+        if str(Path.home()) != data_dir:
+            text = f"opened {data_dir}/registry.db"
             result = redactor.redact(text)
-            assert _DATA_DIR not in result
+            assert data_dir not in result
             assert "[data_dir]" in result
 
     def test_redact_no_sensitive_data(self) -> None:
@@ -146,6 +147,20 @@ class TestRedactor:
 
     def test_redactor_is_instance(self) -> None:
         assert isinstance(redactor, Redactor)
+
+    def test_patched_data_dir_picked_up_by_redactor(self, monkeypatch) -> None:
+        """Patching get_data_dir after import is picked up by redact()."""
+        from pathlib import Path
+
+        import summon_claude.diagnostics
+
+        sentinel = Path("/tmp/test-sentinel-data")
+        monkeypatch.setattr(summon_claude.diagnostics, "get_data_dir", lambda: sentinel)
+
+        result = redactor.redact("/tmp/test-sentinel-data/registry.db")
+
+        assert "[data_dir]" in result
+        assert "/tmp/test-sentinel-data" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +439,43 @@ class TestDatabaseCheck:
             result = await check.run(None)
         assert result.status == "fail"
         assert "behind" in result.message.lower()
+
+    async def test_db_schema_ahead(self, check: DatabaseCheck, tmp_path: Path) -> None:
+        from summon_claude.sessions.migrations import CURRENT_SCHEMA_VERSION
+
+        db_file = tmp_path / "registry.db"
+        db_file.write_bytes(b"")
+
+        mock_db = MagicMock()
+
+        def _mock_execute(sql, *_args):
+            ctx = MagicMock()
+            if "PRAGMA integrity_check" in sql:
+                ctx.fetchone = AsyncMock(return_value=("ok",))
+            elif "SELECT COUNT" in sql:
+                ctx.fetchone = AsyncMock(return_value=(0,))
+            ctx.__aenter__ = AsyncMock(return_value=ctx)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        mock_db.execute = _mock_execute
+
+        mock_reg = MagicMock()
+        mock_reg.__aenter__ = AsyncMock(return_value=mock_reg)
+        mock_reg.__aexit__ = AsyncMock(return_value=False)
+        mock_reg.db = mock_db
+
+        with (
+            patch("summon_claude.config.get_data_dir", return_value=tmp_path),
+            patch("summon_claude.sessions.registry.SessionRegistry", return_value=mock_reg),
+            patch(
+                "summon_claude.sessions.migrations.get_schema_version",
+                return_value=CURRENT_SCHEMA_VERSION + 1,
+            ),
+        ):
+            result = await check.run(None)
+        assert result.status == "warn"
+        assert "ahead" in result.message.lower()
 
     async def test_db_open_failure(self, check: DatabaseCheck, tmp_path: Path) -> None:
         db_file = tmp_path / "registry.db"

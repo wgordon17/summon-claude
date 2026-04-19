@@ -81,8 +81,8 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticCheck] = {}
 # ---------------------------------------------------------------------------
 
 _HOME_DIR = str(Path.home())
-_DATA_DIR = str(get_data_dir())
-_CONFIG_DIR = str(get_config_dir())
+
+
 _SLACK_USER_ID_RE = re.compile(r"\bU[A-Z0-9]{8,11}\b")
 _SLACK_CHANNEL_ID_RE = re.compile(r"\bC[A-Z0-9]{8,11}\b")
 _SLACK_TEAM_ID_RE = re.compile(r"\bT[A-Z0-9]{8,11}\b")
@@ -100,10 +100,12 @@ class Redactor:
         # 1. Token secrets (xoxb-, xapp-, sk-ant-, ghp_, github_pat_, gho_, ghu_, ghs_, ghr_)
         text = redact_secrets(text)
         # 2. Path normalization — longer specific dirs first, home last
-        if _DATA_DIR != _HOME_DIR:
-            text = text.replace(_DATA_DIR, "[data_dir]")
-        if _CONFIG_DIR != _HOME_DIR:
-            text = text.replace(_CONFIG_DIR, "[config_dir]")
+        data_dir = str(get_data_dir())
+        config_dir = str(get_config_dir())
+        if data_dir != _HOME_DIR:
+            text = text.replace(data_dir, "[data_dir]")
+        if config_dir != _HOME_DIR:
+            text = text.replace(config_dir, "[config_dir]")
         text = text.replace(_HOME_DIR, "~")
         # 3. Slack IDs: user (U), channel (C), team (T), bot (B)
         text = _SLACK_USER_ID_RE.sub("U***", text)

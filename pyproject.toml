@@ -181,6 +181,9 @@ known-first-party = ["summon_claude", "helpers"]
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"importlib.reload".msg = "importlib.reload() breaks session-scoped mock.patch fixtures. Capture real functions at import time instead. See hack/LESSONS.md."
+
 # ============================================================================
 # PYRIGHT
 # ============================================================================

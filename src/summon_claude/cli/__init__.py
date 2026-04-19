@@ -713,7 +713,7 @@ def cmd_init(ctx: click.Context) -> None:
             default = get_config_default(opt)
 
             # Show contextual guidance — help_hint preferred, help_text as fallback
-            hint = opt.help_hint or opt.help_text
+            hint = opt.resolve_help_hint() or opt.help_text
             if hint:
                 click.echo(click.style(f"    {hint.replace('`', '')}", dim=True))
             # Show env var name for cross-reference with docs
@@ -959,14 +959,17 @@ def cmd_init(ctx: click.Context) -> None:
             if merged_values[key] == default_str:
                 del merged_values[key]
 
-    # Validate before writing — use merged_values (not collected-only)
+    # Validate before writing — use merged_values (not collected-only).
+    # _env_file=None suppresses dotenv loading: we're validating the wizard's
+    # collected values, not re-loading the (possibly invalid) old config file.
     try:
         SummonConfig(
+            _env_file=None,
             **{
                 opt.field_name: merged_values[opt.env_key]
                 for opt in CONFIG_OPTIONS
                 if opt.env_key in merged_values
-            }
+            },
         )
     except pydantic.ValidationError as e:
         # Write config even on validation failure (better than losing all input)

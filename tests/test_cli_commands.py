@@ -410,6 +410,10 @@ class TestCmdInit:
         with (
             patch("summon_claude.cli.get_config_file", return_value=config_file),
             patch("summon_claude.config.get_config_file", return_value=config_file),
+            # _isolate_data_dir patches get_local_root→None at session scope (forces global
+            # mode for isolation), so get_data_dir() returns the fake temp dir rather than
+            # summon_dir.  Override here so _ensure_gitignore() writes to the right place.
+            patch("summon_claude.cli.get_data_dir", return_value=summon_dir),
             patch(
                 "summon_claude.cli.preflight.check_claude_cli",
                 return_value=CliStatus(True, "1.0.0", "/usr/bin/claude"),

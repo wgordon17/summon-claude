@@ -488,7 +488,7 @@ class TestRunPostWorktreeHooksIntegration:
 
         mock_reg_cls = _make_hooks_mock_registry(["true"])
         with (
-            patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
+            patch("summon_claude.sessions.hooks.get_git_main_repo_root", return_value=tmp_path),
             patch("summon_claude.sessions.hooks.SessionRegistry", mock_reg_cls),
         ):
             exit_code = run_post_worktree_hooks(cwd=tmp_path)
@@ -501,7 +501,7 @@ class TestRunPostWorktreeHooksIntegration:
 
         mock_reg_cls = _make_hooks_mock_registry(["exit 1"])
         with (
-            patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
+            patch("summon_claude.sessions.hooks.get_git_main_repo_root", return_value=tmp_path),
             patch("summon_claude.sessions.hooks.SessionRegistry", mock_reg_cls),
         ):
             exit_code = run_post_worktree_hooks(cwd=tmp_path)
@@ -514,7 +514,7 @@ class TestRunPostWorktreeHooksIntegration:
 
         mock_reg_cls = _make_hooks_mock_registry([])
         with (
-            patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=tmp_path),
+            patch("summon_claude.sessions.hooks.get_git_main_repo_root", return_value=tmp_path),
             patch("summon_claude.sessions.hooks.SessionRegistry", mock_reg_cls),
         ):
             exit_code = run_post_worktree_hooks(cwd=tmp_path)
@@ -522,10 +522,10 @@ class TestRunPostWorktreeHooksIntegration:
         assert exit_code == 0
 
     def test_run_post_worktree_hooks_returns_zero_when_not_in_git_worktree(self, tmp_path):
-        """run_post_worktree_hooks returns 0 when _get_worktree_project_root returns None."""
+        """run_post_worktree_hooks returns 0 when get_git_main_repo_root returns None."""
         from summon_claude.sessions.hooks import run_post_worktree_hooks
 
-        with patch("summon_claude.sessions.hooks._get_worktree_project_root", return_value=None):
+        with patch("summon_claude.sessions.hooks.get_git_main_repo_root", return_value=None):
             exit_code = run_post_worktree_hooks(cwd=tmp_path)
 
         assert exit_code == 0
@@ -545,12 +545,16 @@ class TestListWorktreePaths:
 
         from summon_claude.sessions.hooks import _list_worktree_paths
 
+        home = Path.home()
+        main_path = home / "projects" / "repo"
+        wt_path = home / "projects" / "repo" / ".claude" / "worktrees" / "feat-a"
+
         fake_output = (
-            "worktree /repo/main\n"
+            f"worktree {main_path}\n"
             "HEAD abc123\n"
             "branch refs/heads/main\n"
             "\n"
-            "worktree /repo/.claude/worktrees/feat-a\n"
+            f"worktree {wt_path}\n"
             "HEAD def456\n"
             "branch refs/heads/worktree-feat-a\n"
         )
@@ -564,8 +568,8 @@ class TestListWorktreePaths:
             paths = _list_worktree_paths(tmp_path)
 
         assert len(paths) == 2
-        assert paths[0] == Path("/repo/main").resolve()
-        assert paths[1] == Path("/repo/.claude/worktrees/feat-a").resolve()
+        assert paths[0] == main_path.resolve()
+        assert paths[1] == wt_path.resolve()
 
     def test_returns_empty_list_on_nonzero_returncode(self, tmp_path):
         """Returns [] (fail-closed) when git exits with non-zero status."""
@@ -595,6 +599,44 @@ class TestListWorktreePaths:
             paths = _list_worktree_paths(tmp_path)
 
         assert paths == []
+
+    def test_skips_path_outside_home_and_logs_warning(self, tmp_path, caplog):
+        """A worktree path outside Path.home() is dropped and a WARNING is logged."""
+        import logging
+        import subprocess as _subprocess
+
+        from summon_claude.sessions.hooks import _list_worktree_paths
+
+        home = Path.home()
+        in_home_path = home / "projects" / "repo"
+        out_of_home_path = Path("/opt/outside-home/repo")
+
+        fake_output = (
+            f"worktree {in_home_path}\n"
+            "HEAD abc123\n"
+            "branch refs/heads/main\n"
+            "\n"
+            f"worktree {out_of_home_path}\n"
+            "HEAD def456\n"
+            "branch refs/heads/other\n"
+        )
+        mock_result = _subprocess.CompletedProcess(
+            args=["git", "worktree", "list", "--porcelain"],
+            returncode=0,
+            stdout=fake_output,
+            stderr="",
+        )
+        with (
+            patch("summon_claude.sessions.hooks.subprocess.run", return_value=mock_result),
+            caplog.at_level(logging.WARNING, logger="summon_claude.sessions.hooks"),
+        ):
+            paths = _list_worktree_paths(tmp_path)
+
+        assert in_home_path.resolve() in paths
+        assert out_of_home_path.resolve() not in paths
+        assert any("outside home" in record.getMessage() for record in caplog.records), (
+            "Expected a WARNING about path outside home directory"
+        )
 
 
 # ---------------------------------------------------------------------------

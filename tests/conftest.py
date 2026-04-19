@@ -45,6 +45,47 @@ def _isolate_summon_env():
 
 
 @pytest.fixture(autouse=True, scope="session")
+def _guard_no_global_xdg_writes():
+    """Assert that no test writes to the real global XDG data/config directories.
+
+    Snapshots real XDG paths BEFORE _isolate_data_dir patches _xdg_dir, so the
+    snapshot contains actual filesystem paths. Detects net-new file/directory
+    creation in the global summon data and config paths.
+
+    Ordering is enforced structurally: _isolate_data_dir declares this fixture
+    as a parameter dependency, guaranteeing it runs first.
+    """
+    from summon_claude.config import _xdg_dir
+
+    real_data_dir = _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
+    real_config_dir = _xdg_dir("XDG_CONFIG_HOME", ".config/summon", "summon")
+
+    def _snapshot(p: Path) -> set[Path]:
+        try:
+            # set() must stay inside try: rglob() returns a lazy generator and
+            # OSError can be raised during iteration, not just at generator creation.
+            return set(p.rglob("*"))
+        except OSError:
+            return set()
+
+    before_data = _snapshot(real_data_dir)
+    before_config = _snapshot(real_config_dir)
+    yield
+    after_data = _snapshot(real_data_dir)
+    after_config = _snapshot(real_config_dir)
+    new_data = after_data - before_data
+    new_config = after_config - before_config
+    assert not new_data, (
+        f"Tests wrote to global XDG data dir {real_data_dir}: "
+        f"new entries {{{', '.join(str(p) for p in new_data)}}}"
+    )
+    assert not new_config, (
+        f"Tests wrote to global XDG config dir {real_config_dir}: "
+        f"new entries {{{', '.join(str(p) for p in new_config)}}}"
+    )
+
+
+@pytest.fixture(autouse=True, scope="session")
 def _isolate_registry_db(tmp_path_factory):
     """Prevent tests from writing to the real registry.db."""
     db_dir = tmp_path_factory.mktemp("db")
@@ -56,16 +97,61 @@ def _isolate_registry_db(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _isolate_data_dir(tmp_path_factory):
-    """Prevent tests from writing log files or other data to the real data dir."""
+def _isolate_data_dir(tmp_path_factory, _guard_no_global_xdg_writes):
+    """Prevent tests from writing log files or other data to the real data dir.
+
+    Depends on ``_guard_no_global_xdg_writes`` (via parameter) to ensure the
+    guard snapshots real XDG paths BEFORE this fixture patches ``_xdg_dir``.
+
+    Uses 2 source-level patches instead of 13 per-module patches:
+
+    1. ``summon_claude.config._xdg_dir`` — redirects XDG directory resolution
+       to temp paths for both XDG_DATA_HOME and XDG_CONFIG_HOME callers.
+    2. ``summon_claude.config.get_local_root`` — returns None, forcing global
+       mode so get_data_dir()/get_config_dir() always delegate to _xdg_dir().
+
+    Why this covers ALL callers automatically:
+    When any module does ``from summon_claude.config import get_data_dir``, it
+    gets a reference to the *same function object*.  That function's body calls
+    ``_xdg_dir(...)`` by name — Python resolves ``_xdg_dir`` from config's
+    module namespace (LEGB rule) at call time.  Patching
+    ``summon_claude.config._xdg_dir`` therefore affects every caller regardless
+    of import style, with zero maintenance as new modules are added.
+    """
     data_dir = tmp_path_factory.mktemp("data")
+    config_dir = tmp_path_factory.mktemp("config")
     (data_dir / "logs").mkdir()
+
+    # Snapshot ambient XDG vars BEFORE any test can monkeypatch them.
+    # _fake_xdg_dir only passes through values that DIFFER from these
+    # snapshots — otherwise CI runners with system-level XDG_CONFIG_HOME
+    # (e.g. /home/runner/.config on GitHub Actions) would escape isolation.
+    ambient_xdg = {
+        "XDG_DATA_HOME": os.environ.get("XDG_DATA_HOME", "").strip(),
+        "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME", "").strip(),
+    }
+
+    def _fake_xdg_dir(env_var: str, _default_subdir: str, xdg_subdir: str) -> Path:
+        """Route XDG data and config requests to isolated temp directories.
+
+        When a test explicitly changes XDG_DATA_HOME or XDG_CONFIG_HOME via
+        monkeypatch (i.e., the value differs from the ambient snapshot taken
+        at session start), honour that value so the test sees realistic
+        behaviour.  For all other callers — including CI runners with
+        system-level XDG vars — return the session-scoped temp directories.
+        """
+        explicit = os.environ.get(env_var, "").strip()
+        if explicit and explicit != ambient_xdg.get(env_var, ""):
+            p = Path(explicit)
+            if p.is_absolute():
+                return p / xdg_subdir
+        if env_var == "XDG_DATA_HOME":
+            return data_dir
+        return config_dir
+
     with (
-        patch("summon_claude.sessions.session.get_data_dir", return_value=data_dir),
-        patch("summon_claude.cli.session.get_data_dir", return_value=data_dir),
-        patch("summon_claude.cli.config.get_data_dir", return_value=data_dir),
-        patch("summon_claude.daemon.get_data_dir", return_value=data_dir),
-        patch("summon_claude.github_auth.get_config_dir", return_value=data_dir),
+        patch("summon_claude.config._xdg_dir", side_effect=_fake_xdg_dir),
+        patch("summon_claude.config.get_local_root", return_value=None),
     ):
         yield
 
@@ -89,21 +175,28 @@ def _reset_install_mode(monkeypatch):
 
     Without this, ``uv run pytest`` sets VIRTUAL_ENV and the repo has
     pyproject.toml, so every test would detect local mode.
+
+    Invariant: _detect_install_mode only calls get_git_main_repo_root when
+    VIRTUAL_ENV is set (config.py line 126: ``if venv_str and ...``).
+    Deleting VIRTUAL_ENV prevents the git subprocess from running.  If this
+    condition ever changes, tests that don't mock subprocess.run will call
+    real git — add a subprocess mock here if that happens.
     """
-    from summon_claude.config import _detect_install_mode, _find_project_root
+    from summon_claude.config import (
+        _detect_install_mode,
+        _find_project_root,
+        get_git_main_repo_root,
+    )
 
     _detect_install_mode.cache_clear()
     _find_project_root.cache_clear()
+    get_git_main_repo_root.cache_clear()
     monkeypatch.delenv("VIRTUAL_ENV", raising=False)
     monkeypatch.delenv("SUMMON_LOCAL", raising=False)
     yield
-    # Import fresh in case importlib.reload() created a new function object
-    from summon_claude.config import _detect_install_mode as fresh
-    from summon_claude.config import _find_project_root as fresh_root
-
-    fresh.cache_clear()
-    if hasattr(fresh_root, "cache_clear"):
-        fresh_root.cache_clear()
+    _detect_install_mode.cache_clear()
+    _find_project_root.cache_clear()
+    get_git_main_repo_root.cache_clear()
 
 
 @pytest.fixture

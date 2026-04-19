@@ -337,6 +337,14 @@ async def run_migrations(db: aiosqlite.Connection) -> int:
         current = await get_schema_version(db)
 
         if current >= CURRENT_SCHEMA_VERSION:
+            if current > CURRENT_SCHEMA_VERSION:
+                logger.warning(
+                    "DB schema v%d is newer than this code (v%d). "
+                    "Likely from a different branch or newer install. "
+                    "Continuing with existing schema.",
+                    current,
+                    CURRENT_SCHEMA_VERSION,
+                )
             await db.execute("COMMIT")
             return current
 

@@ -1417,7 +1417,7 @@ class SessionRegistry:
     ) -> list[str]:
         """Return hook commands for *hook_type* for the project at *directory*.
 
-        *directory* should be the main repo root (e.g. from ``git worktree list``).
+        *directory* should be the main repo root (e.g. from ``get_git_main_repo_root()``).
         Returns empty list if no matching project is found.
         """
 
