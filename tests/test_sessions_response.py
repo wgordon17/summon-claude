@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
+    RateLimitEvent,
     ResultMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
+from claude_agent_sdk.types import RateLimitInfo
 
 from helpers import make_mock_slack_client
 from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
@@ -53,7 +56,9 @@ def make_assistant_message(content: list) -> AssistantMessage:
     return AssistantMessage(content=content, model="claude-opus-4-6")
 
 
-def make_result_message(cost: float = 0.01, turns: int = 1) -> ResultMessage:
+def make_result_message(
+    cost: float = 0.01, turns: int = 1, errors: list[str] | None = None
+) -> ResultMessage:
     return ResultMessage(
         subtype="success",
         session_id="sess-1",
@@ -64,6 +69,7 @@ def make_result_message(cost: float = 0.01, turns: int = 1) -> ResultMessage:
         usage=None,
         duration_ms=1000,
         duration_api_ms=800,
+        errors=errors,
     )
 
 
@@ -184,6 +190,55 @@ class TestResponseStreamerStreamWithFlush:
         ]
         await streamer.stream_with_flush(agen(messages))
         assert provider.post.call_count >= 1
+
+    async def test_rate_limit_event_passes_through(self, caplog):
+        """RateLimitEvent between AssistantMessage and ResultMessage does not abort stream."""
+        rate_limit_info = RateLimitInfo(
+            status="allowed_warning",
+            resets_at=9999999999,
+            rate_limit_type="five_hour",
+            utilization=0.85,
+            overage_status=None,
+            overage_resets_at=None,
+        )
+        rate_event = RateLimitEvent(
+            rate_limit_info=rate_limit_info, uuid="rl-1", session_id="sess-1"
+        )
+        result_msg = make_result_message()
+        streamer, router, provider = make_streamer()
+        messages = [
+            make_assistant_message([make_text_block("Hello!")]),
+            rate_event,
+            result_msg,
+        ]
+        with caplog.at_level(logging.INFO, logger="summon_claude.sessions.response"):
+            result = await streamer.stream_with_flush(agen(messages))
+        assert result is not None
+        assert result.result is result_msg
+        provider.post.assert_called()
+        assert "Rate limit event received" in caplog.text
+
+    async def test_result_message_errors_logs_warning(self, caplog):
+        """ResultMessage.errors triggers a WARNING log and stream still completes."""
+        streamer, router, provider = make_streamer()
+        result_msg = make_result_message(errors=["API error: quota exceeded"])
+        messages = [result_msg]
+        with caplog.at_level(logging.WARNING, logger="summon_claude.sessions.response"):
+            result = await streamer.stream_with_flush(agen(messages))
+        assert result is not None
+        assert result.result is result_msg
+        assert "SDK ResultMessage errors" in caplog.text
+
+    async def test_result_message_errors_redacts_secrets(self, caplog):
+        """Secrets in ResultMessage.errors are redacted before logging."""
+        secret = "sk-ant-api03-SUPER-SECRET-KEY-abc123"
+        streamer, router, provider = make_streamer()
+        result_msg = make_result_message(errors=[f"Auth failed: {secret}"])
+        messages = [result_msg]
+        with caplog.at_level(logging.WARNING, logger="summon_claude.sessions.response"):
+            await streamer.stream_with_flush(agen(messages))
+        assert secret not in caplog.text
+        assert "[REDACTED]" in caplog.text
 
 
 class TestResponseStreamerSubagentThreads:

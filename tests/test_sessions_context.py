@@ -15,15 +15,15 @@ from summon_claude.sessions.context import (
 class TestContextUsageDataclass:
     def test_context_usage_dataclass_is_frozen(self):
         """ContextUsage should be immutable."""
-        ctx = ContextUsage(input_tokens=50000, context_window=200000, percentage=25.0)
+        ctx = ContextUsage(total_tokens=50000, max_tokens=200000, percentage=25.0)
         with pytest.raises(AttributeError):
-            ctx.input_tokens = 60000
+            ctx.total_tokens = 60000
 
     def test_context_usage_has_correct_attributes(self):
-        """ContextUsage should have input_tokens, context_window, percentage."""
-        ctx = ContextUsage(input_tokens=50000, context_window=200000, percentage=25.0)
-        assert ctx.input_tokens == 50000
-        assert ctx.context_window == 200000
+        """ContextUsage should have total_tokens, max_tokens, percentage."""
+        ctx = ContextUsage(total_tokens=50000, max_tokens=200000, percentage=25.0)
+        assert ctx.total_tokens == 50000
+        assert ctx.max_tokens == 200000
         assert ctx.percentage == pytest.approx(25.0)
 
 
@@ -41,8 +41,8 @@ class TestGetSdkContextUsage:
         result = await get_sdk_context_usage(client)
         assert result is not None
         assert isinstance(result, ContextUsage)
-        assert result.input_tokens == 50000
-        assert result.context_window == 200000
+        assert result.total_tokens == 50000
+        assert result.max_tokens == 200000
         assert result.percentage == pytest.approx(25.0)
 
     async def test_returns_none_on_exception(self):
@@ -52,12 +52,18 @@ class TestGetSdkContextUsage:
         result = await get_sdk_context_usage(client)
         assert result is None
 
-    async def test_returns_none_on_missing_keys(self):
-        """get_sdk_context_usage returns None when response lacks required keys."""
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {"maxTokens": 200000, "percentage": 25.0},  # missing totalTokens
+            {"totalTokens": 50000, "percentage": 25.0},  # missing maxTokens
+            {"totalTokens": 50000, "maxTokens": 200000},  # missing percentage
+        ],
+    )
+    async def test_returns_none_on_missing_keys(self, response):
+        """get_sdk_context_usage returns None when any required key is absent."""
         client = MagicMock()
-        client.get_context_usage = AsyncMock(
-            return_value={"totalTokens": 50000}  # missing maxTokens and percentage
-        )
+        client.get_context_usage = AsyncMock(return_value=response)
         result = await get_sdk_context_usage(client)
         assert result is None
 
@@ -73,7 +79,7 @@ class TestGetSdkContextUsage:
         )
         result = await get_sdk_context_usage(client)
         assert result is not None
-        assert result.context_window == 1000000
+        assert result.max_tokens == 1000000
         assert result.percentage == pytest.approx(50.0)
 
     async def test_handles_zero_tokens(self):
@@ -88,5 +94,5 @@ class TestGetSdkContextUsage:
         )
         result = await get_sdk_context_usage(client)
         assert result is not None
-        assert result.input_tokens == 0
+        assert result.total_tokens == 0
         assert result.percentage == pytest.approx(0.0)

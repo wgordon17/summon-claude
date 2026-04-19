@@ -3400,7 +3400,7 @@ class TestSessionRestartLoop:
         from summon_claude.sessions.context import ContextUsage
 
         session._last_context = ContextUsage(
-            input_tokens=100000, context_window=200000, percentage=50.0
+            total_tokens=100000, max_tokens=200000, percentage=50.0
         )
         rt = make_rt(registry)
         router = AsyncMock()
@@ -3481,7 +3481,7 @@ class TestEscalatingContextWarnings:
         from summon_claude.sessions.context import ContextUsage
 
         session._last_context = ContextUsage(
-            input_tokens=160000, context_window=200000, percentage=80.0
+            total_tokens=160000, max_tokens=200000, percentage=80.0
         )
         # Call the warning logic directly by simulating _finalize_turn_result
         # We test the threshold logic in isolation
@@ -3508,7 +3508,7 @@ class TestEscalatingContextWarnings:
         from summon_claude.sessions.context import ContextUsage
 
         session._last_context = ContextUsage(
-            input_tokens=185000, context_window=200000, percentage=92.0
+            total_tokens=185000, max_tokens=200000, percentage=92.0
         )
         pct = session._last_context.percentage
         assert pct > _CONTEXT_URGENT_THRESHOLD
@@ -3526,7 +3526,7 @@ class TestEscalatingContextWarnings:
         from summon_claude.sessions.context import ContextUsage
 
         session._last_context = ContextUsage(
-            input_tokens=196000, context_window=200000, percentage=98.0
+            total_tokens=196000, max_tokens=200000, percentage=98.0
         )
         pct = session._last_context.percentage
         assert pct > _CONTEXT_AUTO_COMPACT_THRESHOLD
@@ -3612,8 +3612,8 @@ class TestFinalizeEscalatingWarnings:
 
         session._claude_session_id = "already-set"
         session._last_context = ContextUsage(
-            input_tokens=int(200000 * pct / 100),
-            context_window=200000,
+            total_tokens=int(200000 * pct / 100),
+            max_tokens=200000,
             percentage=pct,
         )
         sr = self._make_stream_result(**sr_kwargs)
@@ -3642,9 +3642,7 @@ class TestFinalizeEscalatingWarnings:
         session._last_topic_model = None  # different from "opus" → triggers update
         session._last_topic_branch = None
         session._claude_session_id = "already-set"
-        session._last_context = ContextUsage(
-            input_tokens=20000, context_window=200000, percentage=10.0
-        )
+        session._last_context = ContextUsage(total_tokens=20000, max_tokens=200000, percentage=10.0)
         rt = make_rt(AsyncMock())
 
         detect_mock = AsyncMock(return_value=(False, None))

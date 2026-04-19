@@ -367,8 +367,8 @@ class TestContextUsage:
                     pass
                 result = await get_sdk_context_usage(client)
         assert isinstance(result, ContextUsage)
-        assert result.input_tokens > 0
-        assert result.context_window > 0
+        assert result.total_tokens > 0
+        assert result.max_tokens > 0
         assert 0 < result.percentage <= 100
 
 
@@ -391,8 +391,7 @@ class TestResultMessageFields:
                     if isinstance(msg, ResultMessage):
                         result_msg = msg
         assert result_msg is not None
-        errors = getattr(result_msg, "errors", "MISSING")
-        assert errors != "MISSING", "ResultMessage should have an 'errors' field"
+        assert hasattr(result_msg, "errors"), "ResultMessage should have an 'errors' field"
 
 
 # ------------------------------------------------------------------

@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 class ContextUsage:
     """Snapshot of context window consumption for a single turn."""
 
-    input_tokens: int
-    context_window: int
+    total_tokens: int
+    max_tokens: int
     percentage: float  # 0-100
 
 
@@ -37,8 +37,8 @@ async def get_sdk_context_usage(client: ClaudeSDKClient) -> ContextUsage | None:
             logger.debug("get_context_usage() returned incomplete data: %s", usage)
             return None
         return ContextUsage(
-            input_tokens=total_tokens,
-            context_window=max_tokens,
+            total_tokens=total_tokens,
+            max_tokens=max_tokens,
             percentage=percentage,
         )
     except Exception as e:

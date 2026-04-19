@@ -960,6 +960,17 @@ class TestModelChoices:
             choices = get_model_choices()
         assert choices == ["default (auto)", *list(_FALLBACK_MODEL_CHOICES), "other"]
 
+    def test_get_model_choices_exception_falls_back_to_static(self):
+        """load_cached_models raises → silently falls back to _FALLBACK_MODEL_CHOICES."""
+        from summon_claude.config import _FALLBACK_MODEL_CHOICES, get_model_choices
+
+        with patch(
+            "summon_claude.cli.model_cache.load_cached_models",
+            side_effect=ImportError("no module"),
+        ):
+            choices = get_model_choices()
+        assert choices == ["default (auto)", *list(_FALLBACK_MODEL_CHOICES), "other"]
+
     def test_warn_unrecognized_model_known(self):
         """Known model (in cached model list) → returns None, no warning."""
         from unittest.mock import patch as _patch
@@ -1023,6 +1034,19 @@ class TestModelChoices:
             # Unknown model → warning
             _warn_unrecognized_model("totally-unknown-xyz")
             mock_echo.assert_called_once()
+
+    def test_warn_unrecognized_model_exception_returns_none_silently(self):
+        """load_cached_models raises → swallows exception, returns None without raising."""
+        from unittest.mock import patch as _patch
+
+        from summon_claude.config import _warn_unrecognized_model
+
+        with _patch(
+            "summon_claude.cli.model_cache.load_cached_models",
+            side_effect=Exception("unexpected"),
+        ):
+            result = _warn_unrecognized_model("some-model")
+        assert result is None
 
     def test_fallback_model_choices_are_valid_prefixes(self):
         """Every _FALLBACK_MODEL_CHOICES entry should be a plausible claude model prefix."""
