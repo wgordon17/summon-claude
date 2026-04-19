@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -183,12 +184,13 @@ def test_bash_commands_execute(
             if not _is_tier1(cmd) and not env_credentials:
                 continue  # Skip credential-requiring commands when no creds
 
-            # Replace summon prefix with uv run summon
-            exec_cmd = cmd.replace("summon ", "uv run summon ", 1)
+            # Tokenize and replace summon with uv run summon
+            parts = shlex.split(cmd)
+            if parts and parts[0] == "summon":
+                parts = ["uv", "run", "summon", *parts[1:]]
 
-            result = subprocess.run(  # noqa: S602
-                exec_cmd,
-                shell=True,
+            result = subprocess.run(
+                parts,
                 env=env,
                 capture_output=True,
                 text=True,
