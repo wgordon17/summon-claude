@@ -120,17 +120,26 @@ def _isolate_data_dir(tmp_path_factory, _guard_no_global_xdg_writes):
     config_dir = tmp_path_factory.mktemp("config")
     (data_dir / "logs").mkdir()
 
+    # Snapshot ambient XDG vars BEFORE any test can monkeypatch them.
+    # _fake_xdg_dir only passes through values that DIFFER from these
+    # snapshots — otherwise CI runners with system-level XDG_CONFIG_HOME
+    # (e.g. /home/runner/.config on GitHub Actions) would escape isolation.
+    ambient_xdg = {
+        "XDG_DATA_HOME": os.environ.get("XDG_DATA_HOME", "").strip(),
+        "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME", "").strip(),
+    }
+
     def _fake_xdg_dir(env_var: str, default_subdir: str, xdg_subdir: str) -> Path:
         """Route XDG data and config requests to isolated temp directories.
 
-        When a test explicitly sets XDG_DATA_HOME or XDG_CONFIG_HOME (e.g. to
-        test XDG path resolution), honour that value so the test sees realistic
-        behaviour.  For all other callers — which omit those env vars — return
-        the session-scoped temp directories so no writes reach the real XDG
-        paths.
+        When a test explicitly changes XDG_DATA_HOME or XDG_CONFIG_HOME via
+        monkeypatch (i.e., the value differs from the ambient snapshot taken
+        at session start), honour that value so the test sees realistic
+        behaviour.  For all other callers — including CI runners with
+        system-level XDG vars — return the session-scoped temp directories.
         """
         explicit = os.environ.get(env_var, "").strip()
-        if explicit:
+        if explicit and explicit != ambient_xdg.get(env_var, ""):
             p = Path(explicit)
             if p.is_absolute():
                 return p / xdg_subdir
