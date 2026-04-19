@@ -337,12 +337,20 @@ def _slugify(text: str) -> str:
     return slugify_for_channel(text) or "session"
 
 
-def _make_channel_name(prefix: str, session_name: str) -> str:
-    """Build a slugified channel name with prefix, date, and hex suffix."""
-    date_suffix = datetime.now(UTC).strftime("%m%d")
-    hex_suffix = secrets.token_hex(4)
+def _make_channel_name(prefix: str, session_name: str, hex_bytes: int = 3) -> str:
+    """Build a slugified channel name with prefix and hex suffix.
+
+    Collision space: hex_bytes=3 gives ~16.7M values, hex_bytes=2 gives
+    65,536 values per (prefix, slug) pair.  The _create_channel retry loop
+    (3 attempts) mitigates single collisions.
+    """
+    hex_suffix = secrets.token_hex(hex_bytes)
     slug = _slugify(session_name) if session_name else "session"
-    name = f"{prefix}-{slug}-{date_suffix}-{hex_suffix}"
+    # Prevent double-prefixing: strip prefix if slug already starts with it
+    prefix_with_sep = f"{prefix}-"
+    if slug.startswith(prefix_with_sep):
+        slug = slug[len(prefix_with_sep) :]
+    name = f"{prefix}-{slug}-{hex_suffix}"
     return name[:_MAX_CHANNEL_NAME_LEN].lower()
 
 
@@ -670,6 +678,8 @@ class SummonSession:
         self._system_prompt_append = options.system_prompt_append
         self._initial_prompt: str | None = options.initial_prompt
         self._initial_prompt_sent: bool = False
+        self._effective_prefix = config.channel_prefix
+        self._effective_hex_bytes = 3
         self._session_id = session_id
         self._cwd = options.cwd
         self._name = options.name
@@ -1066,6 +1076,18 @@ class SummonSession:
         elif self._scribe_profile:
             channel_id, channel_name = await self._get_or_create_scribe_channel(web_client)
         else:
+            # Resolve effective prefix and hex length for ad-hoc/child sessions
+            if self._project_id:
+                try:
+                    _proj = await registry.get_project(self._project_id)
+                except Exception:
+                    _proj = None
+                    logger.warning(
+                        "Could not resolve project %s for channel prefix", self._project_id
+                    )
+                if _proj:
+                    self._effective_prefix = _proj.get("channel_prefix", self._effective_prefix)
+                    self._effective_hex_bytes = 2  # 4-char hex for PM-spawned children
             channel_id, channel_name = await self._create_channel(web_client)
 
         # Record channel_id for SessionManager status queries
@@ -1338,12 +1360,15 @@ class SummonSession:
         """Create a private Slack channel with retry on name collision.
 
         Returns ``(channel_id, channel_name)``.  Generates a fresh random
-        hex suffix on each attempt so collisions are astronomically unlikely
-        (1 in ~4 billion per name per day), but retries handle the edge case.
+        hex suffix on each attempt using ``self._effective_hex_bytes`` (default 3,
+        giving ~16.7M values; 2 for PM-spawned children giving 65,536 values).
+        The retry loop mitigates single collisions.
         """
         last_err: Exception | None = None
         for attempt in range(self._CHANNEL_CREATE_RETRIES):
-            channel_name = _make_channel_name(self._config.channel_prefix, self._name)
+            channel_name = _make_channel_name(
+                self._effective_prefix, self._name, self._effective_hex_bytes
+            )
             try:
                 resp = await web_client.conversations_create(name=channel_name, is_private=True)
                 cid: str = resp["channel"]["id"]  # type: ignore[index]

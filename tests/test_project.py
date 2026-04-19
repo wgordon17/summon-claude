@@ -772,6 +772,7 @@ class TestPostPmWelcome:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
         session = SummonSession(config=config, options=options, session_id="pm-welcome-test")
 
@@ -796,6 +797,7 @@ class TestPostPmWelcome:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
         session = SummonSession(config=config, options=options, session_id="pm-pin-test")
 
@@ -817,6 +819,7 @@ class TestPostPmWelcome:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
         session = SummonSession(config=config, options=options, session_id="pm-pin-fail")
 
@@ -838,6 +841,7 @@ class TestPostPmWelcome:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
         session = SummonSession(config=config, options=options, session_id="pm-post-fail")
 
@@ -856,6 +860,7 @@ class TestPostPmWelcome:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
         session = SummonSession(config=config, options=options, session_id="pm-old-pins")
 
@@ -887,6 +892,7 @@ class TestPostPmWelcome:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="test-pm", pm_profile=True)
         session = SummonSession(config=config, options=options, session_id="pm-cleanup-fail")
 
@@ -943,6 +949,7 @@ class TestPmTopicGuard:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="guard-test", **opts_kwargs)
         session = SummonSession(config=config, options=options, session_id="guard-test")
         assert getattr(session, attr) == expected
@@ -1332,6 +1339,7 @@ class TestSchedulerIntegration:
         from summon_claude.sessions.session import SessionOptions, SummonSession
 
         config = MagicMock(spec=SummonConfig)
+        config.channel_prefix = "summon"
         options = SessionOptions(cwd="/tmp", name="pm-test", pm_profile=True, scan_interval_s=3600)
         session = SummonSession(config=config, options=options, session_id="test-sched")
         assert session._scheduler is None  # Set during _run_session_tasks

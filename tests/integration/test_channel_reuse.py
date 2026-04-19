@@ -1074,6 +1074,9 @@ class TestChannelNameGeneration:
         """_make_channel_name produces valid Slack channel names."""
         name = _make_channel_name("summon", "my-feature")
         assert name.startswith("summon-my-feature-")
+        # No MMDD segment — hex suffix is exactly 6 chars (hex_bytes=3 default)
+        suffix = name[len("summon-my-feature-") :]
+        assert len(suffix) == 6
         assert len(name) <= 80
         assert name == name.lower()
 
@@ -1081,7 +1084,25 @@ class TestChannelNameGeneration:
         name = _make_channel_name("summon", "Feature With Spaces!")
         assert " " not in name
         assert "!" not in name
+        # No MMDD segment in the output
+        parts = name.split("-")
+        for part in parts:
+            assert not (len(part) == 4 and part.isdigit()), f"MMDD-like segment found: {part}"
 
     def test_make_channel_name_truncates_long_names(self):
         name = _make_channel_name("summon", "a" * 100)
         assert len(name) <= 80
+
+    def test_make_channel_name_short_hex(self):
+        """hex_bytes=2 produces a 4-char hex suffix."""
+        name = _make_channel_name("summon", "my-feature", hex_bytes=2)
+        assert name.startswith("summon-my-feature-")
+        suffix = name[len("summon-my-feature-") :]
+        assert len(suffix) == 4
+
+    def test_make_channel_name_dedup_prefix(self):
+        """Session name starting with the prefix does not produce a doubled prefix."""
+        name = _make_channel_name("myapi", "myapi-worker")
+        # Should be myapi-worker-<hex>, NOT myapi-myapi-worker-<hex>
+        assert name.startswith("myapi-worker-")
+        assert not name.startswith("myapi-myapi-")
