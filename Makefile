@@ -81,12 +81,7 @@ py-all: py-install py-lint py-test ## Python workflow: install → lint → test
 # DOCS
 # ============================================================================
 
-docs-generate: ## Regenerate all generated doc sections
-	uv run python scripts/generate_prompt_docs.py
-	uv run python scripts/generate_commands_docs.py
-	uv run python scripts/generate_env_docs.py
-	uv run python scripts/generate_permissions_docs.py
-	uv run python scripts/generate_mcp_docs.py
+docs-generate: docs-prompts docs-commands docs-env docs-permissions docs-mcp ## Regenerate all generated doc sections
 
 docs-prompts: ## Regenerate docs/reference/prompts.md from source constants
 	uv run python scripts/generate_prompt_docs.py
