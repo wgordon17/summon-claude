@@ -4914,15 +4914,11 @@ class TestServerInfoModelCacheWiring:
             patch.object(session, "_run_preprocessor", fake_preprocessor),
             patch.object(session, "_run_response_consumer", fake_consumer),
             patch("summon_claude.cli.model_cache.cache_sdk_models") as mock_cache,
-            patch(
-                "summon_claude.sessions.session.reconcile_context_window_sizes"
-            ) as mock_reconcile,
             contextlib.suppress(RuntimeError),
         ):
             await session._run_session_tasks(rt, AsyncMock())
 
         mock_cache.assert_called_once_with(models, None, None)
-        mock_reconcile.assert_called_once_with(models)
 
 
 # ---------------------------------------------------------------------------

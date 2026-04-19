@@ -961,53 +961,50 @@ class TestModelChoices:
         assert choices == ["default (auto)", *list(_FALLBACK_MODEL_CHOICES), "other"]
 
     def test_warn_unrecognized_model_known(self):
-        """Known model (prefix-matches CONTEXT_WINDOW_SIZES) → returns None, no warning."""
+        """Known model (in cached model list) → returns None, no warning."""
         from unittest.mock import patch as _patch
 
         from summon_claude.config import _warn_unrecognized_model
 
-        with _patch("click.echo") as mock_echo:
+        cached = ([{"value": "claude-opus-4-6"}, {"value": "claude-sonnet-4-6"}], None)
+        with (
+            _patch("summon_claude.cli.model_cache.load_cached_models", return_value=cached),
+            _patch("click.echo") as mock_echo,
+        ):
             result = _warn_unrecognized_model("claude-opus-4-6")
         assert result is None
         mock_echo.assert_not_called()
 
     def test_warn_unrecognized_model_unknown(self):
-        """Unknown model (no CONTEXT_WINDOW_SIZES match) → returns None, warns to stderr."""
+        """Unknown model (not in cached model list) → returns None, warns to stderr."""
         from unittest.mock import patch as _patch
 
         from summon_claude.config import _warn_unrecognized_model
 
-        with _patch("click.echo") as mock_echo:
+        cached = ([{"value": "claude-opus-4-6"}], None)
+        with (
+            _patch("summon_claude.cli.model_cache.load_cached_models", return_value=cached),
+            _patch("click.echo") as mock_echo,
+        ):
             result = _warn_unrecognized_model("totally-unknown-model-xyz")
         assert result is None
         mock_echo.assert_called_once()
         assert "totally-unknown-model-xyz" in mock_echo.call_args[0][0]
         assert mock_echo.call_args[1].get("err") is True
 
-    def test_warn_unrecognized_model_prefix_match_no_warning(self):
-        """Dated snapshot prefix-matches CONTEXT_WINDOW_SIZES → no warning."""
+    def test_warn_unrecognized_model_no_cache_skips_warning(self):
+        """No cached models → returns None, no warning (graceful degradation)."""
         from unittest.mock import patch as _patch
 
         from summon_claude.config import _warn_unrecognized_model
 
-        with _patch("click.echo") as mock_echo:
-            # "claude-opus-4-6-20260401" starts with "claude-opus-4-6" in CONTEXT_WINDOW_SIZES
-            result = _warn_unrecognized_model("claude-opus-4-6-20260401")
+        with (
+            _patch("summon_claude.cli.model_cache.load_cached_models", return_value=None),
+            _patch("click.echo") as mock_echo,
+        ):
+            result = _warn_unrecognized_model("anything")
         assert result is None
         mock_echo.assert_not_called()
-
-    def test_fallback_model_choices_subset_of_context_window_sizes(self):
-        """Every _FALLBACK_MODEL_CHOICES entry prefix-matches CONTEXT_WINDOW_SIZES.
-
-        Guard test: catches staleness if fallback list gets out of sync.
-        """
-        from summon_claude.config import _FALLBACK_MODEL_CHOICES
-        from summon_claude.sessions.context import CONTEXT_WINDOW_SIZES
-
-        for choice in _FALLBACK_MODEL_CHOICES:
-            assert any(choice.startswith(key) for key in CONTEXT_WINDOW_SIZES), (
-                f"_FALLBACK_MODEL_CHOICES entry {choice!r} has no prefix match"
-            )
 
     def test_model_config_options_use_choice_type(self):
         """All three model ConfigOptions use input_type='choice' and choices_fn."""
