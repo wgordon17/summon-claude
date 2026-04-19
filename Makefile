@@ -10,7 +10,7 @@ CURRENT_BRANCH := $(shell git branch --show-current)
 .PHONY: install lint test build clean all release
 .PHONY: py-install py-lint py-typecheck py-test py-test-slack py-test-llm py-test-quick py-build py-clean py-all
 .PHONY: repo-hooks-install repo-hooks-clean
-.PHONY: docs-generate docs-prompts docs-commands docs-env docs-permissions docs-mcp docs-serve docs-build docs-check docs-check-generated docs-screenshots docs-terminal docs-test docs-test-links
+.PHONY: docs-generate docs-serve docs-build docs-check docs-check-generated docs-screenshots docs-terminal docs-test docs-test-links
 
 # Default target - auto-generated from inline ## comments
 help:
@@ -81,22 +81,11 @@ py-all: py-install py-lint py-test ## Python workflow: install → lint → test
 # DOCS
 # ============================================================================
 
-docs-generate: docs-prompts docs-commands docs-env docs-permissions docs-mcp ## Regenerate all generated doc sections
+# Auto-discover generators by naming convention: scripts/generate_*_docs.py
+_DOC_GENERATORS := $(sort $(wildcard scripts/generate_*_docs.py))
 
-docs-prompts: ## Regenerate docs/reference/prompts.md from source constants
-	uv run python scripts/generate_prompt_docs.py
-
-docs-commands: ## Regenerate docs/reference/commands.md from COMMAND_ACTIONS
-	uv run python scripts/generate_commands_docs.py
-
-docs-env: ## Regenerate docs/reference/environment-variables.md from CONFIG_OPTIONS
-	uv run python scripts/generate_env_docs.py
-
-docs-permissions: ## Regenerate docs/reference/permissions.md from permission constants
-	uv run python scripts/generate_permissions_docs.py
-
-docs-mcp: ## Regenerate docs/reference/mcp-tools.md from MCP tool definitions
-	uv run python scripts/generate_mcp_docs.py
+docs-generate: ## Regenerate all generated doc sections
+	@$(foreach g,$(_DOC_GENERATORS),uv run python $(g) &&) true
 
 docs-serve: ## Serve docs locally with live reload
 	uv run mkdocs serve
@@ -108,11 +97,7 @@ docs-check: ## Verify docs build (strict mode, catches broken links)
 	uv run mkdocs build --strict
 
 docs-check-generated: ## Verify generated doc sections are up to date
-	uv run python scripts/generate_prompt_docs.py --check
-	uv run python scripts/generate_commands_docs.py --check
-	uv run python scripts/generate_env_docs.py --check
-	uv run python scripts/generate_permissions_docs.py --check
-	uv run python scripts/generate_mcp_docs.py --check
+	@$(foreach g,$(_DOC_GENERATORS),uv run python $(g) --check &&) true
 
 docs-screenshots: ## Generate documentation screenshots (all sections)
 	uv run python scripts/docs-screenshots.py --output docs/assets/screenshots/
