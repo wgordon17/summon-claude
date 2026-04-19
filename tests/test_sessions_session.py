@@ -4878,11 +4878,10 @@ class TestShutdownCanvasException:
 
 
 class TestServerInfoModelCacheWiring:
-    """Test that server_info models trigger cache refresh and reconciliation."""
+    """Test that server_info models trigger cache refresh."""
 
-    async def test_server_info_triggers_cache_and_reconciliation(self, registry):
-        """When server_info.models is non-empty, both cache_sdk_models and
-        reconcile_context_window_sizes are called with the model list."""
+    async def test_server_info_triggers_cache(self, registry):
+        """When server_info.models is non-empty, cache_sdk_models is called."""
         models = [{"value": "claude-opus-4-6"}]
 
         class _FakeSDKClient:
