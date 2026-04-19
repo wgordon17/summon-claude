@@ -44,7 +44,7 @@ _DEFAULT_OVERRIDES: dict[str, str | None] = {
     "SUMMON_SCRIBE_MODEL": "_(inherits default model)_",
     "SUMMON_SCRIBE_IMPORTANCE_KEYWORDS": "_(empty)_",
     "SUMMON_SCRIBE_QUIET_HOURS": "_(empty)_",
-    "SUMMON_SCRIBE_GOOGLE_ENABLED": "auto-detect",
+    "SUMMON_SCRIBE_GOOGLE_ENABLED": "_auto-detect_",
     "SUMMON_SCRIBE_SLACK_ENABLED": "_auto-detect_",
     "SUMMON_SCRIBE_SLACK_MONITORED_CHANNELS": "_(empty)_",
     "SUMMON_GLOBAL_PM_CWD": "_(data dir)_",
