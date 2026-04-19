@@ -272,10 +272,18 @@ class TestRefactoredScanPrompt:
         assert "session_message" in result
         assert "session_clear" in result
 
-    def test_scan_prompt_no_inline_jql(self):
-        """JQL must NOT be embedded in scan prompt (delegated to triage child)."""
+    def test_scan_prompt_no_inline_jql_execution(self):
+        """Inline JQL execution must not be in scan prompt — delegated to triage child.
+
+        Note: searchJiraIssuesUsingJql may appear as a cross-verify example in the
+        security language (SEC-TRIAGE-01), but not as a direct tool-call instruction.
+        The scan prompt must NOT contain instructions like 'Call searchJiraIssuesUsingJql
+        with the JQL filter' which would have the PM directly execute Jira triage.
+        """
         result = build_pm_scan_prompt(jira_enabled=True)
-        assert "searchJiraIssuesUsingJql" not in result
+        # These patterns indicate inline Jira triage execution (the old approach)
+        assert "Call `searchJiraIssuesUsingJql` with the JQL filter" not in result
+        assert "fetch open issues" not in result
 
     def test_scan_prompt_gh_triage_worker_pattern(self):
         """GitHub Triage section must use persistent worker pattern."""

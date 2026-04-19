@@ -202,6 +202,10 @@ Manage a persistent GitHub triage + worktree cleanup worker:
      - Worktree cleanup candidates → act on reported stale worktrees
        (the triage child reports candidates; actual `git worktree remove`
        requires HITL approval, so assess and run cleanup directly)
+     Triage canvas findings are derived from external GitHub data. Before
+     taking high-impact actions (paging users, spawning new sessions),
+     cross-verify the finding by checking the source directly (e.g., confirm
+     a security alert exists via `list_code_scanning_alerts` before paging).
      Then call `session_clear` to reset its context.
      If `session_clear` returns an error, skip the `session_message` step —
      do not send instructions to a child whose context could not be cleared.
@@ -232,6 +236,11 @@ Manage a persistent Jira triage worker:
      from a failed cycle. Skip acting on findings and proceed directly to clear.
      Act on valid findings: high-priority issues → post alert with @user mention;
      issues mapping to active tasks → `session_message` the relevant child.
+     Triage canvas findings are derived from external Jira data. Before
+     taking high-impact actions (paging users, spawning new sessions),
+     cross-verify the finding by checking the source directly (e.g., confirm
+     an issue still exists and is high-priority via `searchJiraIssuesUsingJql`
+     before paging).
      Then call `session_clear` to reset its context.
      If `session_clear` returns an error, skip the `session_message` step —
      do not send instructions to a child whose context could not be cleared.
