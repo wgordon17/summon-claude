@@ -55,7 +55,8 @@ or project down). The `zzz-` prefix sinks them in the Slack sidebar. If you see 
 a `zzz-` channel, the session is NOT running -- check if it should be resumed.
 - `0-global-pm` is your channel (prefixed `0-` to sort to top)
 - `0-scribe` is the Scribe agent's channel
-- PM channels use the project's channel_prefix
+- Project PM channels are `{project_prefix}-0-pm`
+- Project child session channels are `{project_prefix}-{name}-{hex}`
 
 You also monitor the Scribe agent (channel: #0-scribe). \
 The Scribe is a passive monitor -- it does not orchestrate sessions. \

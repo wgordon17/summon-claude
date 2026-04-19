@@ -16,6 +16,7 @@ from summon_claude.daemon import is_daemon_running
 from summon_claude.sessions.hook_types import INCLUDE_GLOBAL_TOKEN
 from summon_claude.sessions.hooks import run_lifecycle_hooks
 from summon_claude.sessions.registry import SessionRegistry
+from summon_claude.sessions.session import is_pm_session_name
 
 logger = logging.getLogger(__name__)
 
@@ -235,11 +236,11 @@ async def stop_project_managers(*, name: str | None = None) -> list[str]:  # noq
             active = [s for s in sessions if s.get("status") in ("pending_auth", "active")]
             # Stop children before PMs so a PM mid-turn doesn't react to
             # its children disappearing.
-            active.sort(key=lambda s: "-pm-" in s.get("session_name", ""))
+            active.sort(key=lambda s: is_pm_session_name(s.get("session_name", "")))
             for session in active:
                 sid = session["session_id"]
                 sname = session.get("session_name", "")
-                is_pm = "-pm-" in sname
+                is_pm = is_pm_session_name(sname)
                 try:
                     found = await daemon_client.stop_session(sid)
                     if not found:

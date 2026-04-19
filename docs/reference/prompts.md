@@ -47,6 +47,8 @@ Canvas:
 Project directory: {cwd}
 Working directory constraint: all sub-sessions MUST use directories within this project directory. Do NOT spawn sessions outside this path.
 
+Session naming: use short task descriptions as session names (e.g., "fix-auth", "add-search"). The project channel prefix is prepended automatically — do not include it in the session name.
+
 {{worktree_constraint}}
 
 ## Periodic Scan Awareness
@@ -254,7 +256,8 @@ During each scan, audit PM behavior against their workflow instructions:
 - Channels prefixed with `zzz-` are disconnected sessions (shutdown, error, or project down). The `zzz-` prefix sinks them in the Slack sidebar. If you see a `zzz-` channel, the session is NOT running -- check if it should be resumed.
 - `0-global-pm` is your channel (prefixed `0-` to sort to top)
 - `0-scribe` is the Scribe agent's channel
-- PM channels use the project's channel_prefix
+- Project PM channels are `{project_prefix}-0-pm`
+- Project child session channels are `{project_prefix}-{name}-{hex}`
 
 You also monitor the Scribe agent (channel: #0-scribe). The Scribe is a passive monitor -- it does not orchestrate sessions. Check that it is scanning on schedule and not erroring. If the Scribe appears stuck, report it in your channel.
 

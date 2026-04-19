@@ -82,7 +82,7 @@ class TestResetData:
     def test_reset_data_refuses_project_sessions_only(self):
         """'reset data' should show only project guidance when only PM sessions exist."""
         runner = CliRunner()
-        mock_sessions = [{"session_id": "abc", "session_name": "myproj-pm-agent"}]
+        mock_sessions = [{"session_id": "abc", "session_name": "pm-agent"}]
         with (
             patch("summon_claude.cli.reset.is_interactive", return_value=True),
             patch("summon_claude.cli.reset.is_daemon_running", return_value=True),
@@ -122,7 +122,7 @@ class TestResetData:
         runner = CliRunner()
         mock_sessions = [
             {"session_id": "abc", "session_name": "test-sess"},
-            {"session_id": "def", "session_name": "proj-pm-agent"},
+            {"session_id": "def", "session_name": "pm-agent"},
         ]
         with (
             patch("summon_claude.cli.reset.is_interactive", return_value=True),
@@ -424,7 +424,7 @@ class TestResetConfig:
     def test_reset_config_refuses_project_sessions(self):
         """'reset config' should refuse when daemon has project sessions."""
         runner = CliRunner()
-        mock_sessions = [{"session_id": "abc", "session_name": "my-pm-agent"}]
+        mock_sessions = [{"session_id": "abc", "session_name": "pm-agent"}]
         with (
             patch("summon_claude.cli.reset.is_interactive", return_value=True),
             patch("summon_claude.cli.reset.is_daemon_running", return_value=True),

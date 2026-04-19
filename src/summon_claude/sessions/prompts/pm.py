@@ -77,6 +77,10 @@ Project directory: {cwd}
 Working directory constraint: all sub-sessions MUST use directories within \
 this project directory. Do NOT spawn sessions outside this path.
 
+Session naming: use short task descriptions as session names (e.g., "fix-auth", \
+"add-search"). The project channel prefix is prepended automatically — do not \
+include it in the session name.
+
 {{worktree_constraint}}
 
 ## Periodic Scan Awareness

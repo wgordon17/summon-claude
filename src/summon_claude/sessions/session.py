@@ -354,6 +354,14 @@ def _make_channel_name(prefix: str, session_name: str, hex_bytes: int = 3) -> st
     return name[:_MAX_CHANNEL_NAME_LEN].lower()
 
 
+def is_pm_session_name(name: str) -> bool:
+    """Return True if *name* matches PM session naming conventions.
+
+    Handles both legacy ``{prefix}-pm-{hex}`` and new ``pm-{hex}`` formats.
+    """
+    return "-pm-" in name or name.startswith("pm-")
+
+
 def _read_bounded(path: str, limit: int) -> tuple[str, bool]:
     """Read up to *limit* characters from *path*; return (content, truncated)."""
     with open(path) as f:  # noqa: PTH123
@@ -1073,6 +1081,8 @@ class SummonSession:
             channel_id, channel_name = await self._get_or_create_pm_channel(
                 web_client, registry, self._project_id
             )
+        elif self._pm_profile and not self._project_id:
+            raise RuntimeError("PM session requires a project_id")
         elif self._scribe_profile:
             channel_id, channel_name = await self._get_or_create_scribe_channel(web_client)
         else:
@@ -1496,22 +1506,19 @@ class SummonSession:
         )
         return channel_id, channel_name
 
-    async def _get_or_create_pm_channel(  # noqa: PLR0912
+    async def _get_or_create_pm_channel(  # noqa: PLR0912, PLR0915
         self, web_client: AsyncWebClient, registry: SessionRegistry, project_id: str
     ) -> tuple[str, str]:
         """Reuse the existing PM channel for this project, or create a new one.
 
         If the project already has a ``pm_channel_id``, joins it and returns it.
-        Otherwise creates a new channel named ``{channel_prefix}-pm`` and
+        Otherwise creates a new channel named ``{channel_prefix}-0-pm`` and
         persists the channel ID back to the project record.
         """
         project = await registry.get_project(project_id)
         if project is None:
-            logger.warning(
-                "Project %s not found — falling back to normal channel creation",
-                project_id,
-            )
-            return await self._create_channel(web_client)
+            logger.warning("PM channel creation failed: project %s not found", project_id)
+            raise RuntimeError("Cannot create PM channel: project not found in database")
 
         existing_channel_id = project.get("pm_channel_id")
         if existing_channel_id:
@@ -1535,7 +1542,7 @@ class SummonSession:
 
         # Create a new PM channel
         channel_prefix = project.get("channel_prefix", _slugify(project.get("name", "pm")))
-        new_channel_name = f"{channel_prefix}-pm"[:_MAX_CHANNEL_NAME_LEN].lower()
+        new_channel_name = f"{channel_prefix}-0-pm"[:_MAX_CHANNEL_NAME_LEN].lower()
         new_id = ""
         cname = ""
         try:
@@ -3971,7 +3978,7 @@ class SummonSession:
                 logger.debug("Failed to post spawn error: %s", e2)
             return
 
-        child_name = f"{self._name}-spawn-{secrets.token_hex(3)}"
+        child_name = f"spawn-{secrets.token_hex(3)}"
         child_options = SessionOptions(cwd=self._cwd, name=child_name, project_id=self._project_id)
         try:
             child_session_id = await self._ipc_spawn(child_options, spawn_auth.token)

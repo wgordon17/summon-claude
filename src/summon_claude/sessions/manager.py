@@ -32,6 +32,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 # recv_msg/send_msg imported lazily in handle_client to avoid circular import
 # (daemon.py imports SessionManager; SessionManager uses IPC from daemon.py)
 from summon_claude.config import get_data_dir
+from summon_claude.security import mark_untrusted
 from summon_claude.sessions.auth import (
     SessionAuth,
     SpawnAuth,
@@ -41,7 +42,7 @@ from summon_claude.sessions.auth import (
 )
 from summon_claude.sessions.prompts import format_pm_topic
 from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN_PM, SessionRegistry
-from summon_claude.sessions.session import SessionOptions, SummonSession
+from summon_claude.sessions.session import SessionOptions, SummonSession, is_pm_session_name
 from summon_claude.slack.client import redact_secrets, sanitize_for_slack
 from summon_claude.summon_cli_mcp import MAX_PROMPT_CHARS
 
@@ -738,6 +739,19 @@ class SessionManager:
                         session,
                         f":x: *Session terminated unexpectedly*: `{e}`{recovery_hint}",
                     )
+                    # Best-effort: notify global PM of project PM failure
+                    if session.is_pm and not session.is_global_pm:
+                        for s in self._sessions.values():
+                            if s.is_global_pm:
+                                with contextlib.suppress(Exception):
+                                    await s.inject_message(
+                                        mark_untrusted(
+                                            f"Project PM session failed: {type(e).__name__}",
+                                            source="session-manager-error",
+                                        ),
+                                        sender_info="session-manager",
+                                    )
+                                break
                     break
 
     # ------------------------------------------------------------------
@@ -1073,7 +1087,7 @@ class SessionManager:
                 for sess in suspended:
                     sess_id = sess["session_id"]
                     sess_name = sess.get("session_name", "")
-                    is_pm = "-pm-" in sess_name
+                    is_pm = is_pm_session_name(sess_name)
                     try:
                         channel_id = sess.get("slack_channel_id")
                         if not channel_id:
@@ -1143,11 +1157,12 @@ class SessionManager:
                             )
         return pm_resumed
 
-    def _start_child_session(
+    def _start_child_session(  # noqa: PLR0913
         self,
         project: dict[str, Any],
         user_id: str,
         cwd: str,
+        name: str,
         model: str | None = None,
         resume_from_session_id: str | None = None,
     ) -> None:
@@ -1158,7 +1173,7 @@ class SessionManager:
         new_session_id = str(uuid.uuid4())
         options = SessionOptions(
             cwd=cwd,
-            name=f"{project['channel_prefix']}-{secrets.token_hex(3)}",
+            name=name,
             model=model,
             project_id=project["project_id"],
             resume_from_session_id=resume_from_session_id,
@@ -1208,7 +1223,7 @@ class SessionManager:
         new_session_id = str(uuid.uuid4())
         pm_options = SessionOptions(
             cwd=project_dir,
-            name=f"{project['channel_prefix']}-pm-{secrets.token_hex(3)}",
+            name=f"pm-{secrets.token_hex(3)}",
             pm_profile=True,
             project_id=project["project_id"],
         )

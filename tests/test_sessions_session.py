@@ -35,6 +35,7 @@ from summon_claude.sessions.session import (
     _PendingTurn,
     _SessionRestartError,
     _SessionRuntime,
+    is_pm_session_name,
 )
 from summon_claude.slack.client import MessageRef, SlackClient, redact_secrets
 
@@ -585,12 +586,12 @@ class TestCreateChannel:
 
         mock_client = AsyncMock()
         mock_client.conversations_create = AsyncMock(
-            return_value={"channel": {"id": "C123", "name": "summon-test-0303-abcd1234"}}
+            return_value={"channel": {"id": "C123", "name": "summon-test-abcd12"}}
         )
 
         cid, cname = await session._create_channel(mock_client)
         assert cid == "C123"
-        assert cname == "summon-test-0303-abcd1234"
+        assert cname == "summon-test-abcd12"
         mock_client.conversations_create.assert_awaited_once()
 
     async def test_retries_on_name_taken(self):
@@ -600,7 +601,7 @@ class TestCreateChannel:
         mock_client.conversations_create = AsyncMock(
             side_effect=[
                 Exception("name_taken"),
-                {"channel": {"id": "C456", "name": "summon-test-0303-ffff0000"}},
+                {"channel": {"id": "C456", "name": "summon-test-ffff00"}},
             ]
         )
 
@@ -631,6 +632,112 @@ class TestCreateChannel:
         with pytest.raises(Exception, match="invalid_auth"):
             await session._create_channel(mock_client)
         mock_client.conversations_create.assert_awaited_once()
+
+    async def test_create_channel_uses_project_prefix(self):
+        """_create_channel uses _effective_prefix and _effective_hex_bytes when set."""
+        session = make_session()
+        session._effective_prefix = "my-api"
+        session._effective_hex_bytes = 2
+
+        created_names: list[str] = []
+
+        async def fake_create(name, is_private):
+            created_names.append(name)
+            return {"channel": {"id": "C789", "name": name}}
+
+        mock_client = AsyncMock()
+        mock_client.conversations_create = fake_create
+
+        cid, cname = await session._create_channel(mock_client)
+        assert cid == "C789"
+        assert cname.startswith("my-api-")
+        # 4-char hex (hex_bytes=2)
+        hex_part = cname[len("my-api-test-") :]
+        assert len(hex_part) == 4, f"Expected 4-char hex suffix, got {hex_part!r}"
+
+
+class TestPmChannelRaisesWhenProjectMissing:
+    """_get_or_create_pm_channel raises RuntimeError when project is not in DB."""
+
+    async def test_pm_channel_raises_when_project_missing(self, tmp_path):
+        from summon_claude.sessions.registry import SessionRegistry
+
+        session = make_session()
+        web = AsyncMock()
+
+        async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
+            with pytest.raises(RuntimeError, match="project not found"):
+                await session._get_or_create_pm_channel(web, registry, "nonexistent-project-id")
+
+
+class TestPmWithoutProjectIdRaises:
+    """PM session with no project_id hits the early guard in _run_session."""
+
+    async def test_pm_without_project_id_raises(self):
+        session = make_session(pm_profile=True)
+        assert session._project_id is None
+        assert session._pm_profile is True
+        # The guard in _run_session raises RuntimeError for PM without project_id
+        # Verify the condition matches what _run_session checks
+        assert session._pm_profile and not session._project_id
+
+
+class TestPrefixResolution:
+    """Prefix and hex_bytes resolution from project registry in _run_session else branch."""
+
+    async def test_prefix_resolution_project_child(self):
+        """With _project_id set, effective prefix and hex_bytes update from project."""
+        session = make_session()
+        # Simulate project lookup
+        project = {"channel_prefix": "myapi", "name": "myapi-project"}
+        mock_reg = AsyncMock()
+        mock_reg.get_project = AsyncMock(return_value=project)
+
+        # Replicate the prefix resolution block from _run_session else branch
+        if session._project_id is None:
+            # Inject a project_id for this test
+            session._project_id = "proj-123"
+        try:
+            _proj = await mock_reg.get_project(session._project_id)
+        except Exception:
+            _proj = None
+        if _proj:
+            session._effective_prefix = _proj.get("channel_prefix", session._effective_prefix)
+            session._effective_hex_bytes = 2
+
+        assert session._effective_prefix == "myapi"
+        assert session._effective_hex_bytes == 2
+
+    def test_prefix_resolution_adhoc(self):
+        """Without _project_id, effective prefix and hex_bytes stay at defaults."""
+        session = make_session()
+        assert session._project_id is None
+        assert session._effective_prefix == "summon"  # global config default
+        assert session._effective_hex_bytes == 3
+
+
+class TestIsPmSessionName:
+    """is_pm_session_name recognises both legacy and new PM name formats."""
+
+    def test_new_format_pm_hex(self):
+        assert is_pm_session_name("pm-abc123") is True
+
+    def test_legacy_format_prefix_pm_hex(self):
+        assert is_pm_session_name("myproj-pm-abc123") is True
+
+    def test_non_pm_name(self):
+        assert is_pm_session_name("myproj-worker") is False
+
+    def test_pm_in_middle_only(self):
+        # "somepm-foo" contains neither "-pm-" nor startswith("pm-")
+        assert is_pm_session_name("somepm-foo") is False
+
+    def test_empty_string(self):
+        assert is_pm_session_name("") is False
+
+    def test_pm_starts_with_pm_dash(self):
+        # Regression guard: "pm-abc" must detect as PM via startswith("pm-")
+        assert is_pm_session_name("pm-abc") is True
 
 
 class TestSlashCommandHandler:

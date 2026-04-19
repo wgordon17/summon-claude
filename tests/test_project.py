@@ -1377,7 +1377,7 @@ class TestStopProjectManagersOutput:
         sessions = [
             {
                 "session_id": "pm-sid",
-                "session_name": "my-proj-pm-abc123",
+                "session_name": "pm-abc123",  # new format: startswith("pm-") → is_pm
                 "status": "active",
             },
             {
@@ -1415,7 +1415,7 @@ class TestStopProjectManagersOutput:
         projects = [{"project_id": "p1", "name": "my-proj", "channel_prefix": "my-proj"}]
         # PM listed first to prove the sort overrides input order
         sessions = [
-            {"session_id": "pm-sid", "session_name": "my-proj-pm-abc123", "status": "active"},
+            {"session_id": "pm-sid", "session_name": "pm-abc123", "status": "active"},
             {"session_id": "child-sid", "session_name": "my-proj-def456", "status": "active"},
         ]
 
@@ -1455,7 +1455,7 @@ class TestStopProjectManagersOutput:
         sessions = [
             {
                 "session_id": "pm-only",
-                "session_name": "proj-pm-aaa",
+                "session_name": "pm-aaa",  # new format
                 "status": "active",
             }
         ]
@@ -1487,7 +1487,7 @@ class TestStopProjectManagersOutput:
             {"project_id": "p2", "name": "beta"},
         ]
         alpha_sessions = [
-            {"session_id": "pm-alpha", "session_name": "alpha-pm-abc", "status": "active"},
+            {"session_id": "pm-alpha", "session_name": "pm-abc", "status": "active"},
         ]
 
         with (
@@ -1518,7 +1518,7 @@ class TestStopProjectManagersOutput:
             {"project_id": "p2", "name": "beta"},
         ]
         alpha_sessions = [
-            {"session_id": "pm-alpha", "session_name": "alpha-pm-abc", "status": "active"},
+            {"session_id": "pm-alpha", "session_name": "pm-abc", "status": "active"},
             {"session_id": "child-alpha", "session_name": "alpha-worker", "status": "active"},
         ]
 
@@ -1580,7 +1580,7 @@ class TestSuspendedStatus:
             "susp-pm",
             1234,
             str(tmp_path),
-            name="susp-proj-pm-aaa",
+            name="pm-aaa",
             project_id=project_id,
         )
         await registry.update_status("susp-pm", "suspended")
@@ -1671,20 +1671,20 @@ class TestStopPMAwareness:
         assert await _check_pm_stop(session, ctx) is True
 
     async def test_check_pm_stop_no_project_returns_true(self):
-        """Sessions without project_id pass through."""
+        """Sessions without project_id pass through (new PM name format)."""
         from summon_claude.cli.stop import _check_pm_stop
 
-        session = {"session_id": "s1", "session_name": "my-proj-pm-abc"}
+        session = {"session_id": "s1", "session_name": "pm-abc"}
         ctx = MagicMock()
         assert await _check_pm_stop(session, ctx) is True
 
     async def test_check_pm_stop_no_children_returns_true(self):
-        """PM with no active children passes through."""
+        """PM with no active children passes through (new format exercises startswith path)."""
         from summon_claude.cli.stop import _check_pm_stop
 
         session = {
             "session_id": "pm-1",
-            "session_name": "proj-pm-abc",
+            "session_name": "pm-abc",  # new format: no "-pm-" substring
             "project_id": "p1",
         }
         ctx = MagicMock()
@@ -1702,7 +1702,7 @@ class TestStopPMAwareness:
 
         pm_session = {
             "session_id": "pm-1",
-            "session_name": "proj-pm-abc",
+            "session_name": "pm-abc",  # new format
             "project_id": "p1",
         }
         child_session = {

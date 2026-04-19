@@ -2729,12 +2729,12 @@ class TestRestartSuspendedSessionsResume:
 
         pm_session = {
             "session_id": "pm-old",
-            "session_name": "myproj-pm-abc123",  # contains -pm- → is_pm=True
+            "session_name": "pm-abc123",  # new format: startswith("pm-") → is_pm=True
             "cwd": "/tmp/myproj",
             "model": "claude-opus-4-6",
             "status": "suspended",
             "slack_channel_id": "C_PM",
-            "slack_channel_name": "zzz-myproj-pm",
+            "slack_channel_name": "zzz-myproj-0-pm",
             "claude_session_id": "claude-pm-sid",
             "authenticated_user_id": "U001",
         }
@@ -2885,7 +2885,7 @@ class TestCreateResumedSessionPmTopic:
         ):
             options = SessionOptions(
                 cwd="/tmp/test",
-                name="proj-pm-abc",
+                name="pm-abc",
                 project_id="p1",
                 pm_profile=True,
                 channel_id="C1",
@@ -2908,23 +2908,23 @@ class TestMultiProjectPmResume:
 
         pm1 = {
             "session_id": "pm-old-1",
-            "session_name": "proj1-pm-aaa",
+            "session_name": "pm-aaa",  # new format: startswith("pm-") → is_pm=True
             "cwd": "/tmp/proj1",
             "model": "claude-opus-4-6",
             "status": "suspended",
             "slack_channel_id": "C_PM1",
-            "slack_channel_name": "zzz-proj1-pm",
+            "slack_channel_name": "zzz-proj1-0-pm",
             "claude_session_id": "cl-pm1",
             "authenticated_user_id": "U001",
         }
         pm2 = {
             "session_id": "pm-old-2",
-            "session_name": "proj2-pm-bbb",
+            "session_name": "pm-bbb",  # new format
             "cwd": "/tmp/proj2",
             "model": "claude-opus-4-6",
             "status": "suspended",
             "slack_channel_id": "C_PM2",
-            "slack_channel_name": "zzz-proj2-pm",
+            "slack_channel_name": "zzz-proj2-0-pm",
             "claude_session_id": "cl-pm2",
             "authenticated_user_id": "U001",
         }
