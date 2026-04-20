@@ -497,12 +497,12 @@ class SessionManager:
         Queries active sessions scoped to user_id (SQL-level scoping),
         builds the home view, and publishes via views.publish.
         """
+        sessions: list[dict] = []
         try:
             async with SessionRegistry() as registry:
                 sessions = await registry.list_active_by_user(user_id)
         except Exception:
             logger.exception("SessionManager: registry query failed for app_home user %s", user_id)
-            sessions = []
 
         home_view = build_home_view(sessions)
         try:
