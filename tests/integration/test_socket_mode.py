@@ -64,6 +64,7 @@ async def event_consumer(slack_harness, test_channel):
     except TimeoutError:
         pytest.skip("Socket Mode connection timed out (15s)")
     except Exception as exc:
+        await consumer.stop()
         pytest.skip(f"Socket Mode connection failed: {exc}")
 
     canary = f"canary-{secrets.token_hex(4)}"
