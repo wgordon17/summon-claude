@@ -765,7 +765,7 @@ class TestProjectUpdateCLI:
 
         assert result.exit_code == 0, result.output
         mock_update.assert_called_once_with("myproj", auto_deny="no force push")
-        assert "Effective deny" in result.output
+        assert "Block rules" in result.output
 
     def test_update_auto_deny_and_jql_together(self):
         """project update --jql X --auto-deny Y passes both without interference."""
@@ -838,7 +838,7 @@ class TestProjectUpdateCLI:
 
         assert result.exit_code == 0, result.output
         mock_update.assert_called_once_with("myproj", auto_allow="local edits ok")
-        assert "Effective allow" in result.output
+        assert "Allow rules" in result.output
 
     def test_update_auto_environment_only(self):
         """project update --auto-environment does NOT pass jira_jql."""

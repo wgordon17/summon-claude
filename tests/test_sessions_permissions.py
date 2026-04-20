@@ -2004,7 +2004,7 @@ class TestApprovalBridgeResolution:
         fut = bridge.create_future("Agent")
         assert fut.done()
         info = fut.result()
-        assert info.label == "blocked"
+        assert info.label == "auto-mode blocked"
         assert info.is_denial is True
 
     async def test_write_gate_containment_resolves_bridge(self, tmp_path):
