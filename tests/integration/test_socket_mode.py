@@ -133,6 +133,15 @@ class TestSocketReconnect:
 
         await asyncio.wait_for(consumer.start(), timeout=15.0)
         try:
+            # Canary: confirm events are flowing after restart
+            canary = f"canary-{secrets.token_hex(4)}"
+            await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
+            await consumer.wait_for_event(
+                lambda e: e.get("type") == "message" and canary in e.get("text", ""),
+                timeout=10.0,
+            )
+            consumer.drain()
+
             nonce = f"reconnect-{secrets.token_hex(6)}"
             await slack_harness.client.chat_postMessage(channel=test_channel, text=nonce)
             event = await consumer.wait_for_event(
