@@ -51,6 +51,7 @@ class _StubSession:
         self.channel_id: str | None = None
         self.target_channel_id: str | None = None
         self.is_pm: bool = False
+        self.is_global_pm: bool = False
         self.project_id: str | None = None
         self._shutdown_requested = False
         self._authenticated_user_id: str | None = None
@@ -388,6 +389,31 @@ class TestSupervisedSession:
         call_args = mock_provider.chat_postMessage.call_args
         assert call_args[1]["channel"] == "C001"
         assert ":x:" in call_args[1]["text"]
+
+    async def test_pm_failure_notifies_global_pm(self):
+        """Project PM permanent failure sends mark_untrusted notification to global PM."""
+        manager, mock_provider, _ = _make_manager()
+
+        # Failing project PM
+        pm_stub = _StubSession(fail_with=RuntimeError("project not found"))
+        pm_stub.is_pm = True
+        pm_stub.is_global_pm = False
+        pm_stub.project_id = "p1"
+
+        # Global PM stub with inject_message
+        global_pm = _StubSession()
+        global_pm.is_pm = True
+        global_pm.is_global_pm = True
+        global_pm.inject_message = AsyncMock()
+
+        manager._sessions["gpm-id"] = global_pm  # type: ignore[assignment]
+
+        await manager._supervised_session(pm_stub, "pm-id")  # type: ignore[arg-type]
+
+        global_pm.inject_message.assert_awaited_once()
+        call_args = global_pm.inject_message.call_args
+        assert "RuntimeError" in call_args[0][0]
+        assert call_args[1]["sender_info"] == "session-manager"
 
 
 # ---------------------------------------------------------------------------

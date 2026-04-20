@@ -711,11 +711,21 @@ class TestPrefixResolution:
         assert session._effective_prefix == "myapi"
         assert session._effective_hex_bytes == 2
 
-    def test_prefix_resolution_adhoc(self):
-        """Without _project_id, effective prefix and hex_bytes stay at defaults."""
+    async def test_prefix_resolution_adhoc(self):
+        """Without _project_id, _run_session keeps default prefix and hex_bytes."""
         session = make_session()
+        session._web_client = AsyncMock()
+        session._bot_user_id = "U_BOT"
         assert session._project_id is None
-        assert session._effective_prefix == "summon"  # global config default
+
+        mock_reg = AsyncMock()
+        session._create_channel = AsyncMock(return_value=("C_AD", "summon-test-abc"))
+        mock_reg.register_channel = AsyncMock()
+
+        with contextlib.suppress(Exception):
+            await session._run_session(mock_reg)
+
+        assert session._effective_prefix == "summon"
         assert session._effective_hex_bytes == 3
 
 
@@ -741,6 +751,13 @@ class TestIsPmSessionName:
     def test_pm_starts_with_pm_dash(self):
         # Regression guard: "pm-abc" must detect as PM via startswith("pm-")
         assert is_pm_session_name("pm-abc") is True
+
+    def test_task_name_containing_pm_is_detected(self):
+        # Task names like "fix-pm-bug" contain "-pm-" and are detected as PM.
+        # This is intentional — matches legacy behavior. The pm_profile flag
+        # is the authoritative source for PM routing, not the name.
+        assert is_pm_session_name("fix-pm-bug") is True
+        assert is_pm_session_name("update-pm-config") is True
 
 
 class TestSlashCommandHandler:
