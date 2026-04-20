@@ -252,7 +252,7 @@ Canvas:
 
 ## Constraints
 
-Project directory: {cwd}
+Project directory: `{cwd}`
 Working directory constraint: all sub-sessions MUST use directories within \
 this project directory. Do NOT spawn sessions outside this path.
 

@@ -94,6 +94,8 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     """
     if is_global_pm and not is_pm:
         raise ValueError("is_global_pm requires is_pm=True")
+    if not authenticated_user_id:
+        raise ValueError("authenticated_user_id is required")
 
     @tool(
         "session_list",
