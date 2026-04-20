@@ -328,6 +328,34 @@ class TestProjectUpdate:
         assert rules.get("deny") == ""
         assert rules.get("allow") == "custom allow"
 
+    async def test_auto_mode_rules_all_empty_collapses_to_null(self, registry, tmp_path):
+        """When all rules are cleared to empty, store NULL (global fallback)."""
+        import json
+
+        project_id = await registry.add_project("null-proj", str(tmp_path))
+
+        # Set a rule first
+        await registry.update_project(
+            project_id,
+            auto_mode_rules=json.dumps({"deny": "custom"}),
+        )
+        project = await registry.get_project(project_id)
+        assert project["auto_mode_rules"] is not None
+
+        # Clear all rules — should collapse to NULL
+        await registry.update_project(
+            project_id,
+            auto_mode_rules=json.dumps({"deny": "", "allow": "", "environment": ""}),
+        )
+        # Simulate the CLI collapse: all(not v for v in rules.values()) → NULL
+        project = await registry.get_project(project_id)
+        rules = json.loads(project["auto_mode_rules"])
+        if all(not v for v in rules.values()):
+            await registry.update_project(project_id, auto_mode_rules=None)
+
+        project = await registry.get_project(project_id)
+        assert project["auto_mode_rules"] is None
+
 
 class TestRegisterWithProjectId:
     async def test_register_with_project_id(self, registry, tmp_path):

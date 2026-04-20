@@ -342,14 +342,19 @@ class ResponseStreamer:
                 elif isinstance(message, RateLimitEvent):
                     logger.info("Rate limit event received: %s", message)
                 elif isinstance(message, TaskNotificationMessage):
-                    if (
-                        message.status == "completed"
-                        and message.tool_use_id in self._pending_agent_verifications
-                    ):
-                        agent_input = self._pending_agent_verifications.pop(message.tool_use_id)
-                        if self.on_subagent_return is not None:
-                            self._spawn_background(
-                                self.on_subagent_return(agent_input, message.summary or "")
+                    if message.tool_use_id in self._pending_agent_verifications:
+                        if message.status == "completed":
+                            agent_input = self._pending_agent_verifications.pop(message.tool_use_id)
+                            if self.on_subagent_return is not None:
+                                self._spawn_background(
+                                    self.on_subagent_return(agent_input, message.summary or "")
+                                )
+                        elif message.status in ("error", "cancelled"):
+                            self._pending_agent_verifications.pop(message.tool_use_id)
+                            logger.debug(
+                                "Subagent %s %s — skipping verification",
+                                message.tool_use_id,
+                                message.status,
                             )
                 elif isinstance(message, ResultMessage):
                     result = message

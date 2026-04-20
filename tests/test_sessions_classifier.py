@@ -382,15 +382,17 @@ class TestResultCaching:
         assert mock.call_count == 2
 
     async def test_cache_hit_updates_counters(self):
-        """Cache hits call _update_counters; mock bypasses internal update."""
+        """Cache hit path calls _update_counters, incrementing block counter."""
+        from summon_claude.sessions.classifier import ClassifyResult
+
         classifier = SummonAutoClassifier(_make_config())
-        mock = AsyncMock(side_effect=self._make_mock_do_classify("block", "dangerous"))
-        with patch.object(classifier, "_do_classify", mock):
-            # First call: _do_classify mock runs (no internal _update_counters), result cached.
-            await classifier.classify("Bash", {"command": "rm -rf /"}, "ctx")
-            assert len(classifier._block_timestamps) == 0
-            # Second call: cache hit -> _update_counters("block") called -> 1 timestamp.
-            await classifier.classify("Bash", {"command": "rm -rf /"}, "ctx")
+        # Pre-populate cache directly — no mock needed
+        key = classifier._cache_key("Bash", {"command": "rm -rf /"}, "ctx", None)
+        classifier._cache[key] = (ClassifyResult("block", "dangerous"), time.monotonic())
+        assert len(classifier._block_timestamps) == 0
+
+        # Cache hit should call _update_counters("block")
+        await classifier.classify("Bash", {"command": "rm -rf /"}, "ctx")
         assert len(classifier._block_timestamps) == 1
 
     def test_cache_key_deterministic(self):

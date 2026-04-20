@@ -411,24 +411,32 @@ class SummonAutoClassifier:
         )
 
         try:
-            client_ctx = ClaudeSDKClient(options)
-            client = await client_ctx.__aenter__()
-            try:
-                await client.query(content)
-                parts: list[str] = []
-                async for msg in client.receive_response():
-                    if isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, TextBlock):
-                                parts.append(block.text)
-                response_text = "".join(parts)
-            finally:
-                await client_ctx.__aexit__(None, None, None)
-
-            return self._parse_response(response_text)
+            return await asyncio.wait_for(
+                self._do_classify_content(content, options),
+                timeout=_CLASSIFIER_TIMEOUT_S,
+            )
         except Exception as e:
             logger.warning("Content classifier error: %s", e)
             return ClassifyResult("uncertain", f"Content classifier error: {e}")
+
+    async def _do_classify_content(
+        self, content: str, options: ClaudeAgentOptions
+    ) -> ClassifyResult:
+        """Internal content classification — spawns SDK subprocess with timeout."""
+        client_ctx = ClaudeSDKClient(options)
+        client = await client_ctx.__aenter__()
+        try:
+            await client.query(content)
+            parts: list[str] = []
+            async for msg in client.receive_response():
+                if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, TextBlock):
+                            parts.append(block.text)
+            response_text = "".join(parts)
+        finally:
+            await client_ctx.__aexit__(None, None, None)
+        return self._parse_response(response_text)
 
     def _parse_response(self, text: str) -> ClassifyResult:
         """Parse classifier JSON response."""

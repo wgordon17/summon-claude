@@ -129,7 +129,11 @@ async def async_project_update(name_or_id: str, **kwargs: Any) -> None:
         # Handle auto-mode rules (read-merge-write)
         if auto_deny is not None or auto_allow is not None or auto_environment is not None:
             existing_raw = project.get("auto_mode_rules")
-            rules: dict[str, str] = json.loads(existing_raw) if existing_raw else {}
+            try:
+                parsed = json.loads(existing_raw) if existing_raw else {}
+            except json.JSONDecodeError:
+                parsed = {}
+            rules: dict[str, str] = parsed if isinstance(parsed, dict) else {}
             if auto_deny is not None:
                 rules["deny"] = auto_deny
             if auto_allow is not None:
