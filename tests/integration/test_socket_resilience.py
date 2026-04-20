@@ -118,6 +118,15 @@ class TestForceDisconnect:
         )
         await asyncio.wait_for(new_consumer.start(), timeout=15.0)
         try:
+            # Canary: confirm events are flowing before testing
+            canary = f"canary-{secrets.token_hex(4)}"
+            await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
+            await new_consumer.wait_for_event(
+                lambda e: e.get("type") == "message" and canary in e.get("text", ""),
+                timeout=10.0,
+            )
+            new_consumer.drain()
+
             nonce = f"force-disc-{secrets.token_hex(6)}"
             await slack_harness.client.chat_postMessage(channel=test_channel, text=nonce)
             event = await new_consumer.wait_for_event(
