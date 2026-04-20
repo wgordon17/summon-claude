@@ -369,7 +369,7 @@ def build_pm_system_prompt(
     append_text = (
         _PM_SYSTEM_PROMPT_APPEND.replace("{{worktree_constraint}}", worktree_constraint)
         .replace("{scan_interval}", _format_interval(scan_interval_s))
-        .replace("{cwd}", cwd)
+        .replace("{cwd}", cwd.replace("`", ""))
     )
     if workflow_instructions:
         append_text += (
