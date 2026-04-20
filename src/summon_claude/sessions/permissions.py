@@ -663,6 +663,7 @@ class PermissionHandler:
             return PermissionResultAllow()
 
         # 2i. Auto-mode classifier (only active after worktree entry)
+        # _classifier_active is bool, not TypeGuard — repeat None-check to narrow for Pyright
         if self._classifier_active and self._classifier is not None:
             context_text = extract_classifier_context(self._context_history)
             classify_result = await self._classifier.classify(

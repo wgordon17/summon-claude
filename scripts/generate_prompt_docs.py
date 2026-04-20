@@ -35,6 +35,7 @@ def get_source_prompts() -> dict[str, str]:
     placeholder strings (e.g. ``{cwd}``).
     """
     from summon_claude.sessions.classifier import (
+        _CONTENT_CLASSIFIER_PROMPT,
         _DEFAULT_ALLOW_RULES,
         _DEFAULT_DENY_RULES,
         build_classifier_prompt,
@@ -120,6 +121,7 @@ def get_source_prompts() -> dict[str, str]:
         ),
         "reviewer-system": _REVIEWER_SYSTEM_PROMPT_TEMPLATE,
         "classifier-system": classifier_system,
+        "content-classifier-system": _CONTENT_CLASSIFIER_PROMPT,
         "compact": _COMPACT_PROMPT,
         "overflow-recovery": _OVERFLOW_RECOVERY_PROMPT,
         "canvas": _CANVAS_PROMPT_SECTION,

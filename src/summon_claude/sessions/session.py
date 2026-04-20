@@ -1247,7 +1247,14 @@ class SummonSession:
             project = await registry.get_project(self._project_id)
             if project and project.get("auto_mode_rules"):
                 try:
-                    project_rules = json.loads(project["auto_mode_rules"])
+                    parsed = json.loads(project["auto_mode_rules"])
+                    if isinstance(parsed, dict):
+                        project_rules = parsed
+                    else:
+                        logger.warning(
+                            "auto_mode_rules for project %s is not a dict — ignoring",
+                            self._project_id,
+                        )
                 except json.JSONDecodeError:
                     logger.warning(
                         "Invalid auto_mode_rules JSON for project %s — ignoring",

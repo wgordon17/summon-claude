@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from conftest import make_scheduler
 
 from summon_claude.cli import cli
+from summon_claude.cli.project import async_project_update
 from summon_claude.sessions.prompts import build_pm_scan_prompt, build_pm_system_prompt
 from summon_claude.sessions.registry import SessionRegistry
 
@@ -329,32 +330,93 @@ class TestProjectUpdate:
         assert rules.get("allow") == "custom allow"
 
     async def test_auto_mode_rules_all_empty_collapses_to_null(self, registry, tmp_path):
-        """When all rules are cleared to empty, store NULL (global fallback)."""
+        """When all rules are cleared to empty, async_project_update stores NULL."""
         import json
 
         project_id = await registry.add_project("null-proj", str(tmp_path))
 
-        # Set a rule first
-        await registry.update_project(
-            project_id,
-            auto_mode_rules=json.dumps({"deny": "custom"}),
-        )
+        # Set a non-empty deny rule first.
+        mock_reg = AsyncMock()
+        mock_reg.__aenter__ = AsyncMock(return_value=registry)
+        mock_reg.__aexit__ = AsyncMock(return_value=False)
+        with patch("summon_claude.cli.project.SessionRegistry", return_value=mock_reg):
+            await async_project_update(str(project_id), auto_deny="custom")
+
         project = await registry.get_project(project_id)
         assert project["auto_mode_rules"] is not None
+        assert json.loads(project["auto_mode_rules"]) == {"deny": "custom"}
 
-        # Clear all rules — should collapse to NULL
-        await registry.update_project(
-            project_id,
-            auto_mode_rules=json.dumps({"deny": "", "allow": "", "environment": ""}),
-        )
-        # Simulate the CLI collapse: all(not v for v in rules.values()) → NULL
-        project = await registry.get_project(project_id)
-        rules = json.loads(project["auto_mode_rules"])
-        if all(not v for v in rules.values()):
-            await registry.update_project(project_id, auto_mode_rules=None)
+        # Clear all three fields — collapse-to-NULL logic in async_project_update.
+        with patch("summon_claude.cli.project.SessionRegistry", return_value=mock_reg):
+            await async_project_update(
+                str(project_id), auto_deny="", auto_allow="", auto_environment=""
+            )
 
         project = await registry.get_project(project_id)
         assert project["auto_mode_rules"] is None
+
+
+class TestAsyncProjectUpdate:
+    """Direct tests for async_project_update business logic paths."""
+
+    async def test_corrupted_json_falls_back_to_empty_dict(self, registry, tmp_path):
+        """JSONDecodeError on existing auto_mode_rules is silently recovered."""
+        import json
+
+        project_id = await registry.add_project("corrupt-json", str(tmp_path))
+        await registry.update_project(project_id, auto_mode_rules="NOT_VALID_JSON{")
+
+        mock_reg = AsyncMock()
+        mock_reg.__aenter__ = AsyncMock(return_value=registry)
+        mock_reg.__aexit__ = AsyncMock(return_value=False)
+        with patch("summon_claude.cli.project.SessionRegistry", return_value=mock_reg):
+            result = await async_project_update(str(project_id), auto_deny="safe rule")
+
+        assert result == {"deny": "safe rule"}
+        project = await registry.get_project(project_id)
+        assert json.loads(project["auto_mode_rules"]) == {"deny": "safe rule"}
+
+    async def test_non_dict_json_falls_back_to_empty_dict(self, registry, tmp_path):
+        """Valid JSON that is not a dict (e.g. a list) is treated as {}."""
+        import json
+
+        project_id = await registry.add_project("non-dict", str(tmp_path))
+        await registry.update_project(project_id, auto_mode_rules=json.dumps(["oops"]))
+
+        mock_reg = AsyncMock()
+        mock_reg.__aenter__ = AsyncMock(return_value=registry)
+        mock_reg.__aexit__ = AsyncMock(return_value=False)
+        with patch("summon_claude.cli.project.SessionRegistry", return_value=mock_reg):
+            result = await async_project_update(str(project_id), auto_allow="ok")
+
+        assert result == {"allow": "ok"}
+        project = await registry.get_project(project_id)
+        assert json.loads(project["auto_mode_rules"]) == {"allow": "ok"}
+
+    async def test_no_auto_mode_kwargs_returns_none(self, registry, tmp_path):
+        """Calling with only jira_jql (no auto-mode args) returns None."""
+        project_id = await registry.add_project("jql-only", str(tmp_path))
+
+        mock_reg = AsyncMock()
+        mock_reg.__aenter__ = AsyncMock(return_value=registry)
+        mock_reg.__aexit__ = AsyncMock(return_value=False)
+        with patch("summon_claude.cli.project.SessionRegistry", return_value=mock_reg):
+            result = await async_project_update(str(project_id), jira_jql="project = FOO")
+
+        assert result is None
+        project = await registry.get_project(project_id)
+        assert project["jira_jql"] == "project = FOO"
+
+    async def test_project_not_found_raises_click_exception(self, registry):
+        """Unknown name_or_id raises click.ClickException."""
+        mock_reg = AsyncMock()
+        mock_reg.__aenter__ = AsyncMock(return_value=registry)
+        mock_reg.__aexit__ = AsyncMock(return_value=False)
+        with (
+            patch("summon_claude.cli.project.SessionRegistry", return_value=mock_reg),
+            pytest.raises(click.ClickException, match="No project found"),
+        ):
+            await async_project_update("no-such-project", auto_deny="x")
 
 
 class TestRegisterWithProjectId:

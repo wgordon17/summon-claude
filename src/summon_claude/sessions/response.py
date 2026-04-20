@@ -234,7 +234,7 @@ class ResponseStreamer:
         self._mcp_health = mcp_health
         self._bridge = bridge
         self._bridge_timeout_s = bridge_timeout_s
-        self.on_subagent_return = on_subagent_return
+        self._on_subagent_return = on_subagent_return
 
         # Cross-turn tracking of pending agent verifications (keyed by tool_use_id)
         self._pending_agent_verifications: dict[str, dict] = {}
@@ -345,9 +345,9 @@ class ResponseStreamer:
                     if message.tool_use_id in self._pending_agent_verifications:
                         if message.status == "completed":
                             agent_input = self._pending_agent_verifications.pop(message.tool_use_id)
-                            if self.on_subagent_return is not None:
+                            if self._on_subagent_return is not None:
                                 self._spawn_background(
-                                    self.on_subagent_return(agent_input, message.summary or "")
+                                    self._on_subagent_return(agent_input, message.summary or "")
                                 )
                         else:
                             self._pending_agent_verifications.pop(message.tool_use_id)

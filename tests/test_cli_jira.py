@@ -823,6 +823,66 @@ class TestProjectUpdateCLI:
         assert result.exit_code != 0
         assert "no project found" in result.output.lower()
 
+    def test_update_auto_allow_only(self):
+        """project update --auto-allow does NOT pass jira_jql."""
+        with patch(
+            "summon_claude.cli.async_project_update",
+            new_callable=AsyncMock,
+            return_value={"allow": "local edits ok"},
+        ) as mock_update:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                ["project", "update", "myproj", "--auto-allow", "local edits ok"],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_update.assert_called_once_with("myproj", auto_allow="local edits ok")
+        assert "Effective allow" in result.output
+
+    def test_update_auto_environment_only(self):
+        """project update --auto-environment does NOT pass jira_jql."""
+        with patch(
+            "summon_claude.cli.async_project_update",
+            new_callable=AsyncMock,
+            return_value={"environment": "staging"},
+        ) as mock_update:
+            runner = CliRunner()
+            result = runner.invoke(
+                cli,
+                ["project", "update", "myproj", "--auto-environment", "staging"],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_update.assert_called_once_with("myproj", auto_environment="staging")
+        assert "Effective environment" in result.output
+
+    def test_update_rejects_auto_deny_too_long(self):
+        """project update --auto-deny with >2000 chars is rejected."""
+        long_rule = "x" * 2001
+        runner = CliRunner()
+        result = runner.invoke(cli, ["project", "update", "myproj", "--auto-deny", long_rule])
+        assert result.exit_code != 0
+        assert "too long" in result.output.lower()
+
+    def test_update_rejects_auto_allow_too_long(self):
+        """project update --auto-allow with >2000 chars is rejected."""
+        long_rule = "x" * 2001
+        runner = CliRunner()
+        result = runner.invoke(cli, ["project", "update", "myproj", "--auto-allow", long_rule])
+        assert result.exit_code != 0
+        assert "too long" in result.output.lower()
+
+    def test_update_rejects_auto_environment_too_long(self):
+        """project update --auto-environment with >2000 chars is rejected."""
+        long_rule = "x" * 2001
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["project", "update", "myproj", "--auto-environment", long_rule]
+        )
+        assert result.exit_code != 0
+        assert "too long" in result.output.lower()
+
 
 # ---------------------------------------------------------------------------
 # project list — JQL display

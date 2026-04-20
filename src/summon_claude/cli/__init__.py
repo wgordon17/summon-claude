@@ -404,6 +404,7 @@ def session_cleanup(ctx: click.Context, archive: bool) -> None:
 
 
 _MAX_JQL_LEN = 500
+_MAX_AUTO_RULE_LEN = 2000
 
 
 @cli.group("project")
@@ -593,6 +594,12 @@ def project_update(
         raise click.UsageError("No fields to update.")
     if jql and len(jql) > _MAX_JQL_LEN:
         raise click.BadParameter(f"JQL filter too long (max {_MAX_JQL_LEN} chars)")
+    if auto_deny and len(auto_deny) > _MAX_AUTO_RULE_LEN:
+        raise click.BadParameter(f"--auto-deny too long (max {_MAX_AUTO_RULE_LEN} chars)")
+    if auto_allow and len(auto_allow) > _MAX_AUTO_RULE_LEN:
+        raise click.BadParameter(f"--auto-allow too long (max {_MAX_AUTO_RULE_LEN} chars)")
+    if auto_environment and len(auto_environment) > _MAX_AUTO_RULE_LEN:
+        raise click.BadParameter(f"--auto-environment too long (max {_MAX_AUTO_RULE_LEN} chars)")
     update_kwargs: dict = {}
     if jql is not None:
         update_kwargs["jira_jql"] = jql or None

@@ -276,6 +276,103 @@ class TestResponseStreamerSubagentThreads:
         # Should have posted to subagent thread
         provider.post.assert_called()
 
+    async def test_task_tool_use_populates_pending_agent_verifications(self):
+        """Task ToolUseBlock adds input to _pending_agent_verifications."""
+        streamer, router, provider = make_streamer()
+        task_input = {"description": "Analyze security", "prompt": "Find issues"}
+        task_block = make_tool_use_block("Task", task_input, tool_use_id="tu_task_1")
+        msg = make_assistant_message([task_block])
+        await streamer._handle_assistant_message(msg)
+
+        assert "tu_task_1" in streamer._pending_agent_verifications
+        assert streamer._pending_agent_verifications["tu_task_1"] == task_input
+
+    async def test_task_notification_completed_triggers_callback(self):
+        """Completed TaskNotificationMessage pops entry and fires on_subagent_return."""
+        from claude_agent_sdk import TaskNotificationMessage
+
+        callback = AsyncMock()
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        streamer = ResponseStreamer(router, on_subagent_return=callback)
+
+        task_input = {"prompt": "Find security issues"}
+        streamer._pending_agent_verifications["tu_task_1"] = task_input
+
+        notif = TaskNotificationMessage(
+            subtype="task_notification",
+            data={},
+            task_id="task-abc",
+            status="completed",
+            output_file="",
+            summary="All done",
+            uuid="uuid-1",
+            session_id="sess-1",
+            tool_use_id="tu_task_1",
+        )
+        messages = [notif, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+        await asyncio.sleep(0.05)
+
+        assert "tu_task_1" not in streamer._pending_agent_verifications
+        callback.assert_called_once_with(task_input, "All done")
+
+    async def test_task_notification_non_completed_pops_without_callback(self):
+        """Failed TaskNotificationMessage pops entry but does NOT fire callback."""
+        from claude_agent_sdk import TaskNotificationMessage
+
+        callback = AsyncMock()
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        streamer = ResponseStreamer(router, on_subagent_return=callback)
+
+        streamer._pending_agent_verifications["tu_task_2"] = {"prompt": "Do something"}
+
+        notif = TaskNotificationMessage(
+            subtype="task_notification",
+            data={},
+            task_id="task-def",
+            status="failed",
+            output_file="",
+            summary="",
+            uuid="uuid-2",
+            session_id="sess-1",
+            tool_use_id="tu_task_2",
+        )
+        messages = [notif, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+        await asyncio.sleep(0.05)
+
+        assert "tu_task_2" not in streamer._pending_agent_verifications
+        callback.assert_not_called()
+
+    async def test_task_notification_unknown_tool_use_id_ignored(self):
+        """TaskNotificationMessage with unknown tool_use_id is silently ignored."""
+        from claude_agent_sdk import TaskNotificationMessage
+
+        callback = AsyncMock()
+        client = make_mock_slack_client()
+        router = ThreadRouter(client)
+        streamer = ResponseStreamer(router, on_subagent_return=callback)
+
+        notif = TaskNotificationMessage(
+            subtype="task_notification",
+            data={},
+            task_id="task-xyz",
+            status="completed",
+            output_file="",
+            summary="summary text",
+            uuid="uuid-3",
+            session_id="sess-1",
+            tool_use_id="tu_unknown",
+        )
+        messages = [notif, make_result_message()]
+        await streamer.stream_with_flush(agen(messages))
+        await asyncio.sleep(0.05)
+
+        callback.assert_not_called()
+        assert streamer._pending_agent_verifications == {}
+
 
 class TestFormatToolSummary:
     def test_bash_shows_command(self):
