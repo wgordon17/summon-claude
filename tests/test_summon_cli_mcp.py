@@ -190,6 +190,18 @@ class TestSessionStart:
         result = await tools["session_start"].handler({"name": "a" * 21})
         assert result["is_error"] is True
 
+    async def test_pm_name_rejected(self, tools):
+        """Names matching PM pattern are rejected to prevent privilege escalation."""
+        result = await tools["session_start"].handler({"name": "pm-fix"})
+        assert result["is_error"] is True
+        assert "PM naming pattern" in result["content"][0]["text"]
+
+    async def test_pm_substring_name_rejected(self, tools):
+        """Names containing -pm- substring are rejected."""
+        result = await tools["session_start"].handler({"name": "fix-pm-bug"})
+        assert result["is_error"] is True
+        assert "PM naming pattern" in result["content"][0]["text"]
+
     async def test_invalid_cwd(self, tools):
         result = await tools["session_start"].handler(
             {"name": "test-session", "cwd": "/nonexistent/path/12345"}

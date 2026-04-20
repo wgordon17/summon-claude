@@ -225,6 +225,27 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 "is_error": True,
             }
 
+        # Reject names that would be misclassified as PM sessions on resume.
+        # is_pm_session_name() matches "-pm-" substring or "pm-" prefix —
+        # allowing these as child names causes privilege escalation after
+        # suspend/resume (_restart_suspended_sessions infers pm_profile from name).
+        from summon_claude.sessions.session import is_pm_session_name  # noqa: PLC0415
+
+        if is_pm_session_name(name):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Error: session name must not match PM naming pattern "
+                            "(avoid 'pm-' prefix and '-pm-' substring). "
+                            "Use a task description like 'fix-auth' or 'add-search'."
+                        ),
+                    }
+                ],
+                "is_error": True,
+            }
+
         system_prompt_val = args.get("system_prompt")
         if system_prompt_val and len(system_prompt_val) > MAX_PROMPT_CHARS:
             return {
