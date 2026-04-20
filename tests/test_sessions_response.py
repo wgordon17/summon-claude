@@ -2271,3 +2271,82 @@ class TestPendingFileChangeLifecycle:
             _, _, _, thread_ts_arg = mock_upload_diff.call_args.args
             assert thread_ts_arg == subagent_ts
             assert thread_ts_arg != "active_ts"
+
+
+# ---------------------------------------------------------------------------
+# comp-5: _build_turn_header_blocks (overflow menu accessory)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTurnHeaderBlocks:
+    """Tests for the _build_turn_header_blocks helper — comp-5 overflow menus."""
+
+    def test_returns_single_section_block(self):
+        """_build_turn_header_blocks returns exactly one block of type section."""
+        from summon_claude.sessions.response import _build_turn_header_blocks
+
+        blocks = _build_turn_header_blocks("Turn 1: Processing...")
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "section"
+
+    def test_section_contains_text(self):
+        """The section block includes the provided header text."""
+        from summon_claude.sessions.response import _build_turn_header_blocks
+
+        blocks = _build_turn_header_blocks("Turn 42: some work")
+        text_field = blocks[0]["text"]
+        assert text_field["type"] == "mrkdwn"
+        assert "Turn 42: some work" in text_field["text"]
+
+    def test_accessory_is_overflow(self):
+        """The section block has an overflow accessory."""
+        from summon_claude.sessions.response import _build_turn_header_blocks
+
+        blocks = _build_turn_header_blocks("header")
+        accessory = blocks[0]["accessory"]
+        assert accessory["type"] == "overflow"
+        assert accessory["action_id"] == "turn_overflow"
+
+    def test_overflow_has_three_options(self):
+        """The overflow menu has exactly 3 options."""
+        from summon_claude.sessions.response import _build_turn_header_blocks
+
+        blocks = _build_turn_header_blocks("header")
+        options = blocks[0]["accessory"]["options"]
+        assert len(options) == 3
+
+    def test_overflow_option_values(self):
+        """The overflow options have the expected value strings."""
+        from summon_claude.sessions.response import _build_turn_header_blocks
+
+        blocks = _build_turn_header_blocks("header")
+        values = {opt["value"] for opt in blocks[0]["accessory"]["options"]}
+        assert values == {"turn_stop", "turn_copy_sid", "turn_view_cost"}
+
+    async def test_start_turn_posts_blocks_with_overflow(self):
+        """start_turn posts Block Kit with an overflow accessory."""
+        streamer, router, client = make_streamer()
+        client.post = AsyncMock(return_value=MagicMock(channel_id="C123", ts="111.0"))
+
+        await streamer.start_turn(turn_number=1)
+
+        client.post.assert_awaited_once()
+        call_kwargs = client.post.call_args.kwargs
+        blocks = call_kwargs.get("blocks")
+        assert blocks is not None, "Expected blocks kwarg in post call"
+        assert len(blocks) == 1
+        assert blocks[0]["accessory"]["type"] == "overflow"
+
+    async def test_update_turn_summary_posts_blocks_with_overflow(self):
+        """update_turn_summary preserves overflow accessory in update call."""
+        streamer, router, client = make_streamer()
+        client.post = AsyncMock(return_value=MagicMock(channel_id="C123", ts="111.0"))
+        await streamer.start_turn(turn_number=1)
+
+        await streamer.update_turn_summary("3 tool calls")
+
+        client.update.assert_awaited_once()
+        update_kwargs = client.update.call_args.kwargs
+        blocks = update_kwargs.get("blocks")
+        assert blocks is not None, "Expected blocks kwarg in update call"
+        assert blocks[0]["accessory"]["type"] == "overflow"

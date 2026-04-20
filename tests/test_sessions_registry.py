@@ -2115,3 +2115,56 @@ class TestChildChannelMethods:
         )
         channels = await registry.get_all_active_channels("U_OWNER")
         assert "C_SUSP_GAA" not in channels
+
+
+# ---------------------------------------------------------------------------
+# comp-7: list_active_by_user
+# ---------------------------------------------------------------------------
+
+
+class TestListActiveByUser:
+    async def test_returns_only_sessions_for_given_user(self, registry):
+        pid = os.getpid()
+        # Two sessions for U_ALICE, one for U_BOB
+        await registry.register("sess-alice-1", pid, "/tmp")
+        await registry.update_status("sess-alice-1", "active", authenticated_user_id="U_ALICE")
+        await registry.register("sess-alice-2", pid, "/tmp")
+        await registry.update_status("sess-alice-2", "active", authenticated_user_id="U_ALICE")
+        await registry.register("sess-bob-1", pid, "/tmp")
+        await registry.update_status("sess-bob-1", "active", authenticated_user_id="U_BOB")
+
+        alice_sessions = await registry.list_active_by_user("U_ALICE")
+        session_ids = {s["session_id"] for s in alice_sessions}
+        assert "sess-alice-1" in session_ids
+        assert "sess-alice-2" in session_ids
+        assert "sess-bob-1" not in session_ids
+
+    async def test_excludes_completed_sessions(self, registry):
+        pid = os.getpid()
+        await registry.register("sess-done", pid, "/tmp")
+        await registry.update_status("sess-done", "active", authenticated_user_id="U_ALICE")
+        await registry.update_status("sess-done", "completed")
+
+        await registry.register("sess-live", pid, "/tmp")
+        await registry.update_status("sess-live", "active", authenticated_user_id="U_ALICE")
+
+        results = await registry.list_active_by_user("U_ALICE")
+        ids = {s["session_id"] for s in results}
+        assert "sess-done" not in ids
+        assert "sess-live" in ids
+
+    async def test_returns_empty_for_unknown_user(self, registry):
+        results = await registry.list_active_by_user("U_NOBODY")
+        assert results == []
+
+    async def test_includes_pending_auth_sessions(self, registry):
+        """pending_auth sessions are included (active + pending_auth)."""
+        pid = os.getpid()
+        await registry.register("sess-pending", pid, "/tmp")
+        await registry.update_status(
+            "sess-pending", "pending_auth", authenticated_user_id="U_ALICE"
+        )
+
+        results = await registry.list_active_by_user("U_ALICE")
+        ids = {s["session_id"] for s in results}
+        assert "sess-pending" in ids

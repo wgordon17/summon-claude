@@ -17,7 +17,7 @@ import queue
 import re
 import secrets
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -549,6 +549,7 @@ class _PendingTurn:
     clear: bool = False  # If True, consumer runs _execute_clear instead of normal turn
     clear_done: asyncio.Event | None = None  # Signalled when clear completes
     clear_ok: list[bool] | None = None  # Mutable [bool] container — set by _execute_clear
+    content_blocks: tuple[dict, ...] | None = None
 
 
 class _SessionRestartError(Exception):
@@ -1375,6 +1376,7 @@ class SummonSession:
                 permission_handler=permission_handler,
                 abort_callback=self._abort_current_turn,
                 authenticated_user_id=self._authenticated_user_id,
+                pending_turns=self._pending_turns,
             )
             self._dispatcher.register(channel_id, handle)
 
@@ -2633,7 +2635,20 @@ class SummonSession:
             await streamer.start_turn(self._total_turns, user_snippet=pending.message)
             # If preprocessor couldn't pre-send, call query() now
             if not pending.pre_sent:
-                await claude.query(pending.message)
+                if pending.content_blocks:
+                    # Multimodal content: send via AsyncIterable message envelope
+                    async def _multimodal_iter() -> AsyncIterator[dict]:  # type: ignore[type-arg]
+                        yield {
+                            "type": "user",
+                            "message": {
+                                "role": "user",
+                                "content": list(pending.content_blocks),
+                            },
+                        }
+
+                    await claude.query(_multimodal_iter())
+                else:
+                    await claude.query(pending.message)
             stream_result = await streamer.stream_with_flush(claude.receive_response())
             if stream_result:
                 await self._finalize_turn_result(rt, streamer, stream_result)
@@ -4285,11 +4300,6 @@ class SummonSession:
                 full_text = f"{text}\n\n{file_context}"
 
         thread_ts: str | None = event.get("ts")
-
-        # 6: Route to permission handler's pending free-text input if waiting
-        if rt.permission_handler.has_pending_text_input():
-            await rt.permission_handler.receive_text_input(text, user_id=user_id)
-            return None
 
         # 7: Detect !cmd commands anywhere in the message
         # Fast path: skip regex scan if no command prefix present

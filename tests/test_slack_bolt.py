@@ -38,6 +38,9 @@ def _make_router(config: SummonConfig | None = None, dispatcher=None):
         dispatcher.dispatch_reaction = AsyncMock()
         dispatcher.dispatch_action = AsyncMock()
         dispatcher.dispatch_command = AsyncMock()
+        dispatcher.dispatch_view_submission = AsyncMock()
+        dispatcher.dispatch_app_home = AsyncMock()
+        dispatcher.dispatch_file_shared = AsyncMock()
         dispatcher.all_channel_ids = MagicMock(return_value=[])
 
     stack = ExitStack()
@@ -387,6 +390,76 @@ class TestMessageRouting:
         event = {"type": "reaction_added", "item": {"channel": "C001"}}
         await handler(event=event)
         router._mock_dispatcher.dispatch_reaction.assert_awaited_once_with(event)
+
+
+class TestViewSubmissionHandler:
+    """Tests for BoltRouter._on_view_submission."""
+
+    def _extract_view_handler(self, router):
+        """Capture the handler registered via app.view(...)."""
+        captured: dict = {}
+
+        class _CaptureView:
+            def __call__(self, callback_id_pattern):
+                def decorator(fn):
+                    captured["fn"] = fn
+                    return fn
+
+                return decorator
+
+        mock_a = MagicMock()
+        mock_a.command = MagicMock(return_value=lambda f: f)
+        mock_a.event = MagicMock(return_value=lambda f: f)
+        mock_a.action = MagicMock(return_value=lambda f: f)
+        mock_a.view = _CaptureView()
+        router._register_handlers(mock_a)
+        return captured.get("fn")
+
+    async def test_view_submission_calls_ack(self):
+        """_on_view_submission acks immediately."""
+        dispatcher = MagicMock()
+        dispatcher.dispatch_message = AsyncMock()
+        dispatcher.dispatch_reaction = AsyncMock()
+        dispatcher.dispatch_action = AsyncMock()
+        dispatcher.dispatch_command = AsyncMock()
+        dispatcher.dispatch_view_submission = AsyncMock()
+        dispatcher.all_channel_ids = MagicMock(return_value=[])
+        router = _make_router(dispatcher=dispatcher)
+        handler = self._extract_view_handler(router)
+        assert handler is not None
+
+        ack = AsyncMock()
+        view = {"private_metadata": '{"channel_id":"C001"}', "state": {}}
+        body = {"user": {"id": "U001"}}
+        await handler(ack=ack, view=view, body=body)
+        ack.assert_awaited_once()
+
+    async def test_view_submission_calls_dispatch_view_submission(self):
+        """_on_view_submission calls dispatcher.dispatch_view_submission after ack."""
+        dispatcher = MagicMock()
+        dispatcher.dispatch_message = AsyncMock()
+        dispatcher.dispatch_reaction = AsyncMock()
+        dispatcher.dispatch_action = AsyncMock()
+        dispatcher.dispatch_command = AsyncMock()
+        dispatcher.dispatch_view_submission = AsyncMock()
+        dispatcher.all_channel_ids = MagicMock(return_value=[])
+        router = _make_router(dispatcher=dispatcher)
+        handler = self._extract_view_handler(router)
+
+        ack = AsyncMock()
+        view = {"private_metadata": '{"channel_id":"C001"}', "state": {}}
+        body = {"user": {"id": "U001"}}
+        await handler(ack=ack, view=view, body=body)
+
+        dispatcher.dispatch_view_submission.assert_awaited_once_with(view, body)
+
+    async def test_view_handler_registered_on_start(self):
+        """BoltRouter registers app.view handler for ask_user_other at start."""
+        router = _make_router()
+        await router.start()
+        app = router._app
+        assert app is not None
+        app.view.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -878,3 +951,111 @@ class TestSigAlrmWatchdog:
         with patch("summon_claude.daemon.signal") as mock_signal:
             del mock_signal.SIGALRM
             _start_sigalrm_watchdog()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# comp-5: BoltRouter registers app.action("turn_overflow")
+# ---------------------------------------------------------------------------
+
+
+class TestTurnOverflowRegistration:
+    """Verify that turn_overflow action is registered at router start."""
+
+    async def test_turn_overflow_action_registered(self):
+        """BoltRouter registers app.action('turn_overflow') at start."""
+        router = _make_router()
+        await router.start()
+        app = router._app
+        assert app is not None
+        # Collect all action() call args
+        action_ids = [call.args[0] for call in app.action.call_args_list]
+        assert "turn_overflow" in action_ids, (
+            f"turn_overflow not registered. Registered actions: {action_ids}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# comp-7 + comp-8: BoltRouter handler registration
+# ---------------------------------------------------------------------------
+
+
+class TestAppHomeAndFileSharedRegistration:
+    """Verify app_home_opened and file_shared event handlers are registered."""
+
+    def _collect_registered_events(self, router) -> list[str]:
+        """Extract all event type strings registered via app.event(...)."""
+        registered = []
+
+        def capture_event(ev_type):
+            registered.append(ev_type)
+            return lambda f: f
+
+        mock_a = MagicMock()
+        mock_a.command = MagicMock(return_value=lambda f: f)
+        mock_a.event = capture_event
+        mock_a.action = MagicMock(return_value=lambda f: f)
+        mock_a.view = MagicMock(return_value=lambda f: f)
+        router._register_handlers(mock_a)
+        return registered
+
+    async def test_app_home_opened_event_registered(self):
+        """BoltRouter registers app.event('app_home_opened') handler."""
+        router = _make_router()
+        events = self._collect_registered_events(router)
+        assert "app_home_opened" in events, f"app_home_opened not registered. Registered: {events}"
+
+    async def test_file_shared_event_registered(self):
+        """BoltRouter registers app.event('file_shared') handler."""
+        router = _make_router()
+        events = self._collect_registered_events(router)
+        assert "file_shared" in events, f"file_shared not registered. Registered: {events}"
+
+    async def test_app_home_handler_calls_dispatcher(self):
+        """_on_app_home_opened calls dispatcher.dispatch_app_home with user_id."""
+        router = _make_router()
+        captured: dict = {}
+
+        def capture_event(ev_type):
+            def decorator(fn):
+                captured[ev_type] = fn
+                return fn
+
+            return decorator
+
+        mock_a = MagicMock()
+        mock_a.command = MagicMock(return_value=lambda f: f)
+        mock_a.event = capture_event
+        mock_a.action = MagicMock(return_value=lambda f: f)
+        mock_a.view = MagicMock(return_value=lambda f: f)
+        router._register_handlers(mock_a)
+
+        handler = captured.get("app_home_opened")
+        assert handler is not None
+        event = {"user": "U_ALICE"}
+        await handler(event=event)
+        router._mock_dispatcher.dispatch_app_home.assert_awaited_once_with("U_ALICE")
+
+    async def test_file_shared_handler_calls_dispatcher(self):
+        """_on_file_shared calls dispatcher.dispatch_file_shared with event."""
+        router = _make_router()
+        captured: dict = {}
+
+        def capture_event(ev_type):
+            def decorator(fn):
+                captured[ev_type] = fn
+                return fn
+
+            return decorator
+
+        mock_a = MagicMock()
+        mock_a.command = MagicMock(return_value=lambda f: f)
+        mock_a.event = capture_event
+        mock_a.action = MagicMock(return_value=lambda f: f)
+        mock_a.view = MagicMock(return_value=lambda f: f)
+        router._register_handlers(mock_a)
+
+        handler = captured.get("file_shared")
+        assert handler is not None
+        event = {"file_id": "F001", "user_id": "U001", "channel_id": "C001"}
+        await handler(event=event)
+        router._mock_dispatcher.dispatch_file_shared.assert_awaited_once_with(event)

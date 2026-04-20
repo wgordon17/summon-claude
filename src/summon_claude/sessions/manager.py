@@ -44,6 +44,7 @@ from summon_claude.sessions.prompts import format_pm_topic
 from summon_claude.sessions.registry import MAX_SPAWN_CHILDREN_PM, SessionRegistry
 from summon_claude.sessions.session import SessionOptions, SummonSession
 from summon_claude.slack.client import redact_secrets, sanitize_for_slack
+from summon_claude.slack.formatting import build_home_view
 from summon_claude.summon_cli_mcp import MAX_PROMPT_CHARS
 
 if TYPE_CHECKING:
@@ -489,6 +490,25 @@ class SessionManager:
             text=":rocket: Authenticated! Creating your session channel...",
             response_type="ephemeral",
         )
+
+    async def handle_app_home(self, user_id: str) -> None:
+        """Publish the App Home dashboard for a user.
+
+        Queries active sessions scoped to user_id (SQL-level scoping),
+        builds the home view, and publishes via views.publish.
+        """
+        try:
+            async with SessionRegistry() as registry:
+                sessions = await registry.list_active_by_user(user_id)
+        except Exception:
+            logger.exception("SessionManager: registry query failed for app_home user %s", user_id)
+            sessions = []
+
+        home_view = build_home_view(sessions)
+        try:
+            await self._web_client.views_publish(user_id=user_id, view=home_view)
+        except Exception as e:
+            logger.warning("SessionManager: views_publish failed for user %s: %s", user_id, e)
 
     # ------------------------------------------------------------------
     # Unix socket control API

@@ -746,6 +746,7 @@ class TestEventDispatcherRouting:
             permission_handler=MagicMock(spec=PermissionHandler),
             abort_callback=lambda: None,
             authenticated_user_id="U_TEST",
+            pending_turns=asyncio.Queue(),
         )
         dispatcher.register(cid, handle)
 
@@ -779,6 +780,7 @@ class TestEventDispatcherRouting:
             permission_handler=MagicMock(spec=PermissionHandler),
             abort_callback=lambda: None,
             authenticated_user_id="U_TEST",
+            pending_turns=asyncio.Queue(),
         )
         dispatcher.register(cid, handle)
 
@@ -869,6 +871,7 @@ class TestEventDispatcherRouting:
             permission_handler=MagicMock(spec=PermissionHandler),
             abort_callback=abort,
             authenticated_user_id="U_OWNER",
+            pending_turns=asyncio.Queue(),
         )
         dispatcher.register(cid, handle)
 
@@ -902,6 +905,7 @@ class TestEventDispatcherRouting:
             permission_handler=MagicMock(spec=PermissionHandler),
             abort_callback=abort,
             authenticated_user_id="U_OWNER",
+            pending_turns=asyncio.Queue(),
         )
         dispatcher.register(cid, handle)
 
@@ -933,6 +937,7 @@ class TestEventDispatcherRouting:
             permission_handler=mock_handler,
             abort_callback=lambda: None,
             authenticated_user_id="U_OWNER",
+            pending_turns=asyncio.Queue(),
         )
         dispatcher.register(cid, handle)
 
@@ -969,6 +974,7 @@ class TestEventDispatcherRouting:
             permission_handler=mock_handler,
             abort_callback=lambda: None,
             authenticated_user_id="U_OWNER",
+            pending_turns=asyncio.Queue(),
         )
         dispatcher.register(cid, handle)
 
@@ -983,6 +989,7 @@ class TestEventDispatcherRouting:
         mock_handler.handle_ask_user_action.assert_awaited_once_with(
             value="Yes",
             user_id="U_OWNER",
+            trigger_id=None,
         )
 
     async def test_dispatch_action_unregistered_channel_ignored(self):

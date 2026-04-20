@@ -1266,21 +1266,6 @@ class TestProcessIncomingEvent:
         assert "report.pdf" in text
         assert "See attached" in text
 
-    async def test_pending_text_input_consumed(self):
-        """When permission handler is waiting for free-text, message is consumed."""
-        session = self._make_session()
-
-        mock_ph = AsyncMock()
-        mock_ph.has_pending_text_input = MagicMock(return_value=True)
-        mock_ph.receive_text_input = AsyncMock()
-        rt = self._make_rt(permission_handler=mock_ph)
-
-        event = {"user": "U001", "text": "My free-text answer", "ts": "1"}
-        result = await session._process_incoming_event(event, rt)
-
-        assert result is None
-        mock_ph.receive_text_input.assert_awaited_once_with("My free-text answer", user_id="U001")
-
     async def test_command_prefix_dispatched(self):
         """Messages with ! prefix are dispatched as commands and return None."""
         session = self._make_session()

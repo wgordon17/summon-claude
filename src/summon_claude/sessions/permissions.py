@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import logging
 import os
 import uuid
@@ -380,8 +381,6 @@ class _AskUserState:
     questions: dict[str, list[dict]] = field(default_factory=dict)
     answers: dict[str, dict[str, str]] = field(default_factory=dict)
     expected: dict[str, int] = field(default_factory=dict)
-    # For "Other" free-text input: (request_id, question_index)
-    pending_other: tuple[str, int] | None = None
     # For multi-select: toggled selections per question keyed by (request_id, question_idx)
     multi_selections: dict[tuple[str, int], list[str]] = field(default_factory=dict)
     # ts of the interactive question message (for deletion on completion)
@@ -1331,6 +1330,7 @@ class PermissionHandler:
         self,
         value: str,
         user_id: str,
+        trigger_id: str | None = None,
     ) -> None:
         """Handle a Slack button click for an AskUserQuestion option.
 
@@ -1360,20 +1360,171 @@ class PermissionHandler:
         question = questions[q_idx]
 
         if opt_val == "other":
-            await self._handle_ask_other(request_id, q_idx, question)
+            await self._handle_ask_other(request_id, q_idx, question, trigger_id=trigger_id)
         elif opt_val == "done":
             await self._handle_ask_done(request_id, q_idx, question)
         else:
             await self._handle_ask_option(request_id, q_idx, question, opt_val)
 
-    async def _handle_ask_other(self, request_id: str, q_idx: int, question: dict) -> None:
-        """Handle 'Other' button — set pending flag for free-text capture."""
-        self._ask_user.pending_other = (request_id, q_idx)
-        q_text = sanitize_for_mrkdwn(question.get("question", ""))
+    async def handle_ask_user_multiselect_action(
+        self,
+        action_id: str,
+        selected_values: list[str],
+        user_id: str,
+    ) -> None:
+        """Handle a multi_static_select change event.
+
+        Slack sends the FULL current selection list on every change (not deltas).
+        This replaces the multi_selections state for the question with the current list.
+        The user still needs to click Done to finalise.
+        """
+        if user_id != self._authenticated_user_id:
+            logger.warning(
+                "Multiselect action from unauthorized user %s (expected %s)",
+                user_id,
+                self._authenticated_user_id,
+            )
+            return
+
+        # Extract q_idx from action_id (format: ask_user_{q_idx}_multiselect)
+        parts = action_id.split("_")
+        # action_id = "ask_user_{i}_multiselect" → parts = ["ask", "user", "{i}", "multiselect"]
+        try:
+            q_idx = int(parts[2])
+        except (IndexError, ValueError):
+            logger.warning("handle_ask_user_multiselect_action: bad action_id %r", action_id)
+            return
+
+        request_id, labels = self._resolve_multiselect_labels(selected_values, q_idx)
+
+        if request_id is None:
+            # Empty selection — clear state (user deselected everything)
+            for rid in list(self._ask_user.events.keys()):
+                self._ask_user.multi_selections[(rid, q_idx)] = []
+            return
+
+        if request_id not in self._ask_user.events:
+            return
+
+        # Replace the multi_selections state with the current full selection
+        self._ask_user.multi_selections[(request_id, q_idx)] = labels
+
+    def _resolve_multiselect_labels(
+        self, selected_values: list[str], q_idx: int
+    ) -> tuple[str | None, list[str]]:
+        """Resolve selected option values to labels for a multi_static_select.
+
+        Returns (request_id, labels). request_id is None when selected_values is empty
+        or all values are invalid.
+        """
+        request_id: str | None = None
+        labels: list[str] = []
+        for val in selected_values:
+            parsed = _parse_ask_user_value(val)
+            if parsed is None:
+                continue
+            rid, vid_q_idx, opt_val = parsed
+            if vid_q_idx != q_idx:
+                continue
+            if request_id is None:
+                request_id = rid
+            elif request_id != rid:
+                logger.warning("handle_ask_user_multiselect_action: mismatched request_ids")
+                continue
+            questions = self._ask_user.questions.get(rid, [])
+            if q_idx >= len(questions):
+                continue
+            options = questions[q_idx].get("options", [])
+            try:
+                opt_idx = int(opt_val)
+            except ValueError:
+                continue
+            if opt_idx < len(options):
+                labels.append(options[opt_idx].get("label", ""))
+        return request_id, labels
+
+    async def _handle_ask_other(
+        self,
+        request_id: str,
+        q_idx: int,
+        question: dict,
+        *,
+        trigger_id: str | None = None,
+    ) -> None:
+        """Handle 'Other' button — open a Slack modal for free-text input."""
+        if not trigger_id:
+            logger.warning("_handle_ask_other: no trigger_id, cannot open modal")
+            return
+
+        q_text = question.get("question", "Custom Answer")
+        channel_id = self._router.client.channel_id
+        private_metadata = json.dumps(
+            {"channel_id": channel_id, "request_id": request_id, "q_idx": q_idx}
+        )
+        view = {
+            "type": "modal",
+            "callback_id": "ask_user_other",
+            "private_metadata": private_metadata,
+            "title": {"type": "plain_text", "text": "Custom Answer"},
+            "submit": {"type": "plain_text", "text": "Submit"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {
+                    "type": "input",
+                    "block_id": "other_input",
+                    "label": {
+                        "type": "plain_text",
+                        "text": sanitize_for_mrkdwn(q_text, max_len=150),
+                    },
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "other_value",
+                        "multiline": True,
+                        "placeholder": {"type": "plain_text", "text": "Type your answer..."},
+                    },
+                }
+            ],
+        }
+        await self._router.client.views_open(trigger_id, view)
+
+    async def handle_ask_user_view_submission(self, view: dict, user_id: str) -> None:
+        """Handle modal submission for an 'Other' free-text answer.
+
+        Called by EventDispatcher after verifying user_id == authenticated_user_id.
+        Extracts the answer from the view state and completes the question.
+        """
+        try:
+            meta = json.loads(view.get("private_metadata", "{}"))
+            request_id: str = meta["request_id"]
+            q_idx: int = int(meta["q_idx"])
+        except (KeyError, ValueError, json.JSONDecodeError):
+            logger.warning("handle_ask_user_view_submission: malformed private_metadata")
+            return
+
+        if request_id not in self._ask_user.events:
+            return
+
+        questions = self._ask_user.questions.get(request_id, [])
+        if q_idx >= len(questions):
+            return
+
+        # Extract answer from view state
+        try:
+            text: str = view["state"]["values"]["other_input"]["other_value"]["value"] or ""
+        except (KeyError, TypeError):
+            logger.warning("handle_ask_user_view_submission: could not extract answer from state")
+            return
+
+        question = questions[q_idx]
+        question_text = question.get("question", "")
+        header = sanitize_for_mrkdwn(question.get("header", ""))
+
+        self._ask_user.answers[request_id][question_text] = text
         await _post_quietly(
             self._router,
-            f":pencil: Type your answer for: _{q_text}_",
+            f":white_check_mark: *{header}*: {sanitize_for_mrkdwn(text)}",
         )
+        await self._check_ask_user_complete(request_id)
 
     async def _handle_ask_done(self, request_id: str, q_idx: int, question: dict) -> None:
         """Handle 'Done' button for multi-select — finalize toggled selections."""
@@ -1436,49 +1587,6 @@ class PermissionHandler:
                 f":heavy_plus_sign: *{header}*: selected _{safe_label}_",
             )
 
-    def has_pending_text_input(self) -> bool:
-        """Return True if we're waiting for free-text input from the user (Other)."""
-        return self._ask_user.pending_other is not None
-
-    async def receive_text_input(self, text: str, *, user_id: str) -> None:
-        """Receive free-text input from the user for an 'Other' answer.
-
-        Args:
-            text: The free-text answer.
-            user_id: Slack user ID of the sender. Verified against session owner.
-                     Required — callers must always provide identity context.
-        """
-        if not self._ask_user.pending_other:
-            return
-
-        if user_id != self._authenticated_user_id:
-            logger.warning(
-                "Free-text input from unauthorized user %s (expected %s)",
-                user_id,
-                self._authenticated_user_id,
-            )
-            return
-
-        request_id, q_idx = self._ask_user.pending_other
-        self._ask_user.pending_other = None
-
-        questions = self._ask_user.questions.get(request_id, [])
-        if q_idx >= len(questions):
-            return
-
-        question = questions[q_idx]
-        question_text = question.get("question", "")
-        header = question.get("header", "")
-
-        self._ask_user.answers[request_id][question_text] = text
-        safe_header = sanitize_for_mrkdwn(header)
-        await _post_quietly(
-            self._router,
-            f":white_check_mark: *{safe_header}*: {sanitize_for_mrkdwn(text)}",
-        )
-
-        await self._check_ask_user_complete(request_id)
-
     async def _check_ask_user_complete(self, request_id: str) -> None:
         """If all questions for a request are answered, delete message and signal."""
         answers = self._ask_user.answers.get(request_id, {})
@@ -1488,6 +1596,17 @@ class PermissionHandler:
             msg_ts = self._ask_user.message_ts.get(request_id)
             if msg_ts:
                 await self._router.client.delete_message(msg_ts)
+
+            # Post a persistent summary of all answers to the turn thread
+            questions = self._ask_user.questions.get(request_id, [])
+            lines = [":white_check_mark: *Questions answered:*"]
+            for q in questions:
+                q_text = q.get("question", "")
+                header = sanitize_for_mrkdwn(q.get("header", q_text))
+                answer = sanitize_for_mrkdwn(answers.get(q_text, ""))
+                lines.append(f"\u2022 *{header}*: {answer}")
+            await _post_quietly(self._router, "\n".join(lines))
+
             event = self._ask_user.events.get(request_id)
             if event:
                 event.set()
@@ -1499,8 +1618,6 @@ class PermissionHandler:
         self._ask_user.answers.pop(request_id, None)
         self._ask_user.expected.pop(request_id, None)
         self._ask_user.message_ts.pop(request_id, None)
-        if self._ask_user.pending_other and self._ask_user.pending_other[0] == request_id:
-            self._ask_user.pending_other = None
         # Clean up multi-select state for all questions in this request
         for i in range(len(questions)):
             self._ask_user.multi_selections.pop((request_id, i), None)
@@ -1629,48 +1746,110 @@ def _build_ask_user_blocks(request_id: str, questions: list[dict]) -> list[dict]
                 }
             )
 
-        # Option buttons
-        elements = []
-        for j, opt in enumerate(options):
-            label = opt.get("label", f"Option {j + 1}")
-            elements.append(
+        other_button = {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "Other"},
+            "action_id": f"ask_user_{i}_other",
+            "value": f"{request_id}|{i}|other",
+        }
+
+        if len(options) <= 4:
+            # Button layout (unchanged behaviour for small option sets)
+            elements = []
+            for j, opt in enumerate(options):
+                label = opt.get("label", f"Option {j + 1}")
+                elements.append(
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": label[:75]},
+                        "action_id": f"ask_user_{i}_{j}",
+                        "value": f"{request_id}|{i}|{j}",
+                    }
+                )
+            elements.append(other_button)
+            if multi_select:
+                elements.append(
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Done"},
+                        "style": "primary",
+                        "action_id": f"ask_user_{i}_done",
+                        "value": f"{request_id}|{i}|done",
+                    }
+                )
+            blocks.append(
                 {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": label[:75]},
-                    "action_id": f"ask_user_{i}_{j}",
+                    "type": "actions",
+                    "block_id": f"ask_user_{request_id[:8]}_{i}",
+                    "elements": elements,
+                }
+            )
+        elif not multi_select:
+            # Single-select: static_select as section accessory + Other button below
+            select_options = [
+                {
+                    "text": {
+                        "type": "plain_text",
+                        "text": opt.get("label", f"Option {j + 1}")[:75],
+                    },
                     "value": f"{request_id}|{i}|{j}",
                 }
-            )
-
-        # "Other" button
-        elements.append(
-            {
-                "type": "button",
-                "text": {"type": "plain_text", "text": "Other"},
-                "action_id": f"ask_user_{i}_other",
-                "value": f"{request_id}|{i}|other",
-            }
-        )
-
-        # "Done" button for multi-select
-        if multi_select:
-            elements.append(
+                for j, opt in enumerate(options)
+            ]
+            blocks.append(
                 {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Done"},
-                    "style": "primary",
-                    "action_id": f"ask_user_{i}_done",
-                    "value": f"{request_id}|{i}|done",
+                    "type": "section",
+                    "block_id": f"ask_user_{request_id[:8]}_{i}_sel",
+                    "text": {"type": "mrkdwn", "text": "Select an option:"},
+                    "accessory": {
+                        "type": "static_select",
+                        "action_id": f"ask_user_{i}_select",
+                        "placeholder": {"type": "plain_text", "text": "Choose..."},
+                        "options": select_options,
+                    },
                 }
             )
-
-        blocks.append(
-            {
-                "type": "actions",
-                "block_id": f"ask_user_{request_id[:8]}_{i}",
-                "elements": elements,
-            }
-        )
+            blocks.append(
+                {
+                    "type": "actions",
+                    "block_id": f"ask_user_{request_id[:8]}_{i}_other",
+                    "elements": [other_button],
+                }
+            )
+        else:
+            # Multi-select: multi_static_select + Done + Other buttons
+            select_options = [
+                {
+                    "text": {
+                        "type": "plain_text",
+                        "text": opt.get("label", f"Option {j + 1}")[:75],
+                    },
+                    "value": f"{request_id}|{i}|{j}",
+                }
+                for j, opt in enumerate(options)
+            ]
+            blocks.append(
+                {
+                    "type": "actions",
+                    "block_id": f"ask_user_{request_id[:8]}_{i}_msel",
+                    "elements": [
+                        {
+                            "type": "multi_static_select",
+                            "action_id": f"ask_user_{i}_multiselect",
+                            "placeholder": {"type": "plain_text", "text": "Choose options..."},
+                            "options": select_options,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Done"},
+                            "style": "primary",
+                            "action_id": f"ask_user_{i}_done",
+                            "value": f"{request_id}|{i}|done",
+                        },
+                        other_button,
+                    ],
+                }
+            )
 
     return blocks
 

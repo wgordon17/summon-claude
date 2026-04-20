@@ -258,7 +258,8 @@ class ResponseStreamer:
             header = f"\U0001f527 Turn {turn_number}: re: _{snippet}_..."
         else:
             header = f"\U0001f527 Turn {turn_number}: Processing..."
-        ref = await self._router.post_to_main(header)
+        blocks = _build_turn_header_blocks(header)
+        ref = await self._router.post_to_main(header, blocks=blocks)
         self._router.set_active_thread(ref.ts, ref)
         self._turn.turn_thread_ts = ref.ts
 
@@ -281,7 +282,8 @@ class ResponseStreamer:
                 )
             else:
                 text = f"\U0001f527 Turn {self._current_turn_number}: {summary}"
-            await self._router.update(self._router.active_thread_ref.ts, text)
+            blocks = _build_turn_header_blocks(text)
+            await self._router.update(self._router.active_thread_ref.ts, text, blocks=blocks)
 
     def _generate_turn_summary(self, context: ContextUsage | None = None) -> str:
         """Build a concise summary string for the turn starter message."""
@@ -957,6 +959,34 @@ class ResponseStreamer:
             turn_number=self._current_turn_number,
         )
         self._spawn_background(self._on_file_change(change))
+
+
+def _build_turn_header_blocks(text: str) -> list[dict[str, Any]]:
+    """Build Block Kit blocks for a turn header message with an overflow menu accessory."""
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text},
+            "accessory": {
+                "type": "overflow",
+                "action_id": "turn_overflow",
+                "options": [
+                    {
+                        "text": {"type": "plain_text", "text": "Stop Turn"},
+                        "value": "turn_stop",
+                    },
+                    {
+                        "text": {"type": "plain_text", "text": "Copy Session ID"},
+                        "value": "turn_copy_sid",
+                    },
+                    {
+                        "text": {"type": "plain_text", "text": "View Cost"},
+                        "value": "turn_view_cost",
+                    },
+                ],
+            },
+        }
+    ]
 
 
 def _format_tool_result(block: ToolResultBlock) -> tuple[str, list[dict[str, Any]]]:

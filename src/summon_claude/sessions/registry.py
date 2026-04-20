@@ -415,6 +415,19 @@ class SessionRegistry:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    async def list_active_by_user(self, authenticated_user_id: str) -> list[dict]:
+        """List active/pending sessions scoped to a specific authenticated user."""
+        db = self._check_connected()
+        async with db.execute(
+            "SELECT * FROM sessions"
+            " WHERE status IN ('pending_auth', 'active')"
+            " AND authenticated_user_id = ?"
+            " ORDER BY started_at DESC",
+            (authenticated_user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
     async def list_all(self, limit: int = 50) -> list[dict]:
         """List recent sessions (all statuses)."""
         db = self._check_connected()

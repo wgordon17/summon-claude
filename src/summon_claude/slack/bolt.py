@@ -780,6 +780,10 @@ class BoltRouter:
         app.action("permission_approve_session")(self._on_dispatch_action)
         app.action("permission_deny")(self._on_dispatch_action)
         app.action(_ASK_USER_PATTERN)(self._on_dispatch_action)
+        app.action("turn_overflow")(self._on_dispatch_action)
+        app.view(re.compile(r"ask_user_other"))(self._on_view_submission)
+        app.event("app_home_opened")(self._on_app_home_opened)
+        app.event("file_shared")(self._on_file_shared)
 
     # ------------------------------------------------------------------
     # Bolt handler bound methods
@@ -813,3 +817,15 @@ class BoltRouter:
     async def _on_dispatch_action(self, ack, action, body) -> None:
         await ack()
         await self._dispatcher.dispatch_action(action, body)
+
+    async def _on_view_submission(self, ack, view, body) -> None:
+        await ack()
+        await self._dispatcher.dispatch_view_submission(view, body)
+
+    async def _on_app_home_opened(self, event) -> None:
+        user_id: str = event.get("user", "")
+        if user_id:
+            await self._dispatcher.dispatch_app_home(user_id)
+
+    async def _on_file_shared(self, event) -> None:
+        await self._dispatcher.dispatch_file_shared(event)

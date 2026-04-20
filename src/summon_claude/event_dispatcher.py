@@ -11,6 +11,7 @@ from the same event loop as the dispatch methods.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -19,6 +20,14 @@ from typing import TYPE_CHECKING, Any
 
 from slack_sdk.web.async_client import AsyncWebClient
 
+from summon_claude.file_handler import (
+    MAX_FILE_SIZE,
+    WARN_FILE_SIZE,
+    classify_file,
+    download_file,
+    prepare_image_content,
+    prepare_text_content,
+)
 from summon_claude.slack.client import SlackClient
 
 # Callback type for session resume (injected by daemon to break circular import).
@@ -33,6 +42,10 @@ logger = logging.getLogger(__name__)
 # Callback signature for /summon command handling.
 # Arguments: (user_id: str, code: str, respond: Callable)
 CommandHandler = Callable[..., Awaitable[None]]
+
+# Callback for App Home opened events.
+# Arguments: (user_id: str)
+AppHomeHandler = Callable[[str], Awaitable[None]]
 
 # action_id pattern used to recognise AskUserQuestion button clicks
 _ASK_USER_RE = re.compile(r"ask_user_\d+_.+")
@@ -57,6 +70,7 @@ class SessionHandle:
     permission_handler: PermissionHandler
     abort_callback: Callable[[], None]
     authenticated_user_id: str
+    pending_turns: asyncio.Queue  # type: ignore[type-arg]  # _PendingTurn queue for direct injection
 
 
 class EventDispatcher:
@@ -75,7 +89,9 @@ class EventDispatcher:
         self._sessions: dict[str, SessionHandle] = {}  # channel_id → handle
         self._command_handler: CommandHandler | None = None
         self._resume_handler: ResumeHandler | None = None
+        self._app_home_handler: AppHomeHandler | None = None
         self._web_client = web_client
+        self._bot_user_id: str | None = None
 
     # ------------------------------------------------------------------
     # Registry
@@ -123,6 +139,148 @@ class EventDispatcher:
     def set_resume_handler(self, handler: ResumeHandler) -> None:
         """Register a callback for ``!summon resume`` in unrouted channels."""
         self._resume_handler = handler
+
+    def set_app_home_handler(self, handler: AppHomeHandler) -> None:
+        """Register a callback for ``app_home_opened`` events."""
+        self._app_home_handler = handler
+
+    async def dispatch_app_home(self, user_id: str) -> None:
+        """Route an app_home_opened event to the registered handler."""
+        if self._app_home_handler is not None:
+            try:
+                await self._app_home_handler(user_id)
+            except Exception as e:
+                logger.warning("EventDispatcher: app_home handler error for %s: %s", user_id, e)
+        else:
+            logger.debug("EventDispatcher: app_home_opened received but no handler set")
+
+    def set_bot_user_id(self, bot_user_id: str) -> None:
+        """Set the bot's own Slack user ID (for self-upload filtering)."""
+        self._bot_user_id = bot_user_id
+
+    async def dispatch_file_shared(self, event: dict) -> None:  # type: ignore[type-arg]
+        """Route a file_shared event to the correct session's message queue.
+
+        Security: filters self-uploads and verifies user ownership before
+        delegating to _process_file_shared for download and enqueue.
+        """
+        if not self._web_client:
+            logger.debug("dispatch_file_shared: no web_client, dropping event")
+            return
+
+        user_id: str = event.get("user_id", "")
+        channel_id: str = event.get("channel_id", "")
+        file_id: str = event.get("file_id", "")
+
+        # Filter self-uploads (bot-created files: diffs, Write uploads, etc.)
+        if self._bot_user_id and user_id == self._bot_user_id:
+            logger.debug("dispatch_file_shared: dropping bot self-upload %s", file_id)
+            return
+
+        handle = self._sessions.get(channel_id)
+        if handle is None:
+            logger.debug(
+                "dispatch_file_shared: no session for channel %s — file dropped", channel_id
+            )
+            return
+
+        # Security: verify uploader is the authenticated session owner
+        if user_id != handle.authenticated_user_id:
+            logger.warning(
+                "dispatch_file_shared: file from %s rejected — session owned by %s",
+                user_id,
+                handle.authenticated_user_id,
+            )
+            return
+
+        await self._process_file_shared(file_id, handle)
+
+    async def _process_file_shared(self, file_id: str, handle: SessionHandle) -> None:
+        """Fetch, classify, download, and enqueue a file for the session.
+
+        Security:
+        - File size is checked from files.info metadata BEFORE downloading.
+        - Filenames are sanitized by file_handler.sanitize_filename.
+        - Download URLs are never logged or stored.
+        """
+        if not self._web_client:  # guaranteed by dispatch_file_shared, but guard for safety
+            return
+
+        # Fetch file metadata before downloading
+        try:
+            resp = await self._web_client.files_info(file=file_id)
+            file_info: dict[str, Any] = resp.get("file", {})
+        except Exception as e:
+            logger.warning("dispatch_file_shared: files.info failed for %s: %s", file_id, e)
+            return
+
+        filename: str = file_info.get("name", "unknown")
+        mimetype: str = file_info.get("mimetype", "")
+        file_size: int = file_info.get("size", 0)
+        url_private: str = file_info.get("url_private_download", "") or file_info.get(
+            "url_private", ""
+        )
+
+        if not url_private:
+            logger.warning("dispatch_file_shared: no download URL for file %s", file_id)
+            return
+
+        # Size check BEFORE downloading
+        if file_size > MAX_FILE_SIZE:
+            logger.warning(
+                "dispatch_file_shared: file %s too large (%d > %d bytes), skipping",
+                filename,
+                file_size,
+                MAX_FILE_SIZE,
+            )
+            return
+        if file_size > WARN_FILE_SIZE:
+            logger.warning(
+                "dispatch_file_shared: large file %s (%d bytes) — downloading",
+                filename,
+                file_size,
+            )
+
+        kind = classify_file(filename, mimetype)
+        if kind == "unsupported":
+            logger.debug("dispatch_file_shared: unsupported file type %s (%s)", filename, mimetype)
+            return
+
+        # Download file content (token from web_client, never logged)
+        token: str = self._web_client.token or ""
+        try:
+            content_bytes = await download_file(url_private, token, max_size=MAX_FILE_SIZE)
+        except Exception as e:
+            logger.warning(
+                "dispatch_file_shared: download failed for %s: %s", filename, type(e).__name__
+            )
+            return
+
+        # Prepare and enqueue the turn
+        from summon_claude.sessions.session import _PendingTurn  # noqa: PLC0415
+
+        if kind == "text":
+            text_content = prepare_text_content(filename, content_bytes)
+            pending: _PendingTurn = _PendingTurn(message=text_content, pre_sent=False)
+        else:  # image
+            content_blocks = prepare_image_content(filename, content_bytes, mimetype)
+            safe_name = filename.replace("\n", "")[:200]
+            pending = _PendingTurn(
+                message=f"User shared image: {safe_name}",
+                pre_sent=False,
+                content_blocks=tuple(content_blocks),
+            )
+
+        try:
+            handle.pending_turns.put_nowait(pending)
+            logger.info(
+                "dispatch_file_shared: enqueued %s file %s for session %s",
+                kind,
+                filename,
+                handle.session_id,
+            )
+        except Exception:
+            logger.warning("dispatch_file_shared: queue full for session %s", handle.session_id)
 
     async def dispatch_command(
         self, user_id: str, code: str, respond: Callable[..., Awaitable[None]]
@@ -212,6 +370,7 @@ class EventDispatcher:
         """Route a Slack interactive action to the session's permission handler.
 
         Distinguishes between:
+        - ``turn_overflow`` → turn-level actions (stop, copy session ID, view cost)
         - ``permission_approve`` / ``permission_deny`` → ``handle_action``
         - ``ask_user_*`` → ``handle_ask_user_action``
 
@@ -225,20 +384,98 @@ class EventDispatcher:
             return
 
         action_id: str = action.get("action_id", "")
-        value: str = action.get("value", "")
         user_id: str = body.get("user", {}).get("id", "")
+        trigger_id: str | None = body.get("trigger_id")
 
-        if _ASK_USER_RE.fullmatch(action_id):
-            await handle.permission_handler.handle_ask_user_action(
-                value=value,
-                user_id=user_id,
-            )
+        if action_id == "turn_overflow":
+            await self._dispatch_turn_overflow(action, handle, channel_id, user_id)
+        elif _ASK_USER_RE.fullmatch(action_id):
+            action_type: str = action.get("type", "")
+            if action_type == "static_select":
+                # Single select menu: value is in selected_option.value
+                value = (action.get("selected_option") or {}).get("value", "")
+                await handle.permission_handler.handle_ask_user_action(
+                    value=value,
+                    user_id=user_id,
+                    trigger_id=trigger_id,
+                )
+            elif action_type == "multi_static_select":
+                # Multi select menu: full current selection list in selected_options
+                selected_values = [
+                    opt.get("value", "") for opt in (action.get("selected_options") or [])
+                ]
+                await handle.permission_handler.handle_ask_user_multiselect_action(
+                    action_id=action_id,
+                    selected_values=selected_values,
+                    user_id=user_id,
+                )
+            else:
+                # Button actions (existing behaviour)
+                value = action.get("value", "")
+                await handle.permission_handler.handle_ask_user_action(
+                    value=value,
+                    user_id=user_id,
+                    trigger_id=trigger_id,
+                )
         else:
             # permission_approve / permission_approve_session / permission_deny
+            value = action.get("value", "")
             await handle.permission_handler.handle_action(
                 value=value,
                 user_id=user_id,
             )
+
+    async def _dispatch_turn_overflow(
+        self,
+        action: dict,
+        handle: SessionHandle,
+        channel_id: str,
+        user_id: str,
+    ) -> None:
+        """Handle turn overflow menu actions.
+
+        Security: only the authenticated session owner may trigger these actions.
+        """
+        if user_id != handle.authenticated_user_id:
+            logger.warning(
+                "EventDispatcher: turn_overflow from %s rejected — session owned by %s",
+                user_id,
+                handle.authenticated_user_id,
+            )
+            return
+
+        value: str = action.get("selected_option", {}).get("value", "")
+
+        if value == "turn_stop":
+            handle.abort_callback()
+        elif value == "turn_copy_sid":
+            await self._post_ephemeral(
+                channel_id=channel_id,
+                user_id=user_id,
+                text=f"Session ID: `{handle.session_id}`",
+            )
+        elif value == "turn_view_cost":
+            await self._post_ephemeral(
+                channel_id=channel_id,
+                user_id=user_id,
+                text=f"Session ID: `{handle.session_id}` — use `!cost` for details.",
+            )
+        else:
+            logger.warning("EventDispatcher: unknown turn_overflow value %r", value)
+
+    async def _post_ephemeral(self, channel_id: str, user_id: str, text: str) -> None:
+        """Post an ephemeral message to a user in a channel (best-effort)."""
+        if not self._web_client:
+            logger.warning("Cannot post ephemeral to %s: no web_client", channel_id)
+            return
+        try:
+            await self._web_client.chat_postEphemeral(
+                channel=channel_id,
+                user=user_id,
+                text=text,
+            )
+        except Exception as e:
+            logger.warning("Failed to post ephemeral to %s: %s", channel_id, e)
 
     async def dispatch_reaction(self, event: dict) -> None:  # type: ignore[type-arg]
         """Route a ``reaction_added`` event to the session's abort callback.
@@ -265,3 +502,36 @@ class EventDispatcher:
                 "EventDispatcher: no session for channel %s — reaction dropped",
                 channel_id,
             )
+
+    async def dispatch_view_submission(self, view: dict, body: dict) -> None:  # type: ignore[type-arg]
+        """Route a modal view submission to the correct session's permission handler.
+
+        Extracts the channel_id from view private_metadata, looks up the session,
+        verifies the submitting user, and delegates to handle_ask_user_view_submission.
+        """
+        user_id: str = body.get("user", {}).get("id", "")
+
+        try:
+            meta = json.loads(view.get("private_metadata", "{}"))
+            channel_id: str = meta["channel_id"]
+        except (KeyError, ValueError, json.JSONDecodeError):
+            logger.warning("dispatch_view_submission: malformed private_metadata — dropped")
+            return
+
+        handle = self._sessions.get(channel_id)
+        if handle is None:
+            logger.debug(
+                "EventDispatcher: no session for channel %s — view submission dropped", channel_id
+            )
+            return
+
+        # Security: verify user is the authenticated session owner before processing
+        if user_id != handle.authenticated_user_id:
+            logger.warning(
+                "EventDispatcher: view submission from %s rejected — session owned by %s",
+                user_id,
+                handle.authenticated_user_id,
+            )
+            return
+
+        await handle.permission_handler.handle_ask_user_view_submission(view=view, user_id=user_id)

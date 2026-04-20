@@ -1328,30 +1328,6 @@ class TestIdentityVerificationFailClosed:
             "req-1"
         )
 
-    async def test_receive_text_input_rejects_non_owner(self):
-        """receive_text_input should reject messages from non-owner users."""
-        handler, _, _ = make_handler(authenticated_user_id="U_OWNER")
-        handler._ask_user.pending_other = ("req-1", 0)
-        handler._ask_user.questions["req-1"] = [{"question": "Q?", "header": "H", "options": []}]
-
-        await handler.receive_text_input("hacked answer", user_id="U_INTRUDER")
-
-        # Pending should still be set (not consumed)
-        assert handler._ask_user.pending_other is not None
-
-    async def test_receive_text_input_accepts_owner(self):
-        """receive_text_input should accept messages from the session owner."""
-        handler, _, _ = make_handler(authenticated_user_id="U_OWNER")
-        handler._ask_user.pending_other = ("req-1", 0)
-        handler._ask_user.questions["req-1"] = [{"question": "Q?", "header": "H", "options": []}]
-        handler._ask_user.answers["req-1"] = {}
-        handler._ask_user.events["req-1"] = asyncio.Event()
-
-        await handler.receive_text_input("valid answer", user_id="U_OWNER")
-
-        # Pending should be consumed
-        assert handler._ask_user.pending_other is None
-
 
 # ── Classifier integration ──────────────────────────────────────────────────
 

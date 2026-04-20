@@ -331,6 +331,13 @@ class SlackClient:
 
         return {"messages": messages, "thread": thread, "target_ts": message_ts}
 
+    async def views_open(self, trigger_id: str, view: dict[str, Any]) -> None:
+        """Open a modal view using a trigger_id from an action payload."""
+        try:
+            await self._web.views_open(trigger_id=trigger_id, view=view)
+        except Exception as e:
+            logger.warning("Failed to open modal view: %s", e)
+
     # --- Canvas methods ---
 
     async def canvas_create(self, markdown: str, *, title: str = "Session Canvas") -> str | None:

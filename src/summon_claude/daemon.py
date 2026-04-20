@@ -342,6 +342,9 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
         )
         dispatcher.set_command_handler(session_manager.handle_summon_command)
         dispatcher.set_resume_handler(session_manager.resume_from_channel)
+        dispatcher.set_app_home_handler(session_manager.handle_app_home)
+        if bolt_router.bot_user_id:
+            dispatcher.set_bot_user_id(bolt_router.bot_user_id)
 
         # Start Unix socket control server.
         # umask(0o077) ensures the socket file is created with mode 0o600 from
