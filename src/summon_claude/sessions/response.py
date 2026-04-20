@@ -30,6 +30,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
+from summon_claude.security import validate_agent_output
 from summon_claude.sessions.context import ContextUsage
 from summon_claude.sessions.mcp_health import McpHealthTracker
 from summon_claude.sessions.types import ChangeType, FileChange
@@ -755,10 +756,18 @@ class ResponseStreamer:
 
         When a chat stream is active, appends text to the stream instead of
         posting individual messages.  Falls back to chat_postMessage on error.
+
+        Text is sanitized before streaming — the stream path bypasses
+        ``SlackClient.post()`` which normally handles redaction.
         """
         if self._turn.active_stream is not None:
             try:
-                await self._turn.active_stream.append(markdown_text=text)
+                sanitized = redact_secrets(text)
+                sanitized, sec_warnings = validate_agent_output(sanitized)
+                if sec_warnings:
+                    for w in sec_warnings:
+                        logger.warning("Stream output validation: %s", w)
+                await self._turn.active_stream.append(markdown_text=sanitized)
                 return
             except Exception as e:
                 logger.warning("stream.append failed — falling back to messages: %s", e)

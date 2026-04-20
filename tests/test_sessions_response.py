@@ -2525,6 +2525,23 @@ class TestHybridStreaming:
         assert len(md_calls) == 1
         assert md_calls[0].kwargs["markdown_text"] == "Some thread text"
 
+    async def test_flush_to_thread_stream_redacts_secrets(self):
+        """Secrets are redacted when flushing through the stream path."""
+        streamer, router, client, mock_stream = self._make_stream_streamer()
+        await self._setup_turn(streamer, client)
+
+        streamer._turn.active_stream = mock_stream
+        streamer._turn.posting_to_thread = True
+        streamer._turn.buffer = "Token is xoxb-secret-token-here"
+
+        await streamer._flush_buffer()
+
+        md_calls = [c for c in mock_stream.append.call_args_list if c.kwargs.get("markdown_text")]
+        assert len(md_calls) == 1
+        streamed_text = md_calls[0].kwargs["markdown_text"]
+        assert "xoxb-" not in streamed_text
+        assert "[REDACTED]" in streamed_text
+
     async def test_no_stream_without_team_id(self):
         """No stream is opened when team_id is not set."""
         streamer, router, client = make_streamer(user_id="U456")
