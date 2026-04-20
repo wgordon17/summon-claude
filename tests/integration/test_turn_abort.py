@@ -28,30 +28,36 @@ class TestStopCommand:
         assert result.text is not None
         assert ":octagonal_sign:" in result.text
 
-    async def test_abort_event_coordination(self):
-        """asyncio.Event-based abort coordination races abort against a long turn."""
+    async def test_dispatch_reaction_triggers_abort_callback(self):
+        """dispatch_reaction from session owner fires the abort callback."""
+        from unittest.mock import MagicMock
+
+        from summon_claude.event_dispatcher import EventDispatcher, SessionHandle
+        from summon_claude.sessions.permissions import PermissionHandler
+
+        dispatcher = EventDispatcher()
         abort_event = asyncio.Event()
 
-        # Simulate a long-running turn task
-        turn_task = asyncio.create_task(asyncio.sleep(10))
-        abort_wait = asyncio.create_task(abort_event.wait())
-
-        async def _set_abort_after_delay():
-            await asyncio.sleep(0.1)
+        def _abort() -> None:
             abort_event.set()
 
-        abort_task = asyncio.create_task(_set_abort_after_delay())
+        handle = SessionHandle(
+            session_id="test-abort",
+            channel_id="C_ABORT",
+            message_queue=asyncio.Queue(maxsize=10),
+            permission_handler=MagicMock(spec=PermissionHandler),
+            abort_callback=_abort,
+            authenticated_user_id="U_OWNER",
+        )
+        dispatcher.register("C_ABORT", handle)
 
-        done, _ = await asyncio.wait(
-            {turn_task, abort_wait},
-            return_when=asyncio.FIRST_COMPLETED,
+        # Dispatch a reaction from the session owner
+        await dispatcher.dispatch_reaction(
+            {
+                "user": "U_OWNER",
+                "reaction": "octagonal_sign",
+                "item": {"channel": "C_ABORT", "ts": "123.456"},
+            }
         )
 
-        assert abort_wait in done, "abort_wait should complete first"
-        assert turn_task not in done, "turn_task should still be running"
-
-        # Cleanup
-        await abort_task  # Ensure the delayed set completes
-        turn_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await turn_task
+        assert abort_event.is_set(), "abort callback should have set the event"

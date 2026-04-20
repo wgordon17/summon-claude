@@ -8,7 +8,7 @@ verifying health monitor recovery behavior.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import logging
 import os
 import secrets
 from unittest.mock import AsyncMock
@@ -18,6 +18,8 @@ import pytest_asyncio
 
 from summon_claude.slack.bolt import _HealthMonitor
 from tests.integration.conftest import EventConsumer, SlackTestHarness
+
+logger = logging.getLogger(__name__)
 
 pytestmark = [
     pytest.mark.slack,
@@ -100,8 +102,10 @@ class TestForceDisconnect:
         )
         await asyncio.wait_for(consumer.start(), timeout=15.0)
         assert consumer._handler is not None
-        with contextlib.suppress(Exception):
+        try:
             await consumer._handler.client.disconnect()
+        except Exception:
+            logger.debug("disconnect raised (expected in test)", exc_info=True)
         await consumer.stop()
 
         # Allow SDK disconnect handlers to complete before starting a new consumer
@@ -136,8 +140,10 @@ class TestForceDisconnect:
 
         nonce_before = f"before-{secrets.token_hex(6)}"
         await slack_harness.client.chat_postMessage(channel=test_channel, text=nonce_before)
-        with contextlib.suppress(Exception):
+        try:
             await consumer._handler.client.disconnect()
+        except Exception:
+            logger.debug("disconnect raised (expected in test)", exc_info=True)
         await consumer.stop()
 
         new_consumer = EventConsumer(
@@ -177,8 +183,10 @@ class TestReconnectCycles:
         try:
             for _ in range(3):
                 # Directly call the SDK disconnect to simulate a dropped connection
-                with contextlib.suppress(Exception):
+                try:
                     await consumer._handler.client.disconnect()
+                except Exception:
+                    logger.debug("disconnect raised (expected in test)", exc_info=True)
                 await asyncio.sleep(0.5)  # Allow SDK disconnect handlers to complete
                 await consumer._handler.connect_async()
                 assert await consumer._handler.client.is_connected()

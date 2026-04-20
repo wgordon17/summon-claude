@@ -129,23 +129,19 @@ class TestSocketReconnect:
             signing_secret=slack_harness.signing_secret,
         )
         await asyncio.wait_for(consumer.start(), timeout=15.0)
-        try:
-            await consumer.stop()
+        await consumer.stop()
 
-            await asyncio.wait_for(consumer.start(), timeout=15.0)
-            try:
-                nonce = f"reconnect-{secrets.token_hex(6)}"
-                await slack_harness.client.chat_postMessage(channel=test_channel, text=nonce)
-                event = await consumer.wait_for_event(
-                    lambda e: e.get("type") == "message" and nonce in e.get("text", ""),
-                    timeout=15.0,
-                )
-                assert nonce in event.get("text", "")
-            finally:
-                await consumer.stop()
-        except Exception:
+        await asyncio.wait_for(consumer.start(), timeout=15.0)
+        try:
+            nonce = f"reconnect-{secrets.token_hex(6)}"
+            await slack_harness.client.chat_postMessage(channel=test_channel, text=nonce)
+            event = await consumer.wait_for_event(
+                lambda e: e.get("type") == "message" and nonce in e.get("text", ""),
+                timeout=15.0,
+            )
+            assert nonce in event.get("text", "")
+        finally:
             await consumer.stop()
-            raise
 
 
 class TestHealthMonitor:
