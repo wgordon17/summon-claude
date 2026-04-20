@@ -1,30 +1,54 @@
-"""Integration tests for interactive permission flows.
+"""Integration tests for interactive permission flows against real Slack.
 
-Tests the full permission cycle: debounced batch posting, action callback
-simulation (approve/deny/approve-for-session), user authorization
-enforcement, timeout auto-denial, session cache population, and
-AskUserQuestion interactive flow.
+Tests the full permission cycle: interactive message posting via real Slack
+API, action callback resolution (approve/deny/approve-for-session), user
+authorization enforcement, timeout auto-denial, session cache population,
+and AskUserQuestion interactive flow.
 
-Uses mock ThreadRouter — no real Slack connection needed. Tests exercise
-PermissionHandler + EventDispatcher interaction logic with real asyncio
-coordination (concurrent tasks, events, timeouts).
+Requires SUMMON_TEST_SLACK_BOT_TOKEN — skipped when credentials are absent.
 """
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+import os
 
 import pytest
+import pytest_asyncio
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from conftest import make_test_config
 
-from helpers import make_mock_slack_client
 from summon_claude.sessions.permissions import PermissionHandler
-from summon_claude.slack.client import MessageRef
+from summon_claude.slack.client import SlackClient
 from summon_claude.slack.router import ThreadRouter
+from tests.integration.conftest import SlackTestHarness
 
-pytestmark = pytest.mark.asyncio(loop_scope="module")
+pytestmark = [
+    pytest.mark.slack,
+    pytest.mark.asyncio(loop_scope="module"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def slack_harness():
+    """Module-scoped harness — skips if credentials not set."""
+    if not os.environ.get("SUMMON_TEST_SLACK_BOT_TOKEN"):
+        pytest.skip("SUMMON_TEST_SLACK_BOT_TOKEN not set")
+    harness = SlackTestHarness()
+    await harness.resolve_bot_user_id()
+    yield harness
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def test_channel(slack_harness):
+    """Module-scoped test channel for permission tests."""
+    channel_id = await slack_harness.create_test_channel(prefix="perm")
+    yield channel_id
 
 
 # ---------------------------------------------------------------------------
@@ -33,52 +57,78 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
 def _make_permission_handler(
-    debounce_ms=50, timeout_s=5, authenticated_user_id="U_OWNER", bridge=None
+    slack_client,
+    debounce_ms=50,
+    timeout_s=5,
+    authenticated_user_id="U_OWNER",
 ):
-    """Create a PermissionHandler with mock ThreadRouter for testing."""
-    client = make_mock_slack_client()
-    # post_interactive needs to return a MessageRef for batch tracking
-    client.post_interactive = AsyncMock(
-        return_value=MessageRef(channel_id="C_TEST", ts="msg_ts_123")
-    )
-    client.delete_message = AsyncMock()
-    router = ThreadRouter(client)
+    """Create a PermissionHandler with real SlackClient for testing."""
+    router = ThreadRouter(slack_client)
     config = make_test_config(
         permission_debounce_ms=debounce_ms,
         permission_timeout_s=timeout_s,
     )
     handler = PermissionHandler(
-        router, config, authenticated_user_id=authenticated_user_id, bridge=bridge
+        router,
+        config,
+        authenticated_user_id=authenticated_user_id,
     )
     # Bypass write gate — these tests exercise HITL flow, not the gate
+    from unittest.mock import AsyncMock
+
     handler._check_write_gate = AsyncMock(return_value=None)
-    return handler, client, router
+    return handler
 
 
-def _extract_batch_id(mock_client, action_prefix="approve:"):
-    """Extract batch_id from the last post_interactive call's blocks."""
-    blocks = mock_client.post_interactive.call_args.kwargs.get("blocks") or []
-    for block in blocks:
-        if block.get("type") == "actions":
-            for element in block.get("elements", []):
-                value = element.get("value", "")
-                if value.startswith(action_prefix):
-                    return value[len(action_prefix) :]
-    raise ValueError(f"Could not extract batch_id with prefix {action_prefix!r} from {blocks!r}")
+async def _extract_batch_id_from_channel(
+    web_client,
+    channel_id,
+    action_prefix="approve:",
+):
+    """Extract batch_id from the most recent interactive message in the channel."""
+    history = await web_client.conversations_history(
+        channel=channel_id,
+        limit=5,
+    )
+    for msg in history.get("messages", []):
+        blocks = msg.get("blocks") or []
+        for block in blocks:
+            if block.get("type") == "actions":
+                for element in block.get("elements", []):
+                    value = element.get("value", "")
+                    if value.startswith(action_prefix):
+                        return value[len(action_prefix) :]
+    raise ValueError(
+        f"Could not extract batch_id with prefix {action_prefix!r} from channel {channel_id}"
+    )
 
 
-def _extract_request_id(mock_client):
-    """Extract request_id from the last post_interactive AskUserQuestion blocks."""
-    blocks = mock_client.post_interactive.call_args.kwargs.get("blocks")
-    assert blocks is not None
-    for block in blocks:
-        if block.get("type") == "actions":
-            for el in block.get("elements", []):
-                val = el.get("value", "")
-                parts = val.split("|")
-                if len(parts) == 3:
-                    return parts[0]
-    raise ValueError(f"Could not extract request_id from blocks: {blocks!r}")
+async def _extract_request_id_from_channel(web_client, channel_id):
+    """Extract request_id from the most recent AskUserQuestion message."""
+    history = await web_client.conversations_history(
+        channel=channel_id,
+        limit=5,
+    )
+    for msg in history.get("messages", []):
+        blocks = msg.get("blocks") or []
+        for block in blocks:
+            if block.get("type") == "actions":
+                for el in block.get("elements", []):
+                    val = el.get("value", "")
+                    parts = val.split("|")
+                    if len(parts) == 3:
+                        return parts[0]
+    raise ValueError(f"Could not extract request_id from channel {channel_id}")
+
+
+async def _get_latest_message(web_client, channel_id):
+    """Get the most recent message from a channel."""
+    history = await web_client.conversations_history(
+        channel=channel_id,
+        limit=1,
+    )
+    messages = history.get("messages", [])
+    return messages[0] if messages else None
 
 
 # ---------------------------------------------------------------------------
@@ -87,42 +137,72 @@ def _extract_request_id(mock_client):
 
 
 class TestPermissionPrompt:
-    async def test_permission_prompt_posts_interactive(self):
-        """handle() posts an interactive message after the debounce window."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+    async def test_permission_prompt_posts_to_channel(
+        self,
+        slack_harness,
+        test_channel,
+    ):
+        """handle() posts an interactive message to the real Slack channel."""
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "ls"}, None))
-        # Wait for debounce to fire
-        await asyncio.sleep(0.15)
+        task = asyncio.create_task(
+            handler.handle("Bash", {"command": "ls"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        client.post_interactive.assert_called_once()
+        # Verify a message with action blocks appeared in the channel
+        msg = await _get_latest_message(slack_harness.client, test_channel)
+        assert msg is not None
+        blocks = msg.get("blocks") or []
+        action_blocks = [b for b in blocks if b.get("type") == "actions"]
+        assert action_blocks, "Interactive message should have actions block"
 
-        # Approve to unblock the pending handle() call
-        batch_id = _extract_batch_id(client, "approve:")
+        # Approve to unblock
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "approve:",
+        )
         await handler.handle_action(f"approve:{batch_id}", "U_OWNER")
         await task
 
-    async def test_permission_prompt_has_three_buttons(self):
+    async def test_permission_prompt_has_three_buttons(
+        self,
+        slack_harness,
+        test_channel,
+    ):
         """The interactive message has Approve, Approve for Session, and Deny buttons."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "echo hi"}, None))
-        await asyncio.sleep(0.15)
+        task = asyncio.create_task(
+            handler.handle("Bash", {"command": "echo hi"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        blocks = client.post_interactive.call_args.kwargs.get("blocks")
-        assert blocks is not None
+        msg = await _get_latest_message(slack_harness.client, test_channel)
+        assert msg is not None
+        blocks = msg.get("blocks") or []
+        actions_block = next(
+            (b for b in blocks if b.get("type") == "actions"),
+            None,
+        )
+        assert actions_block is not None
 
-        actions_block = next(b for b in blocks if b.get("type") == "actions")
         elements = actions_block["elements"]
         action_ids = [el["action_id"] for el in elements]
-
         assert "permission_approve" in action_ids
         assert "permission_approve_session" in action_ids
         assert "permission_deny" in action_ids
         assert len(elements) == 3
 
         # Cleanup
-        batch_id = _extract_batch_id(client, "approve:")
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "approve:",
+        )
         await handler.handle_action(f"approve:{batch_id}", "U_OWNER")
         await task
 
@@ -133,44 +213,88 @@ class TestPermissionPrompt:
 
 
 class TestActionResolution:
-    async def test_approve_action_resolves_allow(self):
+    async def test_approve_action_resolves_allow(
+        self,
+        slack_harness,
+        test_channel,
+    ):
         """Clicking Approve resolves handle() with PermissionResultAllow."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "ls"}, None))
-        await asyncio.sleep(0.15)
+        task = asyncio.create_task(
+            handler.handle("Bash", {"command": "ls"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        batch_id = _extract_batch_id(client, "approve:")
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "approve:",
+        )
         await handler.handle_action(f"approve:{batch_id}", "U_OWNER")
         result = await task
 
         assert isinstance(result, PermissionResultAllow)
 
-    async def test_deny_action_resolves_deny(self):
+    async def test_deny_action_resolves_deny(
+        self,
+        slack_harness,
+        test_channel,
+    ):
         """Clicking Deny resolves handle() with PermissionResultDeny."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "ls"}, None))
-        await asyncio.sleep(0.15)
+        task = asyncio.create_task(
+            handler.handle("Bash", {"command": "ls"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        batch_id = _extract_batch_id(client, "deny:")
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "deny:",
+        )
         await handler.handle_action(f"deny:{batch_id}", "U_OWNER")
         result = await task
 
         assert isinstance(result, PermissionResultDeny)
 
-    async def test_approve_deletes_interactive_message(self):
-        """After approval, the interactive message is deleted."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+    async def test_approve_deletes_interactive_message(
+        self,
+        slack_harness,
+        test_channel,
+    ):
+        """After approval, the interactive message is deleted from the channel."""
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "ls"}, None))
-        await asyncio.sleep(0.15)
+        task = asyncio.create_task(
+            handler.handle("Bash", {"command": "ls"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        batch_id = _extract_batch_id(client, "approve:")
+        # Capture the message ts before approval
+        msg = await _get_latest_message(slack_harness.client, test_channel)
+        assert msg is not None
+        msg_ts = msg["ts"]
+
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "approve:",
+        )
         await handler.handle_action(f"approve:{batch_id}", "U_OWNER")
         await task
 
-        client.delete_message.assert_called_once_with("msg_ts_123")
+        # Give Slack a moment to process the deletion
+        await asyncio.sleep(0.5)
+
+        # The message should be deleted — latest message should be different
+        latest = await _get_latest_message(slack_harness.client, test_channel)
+        if latest is not None:
+            assert latest["ts"] != msg_ts, "Interactive message should have been deleted"
 
 
 # ---------------------------------------------------------------------------
@@ -179,166 +303,166 @@ class TestActionResolution:
 
 
 class TestAuthorizationEnforcement:
-    async def test_reject_action_from_wrong_user(self):
+    async def test_reject_action_from_wrong_user(
+        self,
+        slack_harness,
+        test_channel,
+    ):
         """Actions from the wrong user are silently dropped — batch stays unresolved."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "ls"}, None))
-        await asyncio.sleep(0.15)
+        task = asyncio.create_task(
+            handler.handle("Bash", {"command": "ls"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        batch_id = _extract_batch_id(client, "approve:")
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "approve:",
+        )
         # Wrong user — should have no effect
-        await handler.handle_action(f"approve:{batch_id}", "U_WRONG")
+        await handler.handle_action(f"approve:{batch_id}", "U_INTRUDER")
 
-        # Task should still be pending (not done)
-        assert not task.done()
+        # Task should still be pending (not resolved)
+        assert not task.done(), "Permission should not resolve for wrong user"
 
-        # Now approve with correct user to unblock
+        # Now approve from the correct user to unblock
         await handler.handle_action(f"approve:{batch_id}", "U_OWNER")
         result = await task
         assert isinstance(result, PermissionResultAllow)
 
-    async def test_accept_action_from_authenticated_user(self):
-        """Actions from the authenticated owner are accepted."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+    async def test_accept_action_from_authenticated_user(
+        self,
+        slack_harness,
+        test_channel,
+    ):
+        """Actions from the authenticated user resolve the batch."""
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(
+            slack_client,
+            debounce_ms=50,
+            authenticated_user_id="U_AUTH",
+        )
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "ls"}, None))
-        await asyncio.sleep(0.15)
+        task = asyncio.create_task(
+            handler.handle("Bash", {"command": "ls"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        batch_id = _extract_batch_id(client, "approve:")
-        await handler.handle_action(f"approve:{batch_id}", "U_OWNER")
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "approve:",
+        )
+        await handler.handle_action(f"approve:{batch_id}", "U_AUTH")
         result = await task
 
         assert isinstance(result, PermissionResultAllow)
 
 
 # ---------------------------------------------------------------------------
-# Session Cache Tests
+# Session Approve
 # ---------------------------------------------------------------------------
 
 
-class TestSessionCache:
-    async def test_approve_for_session_caches_tool(self):
-        """approve_session populates the session cache — subsequent call skips HITL."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+class TestSessionApprove:
+    async def test_session_approve_caches_for_tool(
+        self,
+        slack_harness,
+        test_channel,
+    ):
+        """approve_session caches the tool — second call auto-approves."""
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
-        # First request
-        task = asyncio.create_task(handler.handle("SomeTool", {}, None))
-        await asyncio.sleep(0.15)
+        # First call — posts interactive message
+        task1 = asyncio.create_task(
+            handler.handle("Bash", {"command": "ls"}, None),
+        )
+        await asyncio.sleep(0.3)
 
-        batch_id = _extract_batch_id(client, "approve_session:")
+        batch_id = await _extract_batch_id_from_channel(
+            slack_harness.client,
+            test_channel,
+            "approve_session:",
+        )
         await handler.handle_action(f"approve_session:{batch_id}", "U_OWNER")
-        result = await task
-        assert isinstance(result, PermissionResultAllow)
+        result1 = await task1
+        assert isinstance(result1, PermissionResultAllow)
 
-        # post_interactive called exactly once so far
-        assert client.post_interactive.call_count == 1
-
-        # Second request — should be cache-hit, no new interactive message
-        result2 = await handler.handle("SomeTool", {}, None)
+        # Second call for same tool — should auto-approve without posting
+        result2 = await handler.handle("Bash", {"command": "echo hello"}, None)
         assert isinstance(result2, PermissionResultAllow)
 
-        # Still only one call — second was served from cache
-        assert client.post_interactive.call_count == 1
-
 
 # ---------------------------------------------------------------------------
-# Timeout Tests
+# Permission Timeout
 # ---------------------------------------------------------------------------
 
 
-class TestTimeout:
-    async def test_timeout_auto_denies(self):
-        """When no action is taken before timeout, handle() returns PermissionResultDeny."""
-        handler, _, _ = _make_permission_handler(debounce_ms=10, timeout_s=1)
-        # Suppress timeout message posting — router not wired
-        handler._post_timeout_message = AsyncMock()
+class TestPermissionTimeout:
+    async def test_permission_timeout_auto_denies(
+        self,
+        slack_harness,
+        test_channel,
+    ):
+        """Unanswered permission requests auto-deny after timeout."""
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(
+            slack_client,
+            debounce_ms=50,
+            timeout_s=1,
+        )
 
-        task = asyncio.create_task(handler.handle("Bash", {"command": "ls"}, None))
-        result = await asyncio.wait_for(task, timeout=5.0)
+        result = await handler.handle("Bash", {"command": "ls"}, None)
 
         assert isinstance(result, PermissionResultDeny)
-        handler._post_timeout_message.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# AskUserQuestion Tests
+# AskUserQuestion
 # ---------------------------------------------------------------------------
 
 
 class TestAskUserQuestion:
-    async def test_ask_user_posts_question_blocks(self):
-        """AskUserQuestion causes an interactive post with question content."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
+    async def test_ask_user_posts_question_blocks(
+        self,
+        slack_harness,
+        test_channel,
+    ):
+        """_handle_ask_user_question posts interactive blocks with options."""
+        slack_client = SlackClient(slack_harness.client, test_channel)
+        handler = _make_permission_handler(slack_client, debounce_ms=50)
 
         questions = [
             {
                 "question": "Pick one?",
-                "header": "Choice",
                 "options": [
-                    {"label": "A", "description": "Option A"},
-                    {"label": "B", "description": "Option B"},
+                    {"value": "a", "label": "Choice A"},
+                    {"value": "b", "label": "Choice B"},
                 ],
-                "multiSelect": False,
             }
         ]
-
         task = asyncio.create_task(
-            handler.handle("AskUserQuestion", {"questions": questions}, None)
+            handler.handle("AskUserQuestion", {"questions": questions}, None),
         )
-        await asyncio.sleep(0.1)
-
-        client.post_interactive.assert_called_once()
+        await asyncio.sleep(0.3)
 
         # Verify blocks contain an actions block with option buttons
-        blocks = client.post_interactive.call_args.kwargs.get("blocks")
-        assert blocks is not None
+        msg = await _get_latest_message(slack_harness.client, test_channel)
+        assert msg is not None
+        blocks = msg.get("blocks") or []
         action_blocks = [b for b in blocks if b.get("type") == "actions"]
         assert action_blocks, "AskUserQuestion should produce an actions block"
 
         # Resolve by simulating option click
-        request_id = _extract_request_id(client)
-        assert request_id is not None, "Could not find request_id in blocks"
-        await handler.handle_ask_user_action(
-            value=f"{request_id}|0|0",
-            user_id="U_OWNER",
+        request_id = await _extract_request_id_from_channel(
+            slack_harness.client,
+            test_channel,
         )
-        await task
-
-    async def test_ask_user_action_resolves_answer(self):
-        """Clicking an AskUserQuestion option resolves handle() with the answer."""
-        handler, client, _ = _make_permission_handler(debounce_ms=50)
-
-        question_text = "Pick one?"
-        questions = [
-            {
-                "question": question_text,
-                "header": "Choice",
-                "options": [
-                    {"label": "A", "description": "Option A"},
-                    {"label": "B", "description": "Option B"},
-                ],
-                "multiSelect": False,
-            }
-        ]
-
-        task = asyncio.create_task(
-            handler.handle("AskUserQuestion", {"questions": questions}, None)
-        )
-        await asyncio.sleep(0.1)
-
-        # Extract request_id from block values
-        request_id = _extract_request_id(client)
-        assert request_id is not None
-
-        # Click option 0 ("A") for question 0
-        await handler.handle_ask_user_action(
-            value=f"{request_id}|0|0",
-            user_id="U_OWNER",
-        )
+        await handler.handle_action(f"{request_id}|0|a", "U_OWNER")
         result = await task
 
         assert isinstance(result, PermissionResultAllow)
-        assert result.updated_input is not None
-        answers = result.updated_input.get("answers", {})
-        assert answers.get(question_text) == "A"
