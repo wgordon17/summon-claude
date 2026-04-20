@@ -1520,6 +1520,7 @@ class TestReleasedMigrationsImmutable:
         "_migrate_14_to_15": "d9d62bd4554b85bd",
         "_migrate_15_to_16": "72d8ce098dcaa6a0",
         "_migrate_16_to_17": "4ee7cc86287aa662",
+        "_migrate_17_to_18": "59404f671cfee711",
     }
 
     def test_released_migrations_unchanged(self):
