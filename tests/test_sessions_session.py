@@ -1588,6 +1588,60 @@ class TestPendingTurn:
             pt.message = "other"  # type: ignore[misc]
 
 
+class TestClearContext:
+    """QA-003: Tests for clear_context() method on SummonSession."""
+
+    def test_clear_context_returns_false_when_no_claude(self):
+        session = make_session()
+        session._claude = None
+        result = asyncio.run(session.clear_context())
+        assert result is False
+
+    def test_clear_context_returns_false_when_shutdown(self):
+        session = make_session()
+        session._claude = MagicMock()
+        session._shutdown_event.set()
+        result = asyncio.run(session.clear_context())
+        assert result is False
+
+    def test_clear_context_enqueues_pending_turn(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        session = make_session()
+        session._claude = MagicMock()
+
+        # Don't await — just enqueue and check
+        async def enqueue_and_check():
+            # Start clear_context but don't await it fully
+            import asyncio
+
+            task = asyncio.create_task(session.clear_context())
+            # Give the event loop a chance to enqueue
+            await asyncio.sleep(0.05)
+            # Check the queue
+            pt = session._pending_turns.get_nowait()
+            assert isinstance(pt, _PendingTurn)
+            assert pt.clear is True
+            assert pt.clear_done is not None
+            # Signal completion to unblock the task
+            pt.clear_done.set()
+            result = await task
+            assert result is True
+
+        asyncio.run(enqueue_and_check())
+
+    def test_clear_context_queue_full_returns_false(self):
+        session = make_session()
+        session._claude = MagicMock()
+        # Fill the queue
+        from summon_claude.sessions.session import _PendingTurn
+
+        for _ in range(session._pending_turns.maxsize):
+            session._pending_turns.put_nowait(_PendingTurn(message="filler"))
+        result = asyncio.run(session.clear_context())
+        assert result is False
+
+
 class TestShutdownSentinels:
     """Tests for shutdown sentinel propagation."""
 

@@ -1127,6 +1127,49 @@ class TestDispatchStripsProxyFields:
         assert opts.jira_proxy_token is None
 
 
+class TestDispatchClearSession:
+    """QA-004: Tests for the clear_session IPC dispatch handler."""
+
+    async def test_clear_session_missing_id(self):
+        manager, _, _ = _make_manager()
+        result = await manager._dispatch_control({"type": "clear_session"})
+        assert result["type"] == "error"
+        assert "Missing session_id" in result["message"]
+
+    async def test_clear_session_not_found(self):
+        manager, _, _ = _make_manager()
+        result = await manager._dispatch_control(
+            {"type": "clear_session", "session_id": "nonexistent"}
+        )
+        assert result["type"] == "error"
+        assert "not found" in result["message"]
+
+    async def test_clear_session_success(self):
+        manager, _, _ = _make_manager()
+        mock_session = MagicMock()
+        mock_session.clear_context = AsyncMock(return_value=True)
+        manager._sessions["test-sid"] = mock_session
+
+        result = await manager._dispatch_control(
+            {"type": "clear_session", "session_id": "test-sid"}
+        )
+        assert result["type"] == "session_cleared"
+        assert result["session_id"] == "test-sid"
+        mock_session.clear_context.assert_awaited_once()
+
+    async def test_clear_session_failure(self):
+        manager, _, _ = _make_manager()
+        mock_session = MagicMock()
+        mock_session.clear_context = AsyncMock(return_value=False)
+        manager._sessions["test-sid"] = mock_session
+
+        result = await manager._dispatch_control(
+            {"type": "clear_session", "session_id": "test-sid"}
+        )
+        assert result["type"] == "error"
+        assert "clear_context() failed" in result["message"]
+
+
 class TestInjectProxyOptionsPropagation:
     """Verify _inject_proxy_options injects proxy config at all session creation sites."""
 
