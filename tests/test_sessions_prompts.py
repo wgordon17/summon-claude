@@ -313,8 +313,8 @@ class TestRefactoredScanPrompt:
         assert "## Worktree Orchestration" in result
 
     def test_session_health_check_triage_children_awareness(self):
-        """Health Check must mention triage children as persistent workers."""
-        result = build_pm_scan_prompt()
+        """Health Check must mention triage children when triage features enabled."""
+        result = build_pm_scan_prompt(jira_enabled=True)
         assert "Do NOT stop" in result
 
     def test_session_health_check_duplicate_name_handling(self):

@@ -1623,7 +1623,9 @@ class TestClearContext:
             assert isinstance(pt, _PendingTurn)
             assert pt.clear is True
             assert pt.clear_done is not None
-            # Signal completion to unblock the task
+            assert pt.clear_ok is not None
+            # Simulate successful /clear — set ok flag then signal done
+            pt.clear_ok[0] = True
             pt.clear_done.set()
             result = await task
             assert result is True

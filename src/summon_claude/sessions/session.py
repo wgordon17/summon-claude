@@ -546,6 +546,7 @@ class _PendingTurn:
     compact: bool = False  # If True, consumer runs _execute_compact instead of normal turn
     clear: bool = False  # If True, consumer runs _execute_clear instead of normal turn
     clear_done: asyncio.Event | None = None  # Signalled when clear completes
+    clear_ok: list | None = None  # Mutable [bool] container — set by _execute_clear
 
 
 class _SessionRestartError(Exception):
@@ -879,20 +880,30 @@ class SummonSession:
         ``receive_response()`` calls on the SDK client.  The consumer
         calls both ``query("/clear")`` and ``receive_response()`` to
         drain the response.
+
+        Returns False if the SDK ``/clear`` command failed (exception in
+        ``_execute_clear``), not just if queueing or timeout failed.
         """
         if not self._claude or self._shutdown_event.is_set():
             return False
         clear_done = asyncio.Event()
+        clear_ok: list[bool] = [False]  # mutable container — _execute_clear sets [0]
         try:
             self._pending_turns.put_nowait(
-                _PendingTurn(message="", pre_sent=False, clear=True, clear_done=clear_done)
+                _PendingTurn(
+                    message="",
+                    pre_sent=False,
+                    clear=True,
+                    clear_done=clear_done,
+                    clear_ok=clear_ok,
+                )
             )
         except asyncio.QueueFull:
             logger.warning("clear_context rejected: queue full for session %s", self._session_id)
             return False
         try:
             await asyncio.wait_for(clear_done.wait(), timeout=30.0)
-            return True
+            return clear_ok[0]
         except TimeoutError:
             logger.warning("clear_context timed out for session %s", self._session_id)
             return False
@@ -2577,7 +2588,7 @@ class SummonSession:
                     rt, instructions, pending.thread_ts, pre_sent=pending.pre_sent
                 )
             elif pending.clear:
-                await self._execute_clear(rt, pending.clear_done)
+                await self._execute_clear(rt, pending.clear_done, pending.clear_ok)
             else:
                 await self._handle_user_message(rt, claude, streamer, pending)
 
@@ -3592,11 +3603,14 @@ class SummonSession:
         self,
         _rt: _SessionRuntime,
         clear_done: asyncio.Event | None,
+        clear_ok: list | None = None,
     ) -> None:
         """Clear conversation context via ``/clear`` on the SDK client.
 
         Called by the response consumer when a ``_PendingTurn(clear=True)``
-        is dequeued.  Signals *clear_done* on completion (even on error).
+        is dequeued.  Sets ``clear_ok[0] = True`` on success, then signals
+        *clear_done*.  On failure, *clear_ok* stays ``[False]`` (the default
+        set by the caller).
         """
         if not self._claude:
             if clear_done:
@@ -3606,6 +3620,8 @@ class SummonSession:
             await self._claude.query("/clear")
             async for _ in self._claude.receive_response():
                 pass  # drain SystemMessage from /clear
+            if clear_ok is not None:
+                clear_ok[0] = True
         except Exception:
             logger.warning("clear drain failed for session %s", self._session_id)
         finally:

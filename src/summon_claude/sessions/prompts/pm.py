@@ -401,6 +401,15 @@ def build_pm_scan_prompt(
     When *github_enabled* and *is_git_repo*, a GitHub Triage persistent-worker section
     is included. Worktree cleanup is now delegated to the gh-triage child.
     """
+    has_triage = (github_enabled and is_git_repo) or jira_enabled
+    triage_bullet = ""
+    if has_triage:
+        triage_bullet = (
+            "   - Active triage children (named `gh-triage` or `jira-triage`): these are\n"
+            "     persistent workers. Do NOT stop them — they are reused each scan cycle.\n"
+            "     After project down/up, there may be a completed record with the same name —\n"
+            "     always use the active record.\n"
+        )
     parts = [
         "[SCAN TRIGGER] Perform your scheduled project scan now.\n\n"
         "## Session Health Check\n\n"
@@ -411,11 +420,8 @@ def build_pm_scan_prompt(
         "2. For active children: check if they appear idle (no recent activity, work done).\n"
         "   - Idle work children: read their channel to assess output. If work is complete,\n"
         "     decide: stop the session (`session_stop`) or leave running for human interaction.\n"
-        "   - Active triage children (named `gh-triage` or `jira-triage`): these are\n"
-        "     persistent workers. Do NOT stop them — they are reused each scan cycle.\n"
-        "     After project down/up, there may be a completed record with the same name —\n"
-        "     always use the active record.\n"
-        "   - Stuck children: no progress after multiple scans → restart or stop.\n"
+        + triage_bullet
+        + "   - Stuck children: no progress after multiple scans → restart or stop.\n"
         "3. For errored children: stop and respawn if the task is still needed.\n"
         "4. Update canvas with current session status.\n\n"
         "## Delegation Checklist\n\n"
