@@ -57,16 +57,8 @@ def _make_permission_handler(
 
 def _extract_batch_id(mock_client, action_prefix="approve:"):
     """Extract batch_id from the last post_interactive call's blocks."""
-    call_kwargs = mock_client.post_interactive.call_args
-    # post_interactive is called as post_interactive(text, blocks=...) or
-    # post_interactive(text, blocks)
-    kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
-    args = call_kwargs.args if call_kwargs.args else ()
-    blocks = kwargs.get("blocks")
-    if blocks is None and len(args) > 1:
-        blocks = args[1]
-    # Find the actions block
-    for block in blocks or []:
+    blocks = mock_client.post_interactive.call_args.kwargs.get("blocks") or []
+    for block in blocks:
         if block.get("type") == "actions":
             for element in block.get("elements", []):
                 value = element.get("value", "")
@@ -77,10 +69,7 @@ def _extract_batch_id(mock_client, action_prefix="approve:"):
 
 def _extract_request_id(mock_client):
     """Extract request_id from the last post_interactive AskUserQuestion blocks."""
-    call_kwargs = mock_client.post_interactive.call_args
-    kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
-    args = call_kwargs.args if call_kwargs.args else ()
-    blocks = kwargs.get("blocks") or (args[1] if len(args) > 1 else None)
+    blocks = mock_client.post_interactive.call_args.kwargs.get("blocks")
     assert blocks is not None
     for block in blocks:
         if block.get("type") == "actions":
@@ -120,10 +109,7 @@ class TestPermissionPrompt:
         task = asyncio.create_task(handler.handle("Bash", {"command": "echo hi"}, None))
         await asyncio.sleep(0.15)
 
-        call_kwargs = client.post_interactive.call_args
-        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
-        args = call_kwargs.args if call_kwargs.args else ()
-        blocks = kwargs.get("blocks") or (args[1] if len(args) > 1 else None)
+        blocks = client.post_interactive.call_args.kwargs.get("blocks")
         assert blocks is not None
 
         actions_block = next(b for b in blocks if b.get("type") == "actions")
@@ -305,10 +291,7 @@ class TestAskUserQuestion:
         client.post_interactive.assert_called_once()
 
         # Verify blocks contain an actions block with option buttons
-        call_kwargs = client.post_interactive.call_args
-        kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
-        args = call_kwargs.args if call_kwargs.args else ()
-        blocks = kwargs.get("blocks") or (args[1] if len(args) > 1 else None)
+        blocks = client.post_interactive.call_args.kwargs.get("blocks")
         assert blocks is not None
         action_blocks = [b for b in blocks if b.get("type") == "actions"]
         assert action_blocks, "AskUserQuestion should produce an actions block"

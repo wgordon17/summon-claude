@@ -217,6 +217,7 @@ class TestHealthMonitorRecovery:
         for _ in range(3):
             await monitor._handle_unhealthy()
 
+        assert on_reconnect_needed.call_count == 2
         assert on_exhausted.called
 
     async def test_health_monitor_reset_on_success(self):

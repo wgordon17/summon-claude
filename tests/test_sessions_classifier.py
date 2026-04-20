@@ -715,3 +715,65 @@ class TestClassifyIntegration:
         assert result.reason == "dangerous"
         assert classifier._consecutive_blocks == 1
         assert len(classifier._block_timestamps) == 1
+
+    async def test_do_classify_multi_message_response(self):
+        """_do_classify accumulates TextBlock text across multiple AssistantMessages.
+
+        The SDK may split a ThinkingBlock and TextBlock into separate AssistantMessages
+        (confirmed in test_sdk_integration.py). The classifier's parts list must collect
+        text from all messages and join them before parsing.
+        """
+        from claude_agent_sdk import AssistantMessage, TextBlock, ThinkingBlock
+
+        classifier = SummonAutoClassifier(_make_config())
+
+        fake_thinking = MagicMock(spec=ThinkingBlock)
+        fake_thinking.thinking = "step-by-step reasoning here"
+
+        fake_text_part1 = MagicMock(spec=TextBlock, text='{"decision": "allow"')
+        fake_msg1 = MagicMock(spec=AssistantMessage)
+        fake_msg1.content = [fake_thinking, fake_text_part1]
+
+        fake_text_part2 = MagicMock(spec=TextBlock, text=', "reason": "safe op"}')
+        fake_msg2 = MagicMock(spec=AssistantMessage)
+        fake_msg2.content = [fake_text_part2]
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=None)
+
+        async def fake_receive():
+            yield fake_msg1
+            yield fake_msg2
+
+        mock_client.receive_response = fake_receive
+
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("summon_claude.sessions.classifier.ClaudeSDKClient", return_value=mock_ctx):
+            result = await classifier._do_classify("Bash", {"command": "ls"}, "")
+
+        assert result.decision == "allow"
+        assert result.reason == "safe op"
+
+
+# ── Structural guard — setting_sources ───────────────────────────────────────
+
+
+class TestClassifierSettingSources:
+    """Structural guard — setting_sources=[] is deep inside _do_classify.
+
+    Behavioral testing would require mocking the full SDK options inspection.
+    Follows the same inspect.getsource pattern as TestScribeSettingSources.
+    """
+
+    def test_do_classify_setting_sources_empty(self):
+        """setting_sources=[] is passed to ClaudeAgentOptions in _do_classify."""
+        import inspect
+
+        from summon_claude.sessions import classifier as classifier_mod
+
+        source = inspect.getsource(classifier_mod.SummonAutoClassifier._do_classify)
+        assert "setting_sources" in source
+        assert "setting_sources=[]" in source

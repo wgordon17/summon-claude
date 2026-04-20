@@ -1,9 +1,10 @@
 """Integration tests for turn abort mechanisms.
 
 Tests the !stop command path (CommandResult metadata) and verifies
-abort event coordination with asyncio tasks. EventDispatcher reaction
-routing is covered by test_channel_reuse.py — these tests focus on
-SummonSession-level abort behavior.
+abort event coordination with asyncio tasks, including a focused test
+that dispatch_reaction from the session owner fires the abort callback.
+Full EventDispatcher routing coverage lives in test_channel_reuse.py
+and tests/test_event_dispatcher.py.
 """
 
 from __future__ import annotations

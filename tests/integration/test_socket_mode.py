@@ -175,23 +175,22 @@ class TestHealthMonitor:
         )
         await asyncio.wait_for(consumer.start(), timeout=15.0)
         assert consumer._handler is not None
+        on_reconnect_needed = AsyncMock()
+        on_exhausted = AsyncMock()
+
+        monitor = _HealthMonitor(
+            socket_handler=consumer._handler,
+            on_reconnect_needed=on_reconnect_needed,
+            on_exhausted=on_exhausted,
+            check_interval=1.0,
+            max_reconnect_attempts=3,
+            event_probe=None,
+        )
+
         try:
-            on_reconnect_needed = AsyncMock()
-            on_exhausted = AsyncMock()
-
-            monitor = _HealthMonitor(
-                socket_handler=consumer._handler,
-                on_reconnect_needed=on_reconnect_needed,
-                on_exhausted=on_exhausted,
-                check_interval=1.0,
-                max_reconnect_attempts=3,
-                event_probe=None,
-            )
-
             await consumer.stop()
             result = await monitor._is_healthy()
-        except Exception:
+        finally:
             await consumer.stop()
-            raise
 
         assert result is False
