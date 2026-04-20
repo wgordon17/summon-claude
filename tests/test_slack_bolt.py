@@ -64,7 +64,7 @@ def _make_router(config: SummonConfig | None = None, dispatcher=None):
     router._mock_handler_factory = mock_h  # type: ignore[attr-defined]
     router._mock_dispatcher = dispatcher  # type: ignore[attr-defined]
 
-    router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+    router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT", "team_id": "TBOT"})
     return router
 
 
@@ -260,7 +260,8 @@ class TestBoltRouterReconnect:
             patched_handler_cls.side_effect = [mock_h1, mock_h2]
 
             router = BoltRouter(cfg, mock_dispatcher)
-            router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+            _auth = {"user_id": "UBOT", "team_id": "TBOT"}
+            router.web_client.auth_test = AsyncMock(return_value=_auth)
             await router.start()
             assert router._app is mock_a1
 
@@ -487,7 +488,7 @@ class TestBoltRouterHealthMonitor:
         mock_dispatcher = MagicMock()
         mock_dispatcher.all_channel_ids = MagicMock(return_value=[])
         router = BoltRouter(mock_config, mock_dispatcher)
-        router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+        router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT", "team_id": "TBOT"})
         router._patch_stack = stack
         await router.start()
         return router
@@ -765,7 +766,8 @@ class TestEventFailureCallback:
             patched_handler_cls.return_value = mock_handler
 
             router = BoltRouter(cfg, mock_dispatcher)
-            router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+            _auth = {"user_id": "UBOT", "team_id": "TBOT"}
+            router.web_client.auth_test = AsyncMock(return_value=_auth)
 
             mock_probe = MagicMock(spec=EventProbe)
             mock_probe.setup_anchor = AsyncMock()
@@ -808,7 +810,8 @@ class TestEventFailureCallback:
             patched_handler_cls.return_value = mock_handler
 
             router = BoltRouter(cfg, mock_dispatcher)
-            router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+            _auth = {"user_id": "UBOT", "team_id": "TBOT"}
+            router.web_client.auth_test = AsyncMock(return_value=_auth)
 
             mock_probe = MagicMock(spec=EventProbe)
             mock_probe.setup_anchor = AsyncMock()
@@ -859,7 +862,8 @@ class TestBoltRouterReconnectWithProbe:
             patched_handler_cls.side_effect = [mock_h1, mock_h2]
 
             router = BoltRouter(cfg, mock_dispatcher)
-            router.web_client.auth_test = AsyncMock(return_value={"user_id": "UBOT"})
+            _auth = {"user_id": "UBOT", "team_id": "TBOT"}
+            router.web_client.auth_test = AsyncMock(return_value=_auth)
 
             mock_probe = MagicMock(spec=EventProbe)
             mock_probe.setup_anchor = AsyncMock()

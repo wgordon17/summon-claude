@@ -66,6 +66,7 @@ def make_manager(**config_overrides):
     manager._web_client = AsyncMock()
     manager._dispatcher = MagicMock()
     manager._bot_user_id = "B001"
+    manager._bot_team_id = None
     manager._ipc_resume = AsyncMock()
     manager.create_session_with_spawn_token = AsyncMock()
     manager._grace_timer = None

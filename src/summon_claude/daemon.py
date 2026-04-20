@@ -335,6 +335,7 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
             config=config,
             web_client=bolt_router.web_client,
             bot_user_id=bolt_router.bot_user_id,
+            bot_team_id=bolt_router.bot_team_id,
             dispatcher=dispatcher,
             event_probe=bolt_router.event_probe,
             jira_proxy_port=jira_proxy_port,

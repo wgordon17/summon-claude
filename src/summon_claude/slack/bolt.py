@@ -562,6 +562,7 @@ class BoltRouter:
         self._app: AsyncApp | None = None
         self._socket_handler: AsyncSocketModeHandler | None = None
         self.bot_user_id: str | None = None
+        self.bot_team_id: str | None = None
         self._event_probe: EventProbe | None = None
 
         # Health monitor — created by start_health_monitor()
@@ -586,7 +587,10 @@ class BoltRouter:
         if self.bot_user_id is None:
             resp = await self.web_client.auth_test()
             self.bot_user_id = resp["user_id"]
-            logger.debug("BoltRouter: bot_user_id cached as %s", self.bot_user_id)
+            self.bot_team_id = resp["team_id"]
+            logger.debug(
+                "BoltRouter: bot_user_id=%s, bot_team_id=%s", self.bot_user_id, self.bot_team_id
+            )
 
             # Create EventProbe — degrade gracefully if setup fails
             probe = EventProbe(web_client=self.web_client, config=self._config)

@@ -680,6 +680,7 @@ class SummonSession:
         web_client: AsyncWebClient | None = None,
         dispatcher: EventDispatcher | None = None,
         bot_user_id: str | None = None,
+        bot_team_id: str | None = None,
         parent_session_id: str | None = None,
         parent_channel_id: str | None = None,
         ipc_spawn: Callable[[SessionOptions, str], Awaitable[str]] | None = None,
@@ -717,8 +718,9 @@ class SummonSession:
         # Shared web_client and dispatcher from the daemon (None for standalone/test use)
         self._web_client = web_client
         self._dispatcher = dispatcher
-        # Pre-cached bot user ID from BoltRouter.start() — avoids a per-session auth_test() call
+        # Pre-cached bot user/team ID from BoltRouter.start() — avoids per-session auth_test()
         self._bot_user_id = bot_user_id
+        self._bot_team_id = bot_team_id
         # Daemon IPC callbacks (injected to avoid circular imports with cli.daemon_client)
         self._ipc_spawn = ipc_spawn
         self._ipc_resume = ipc_resume
@@ -2176,6 +2178,7 @@ class SummonSession:
         streamer = ResponseStreamer(
             router=router,
             user_id=self._authenticated_user_id,
+            team_id=self._bot_team_id,
             show_thinking=self._config.show_thinking,
             max_inline_chars=self._config.max_inline_chars,
             on_file_change=self._on_file_change,

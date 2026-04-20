@@ -11,6 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.security import validate_agent_output
@@ -337,6 +338,30 @@ class SlackClient:
             await self._web.views_open(trigger_id=trigger_id, view=view)
         except Exception as e:
             logger.warning("Failed to open modal view: %s", e)
+
+    # --- Chat stream methods ---
+
+    async def open_chat_stream(
+        self,
+        thread_ts: str,
+        *,
+        team_id: str,
+        user_id: str,
+        buffer_size: int = 64,
+    ) -> AsyncChatStream:
+        """Open a chat stream in a thread for progressive message rendering.
+
+        Returns the raw ``AsyncChatStream`` — the caller manages lifecycle
+        (``append`` / ``stop``).  Both ``team_id`` and ``user_id`` are required
+        by the Slack API (spike-confirmed).
+        """
+        return await self._web.chat_stream(
+            channel=self.channel_id,
+            thread_ts=thread_ts,
+            recipient_team_id=team_id,
+            recipient_user_id=user_id,
+            buffer_size=buffer_size,
+        )
 
     # --- Canvas methods ---
 
