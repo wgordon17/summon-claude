@@ -159,6 +159,22 @@ class TestProjectList:
         assert proj["pm_running"] == 1  # has an active PM session
         assert proj["last_pm_status"] == "active"
 
+    async def test_list_includes_pm_running_new_format(self, registry, tmp_path):
+        """list_projects detects PM via the new 'pm-{hex}' name format (LIKE 'pm-%')."""
+        project_id = await registry.add_project("new-fmt-proj", str(tmp_path))
+        await registry.register(
+            "sess-pm-new",
+            1234,
+            str(tmp_path),
+            name="pm-abc123",
+            project_id=project_id,
+        )
+        await registry.update_status("sess-pm-new", "active")
+        projects = await registry.list_projects()
+        proj = next(p for p in projects if p["name"] == "new-fmt-proj")
+        assert proj["pm_running"] == 1
+        assert proj["last_pm_status"] == "active"
+
     async def test_list_shows_errored_status(self, registry, tmp_path):
         project_id = await registry.add_project("err-proj", str(tmp_path))
         await registry.register(

@@ -650,9 +650,10 @@ class TestCreateChannel:
 
         cid, cname = await session._create_channel(mock_client)
         assert cid == "C789"
-        assert cname.startswith("my-api-")
+        expected_prefix = f"my-api-{session._name}-"
+        assert cname.startswith(expected_prefix)
         # 4-char hex (hex_bytes=2)
-        hex_part = cname[len("my-api-test-") :]
+        hex_part = cname[len(expected_prefix) :]
         assert len(hex_part) == 4, f"Expected 4-char hex suffix, got {hex_part!r}"
 
 
@@ -689,24 +690,23 @@ class TestPrefixResolution:
     """Prefix and hex_bytes resolution from project registry in _run_session else branch."""
 
     async def test_prefix_resolution_project_child(self):
-        """With _project_id set, effective prefix and hex_bytes update from project."""
+        """_run_session resolves prefix from project registry for child sessions."""
         session = make_session()
-        # Simulate project lookup
+        session._project_id = "proj-123"
+        session._web_client = AsyncMock()
+        session._bot_user_id = "U_BOT"
+
         project = {"channel_prefix": "myapi", "name": "myapi-project"}
         mock_reg = AsyncMock()
         mock_reg.get_project = AsyncMock(return_value=project)
+        # _create_channel will be called — mock it to avoid Slack API
+        mock_reg.register_channel = AsyncMock()
+        session._create_channel = AsyncMock(return_value=("C_TEST", "myapi-test-abc"))
 
-        # Replicate the prefix resolution block from _run_session else branch
-        if session._project_id is None:
-            # Inject a project_id for this test
-            session._project_id = "proj-123"
-        try:
-            _proj = await mock_reg.get_project(session._project_id)
-        except Exception:
-            _proj = None
-        if _proj:
-            session._effective_prefix = _proj.get("channel_prefix", session._effective_prefix)
-            session._effective_hex_bytes = 2
+        # _run_session will resolve prefix, then call _create_channel, then
+        # proceed to SlackClient setup — stop early by raising after channel creation
+        with contextlib.suppress(Exception):
+            await session._run_session(mock_reg)
 
         assert session._effective_prefix == "myapi"
         assert session._effective_hex_bytes == 2
