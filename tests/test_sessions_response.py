@@ -2470,13 +2470,30 @@ class TestHybridStreaming:
         await streamer.stream_with_flush(agen(messages))
 
         # Tool use context block should still be posted via chat_postMessage
-        assert client.post.await_count > 0
+        tool_post_calls = [
+            c
+            for c in client.post.call_args_list
+            if "blocks" in (c.kwargs or {}) and any("hammer" in str(b) for b in c.kwargs["blocks"])
+        ]
+        assert len(tool_post_calls) >= 1, "Tool use block should be posted via chat_postMessage"
 
     async def test_fallback_on_stream_append_failure(self):
-        """Falls back to chat_postMessage when stream.append fails mid-turn."""
+        """Falls back after initial success when a later append fails."""
         streamer, router, client, mock_stream = self._make_stream_streamer()
         await self._setup_turn(streamer, client)
-        mock_stream.append = AsyncMock(side_effect=Exception("append_failed"))
+
+        # First append (in_progress) succeeds, second (complete) fails
+        call_count = 0
+        original_append = AsyncMock()
+
+        async def _append_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise Exception("append_failed")
+            return await original_append(**kwargs)
+
+        mock_stream.append = AsyncMock(side_effect=_append_side_effect)
 
         tool_result = ToolResultBlock(tool_use_id="tu_1", content="ok", is_error=False)
         messages = [
@@ -2490,6 +2507,23 @@ class TestHybridStreaming:
         mock_stream.stop.assert_awaited()
         # stream_failed should prevent further stream attempts
         assert streamer._turn.stream_failed is True
+
+    async def test_flush_to_thread_uses_stream_when_active(self):
+        """_flush_to_thread routes through stream.append when a stream is open."""
+        streamer, router, client, mock_stream = self._make_stream_streamer()
+        await self._setup_turn(streamer, client)
+
+        # Manually open a stream and set up thread flushing state
+        streamer._turn.active_stream = mock_stream
+        streamer._turn.posting_to_thread = True
+        streamer._turn.buffer = "Some thread text"
+
+        await streamer._flush_buffer()
+
+        # Text should have gone to stream.append(markdown_text=...) not client.post
+        md_calls = [c for c in mock_stream.append.call_args_list if c.kwargs.get("markdown_text")]
+        assert len(md_calls) == 1
+        assert md_calls[0].kwargs["markdown_text"] == "Some thread text"
 
     async def test_no_stream_without_team_id(self):
         """No stream is opened when team_id is not set."""

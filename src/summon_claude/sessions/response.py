@@ -451,14 +451,13 @@ class ResponseStreamer:
                 added_this_turn = set(self._pending_agent_verifications) - keys_before
                 for stale_key in added_this_turn:
                     self._pending_agent_verifications.pop(stale_key, None)
+            await self._stop_stream()
 
         # Final flush
         if self._turn.thinking_buffer:
             await self._flush_thinking()
         if self._turn.buffer:
             await self._flush_buffer()
-        # Stop the chat stream before posting the result summary
-        await self._stop_stream()
         if result:
             await self._post_result_summary(result)
             # Clear thread status at turn end
