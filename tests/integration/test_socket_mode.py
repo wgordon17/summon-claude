@@ -60,24 +60,12 @@ async def event_consumer(slack_harness, test_channel):
         signing_secret=slack_harness.signing_secret,
     )
     try:
-        await asyncio.wait_for(consumer.start(), timeout=15.0)
+        await asyncio.wait_for(consumer.start(), timeout=25.0)
     except TimeoutError:
-        pytest.skip("Socket Mode connection timed out (15s)")
+        pytest.skip("Socket Mode connection timed out")
     except Exception as exc:
         await consumer.stop()
         pytest.skip(f"Socket Mode connection failed: {exc}")
-
-    canary = f"canary-{secrets.token_hex(4)}"
-    await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
-    try:
-        await consumer.wait_for_event(
-            lambda e: e.get("type") == "message" and canary in e.get("text", ""),
-            timeout=10.0,
-        )
-    except TimeoutError:
-        await consumer.stop()
-        pytest.skip("Socket Mode canary failed — events not flowing")
-    consumer.drain()
 
     yield consumer
     await consumer.stop()
@@ -131,17 +119,8 @@ class TestSocketReconnect:
         await asyncio.wait_for(consumer.start(), timeout=15.0)
         await consumer.stop()
 
-        await asyncio.wait_for(consumer.start(), timeout=15.0)
+        await asyncio.wait_for(consumer.start(), timeout=25.0)
         try:
-            # Canary: confirm events are flowing after restart
-            canary = f"canary-{secrets.token_hex(4)}"
-            await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
-            await consumer.wait_for_event(
-                lambda e: e.get("type") == "message" and canary in e.get("text", ""),
-                timeout=10.0,
-            )
-            consumer.drain()
-
             nonce = f"reconnect-{secrets.token_hex(6)}"
             await slack_harness.client.chat_postMessage(channel=test_channel, text=nonce)
             event = await consumer.wait_for_event(

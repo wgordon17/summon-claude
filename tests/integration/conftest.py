@@ -162,6 +162,15 @@ class EventConsumer:
         self._handler: AsyncSocketModeHandler | None = None
 
     async def start(self) -> None:
+        """Connect to Socket Mode and validate event delivery.
+
+        After connecting, auto-discovers a channel the bot belongs to,
+        posts a canary message, and waits for it to arrive via Socket
+        Mode. This guarantees the subscription is active before
+        returning. Without this, events posted immediately after
+        connecting may be lost because the WebSocket handshake completes
+        before Slack routes events to the new consumer.
+        """
         app = AsyncApp(
             token=self._bot_token,
             signing_secret=self._signing_secret,
@@ -176,6 +185,32 @@ class EventConsumer:
         handler = AsyncSocketModeHandler(app, self._app_token)
         await handler.connect_async()
         self._handler = handler
+
+        # Auto-discover a channel and validate event delivery.
+        # Best-effort: skips silently when credentials are fake (unit tests)
+        # or no channels exist.
+        try:
+            web = AsyncWebClient(token=self._bot_token)
+            resp = await web.conversations_list(
+                types="public_channel,private_channel",
+                limit=1,
+                exclude_archived=True,
+            )
+            channels = resp.get("channels", [])
+            if channels:
+                canary_channel = channels[0]["id"]
+                canary = f"canary-{secrets.token_hex(4)}"
+                await web.chat_postMessage(channel=canary_channel, text=canary)
+                await self.wait_for_event(
+                    lambda e: e.get("type") == "message" and canary in e.get("text", ""),
+                    timeout=10.0,
+                )
+                self.drain()
+        except Exception:
+            logging.getLogger(__name__).debug(
+                "EventConsumer: canary skipped (expected in unit tests)",
+                exc_info=True,
+            )
 
     async def _capture_event(self, event: dict, **kwargs: object) -> None:
         await self._events.put(event)

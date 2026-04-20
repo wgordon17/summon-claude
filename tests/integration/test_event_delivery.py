@@ -83,23 +83,12 @@ async def event_consumer(slack_harness, test_channel):
         signing_secret=slack_harness.signing_secret,
     )
     try:
-        await asyncio.wait_for(consumer.start(), timeout=15.0)
+        await asyncio.wait_for(consumer.start(), timeout=25.0)
     except TimeoutError:
-        pytest.skip("Socket Mode connection timed out (15s)")
+        pytest.skip("Socket Mode connection timed out")
     except Exception as exc:
-        pytest.skip(f"Socket Mode connection failed: {exc}")
-
-    canary = f"canary-{secrets.token_hex(4)}"
-    await slack_harness.client.chat_postMessage(channel=test_channel, text=canary)
-    try:
-        await consumer.wait_for_event(
-            lambda e: e.get("type") == "message" and canary in e.get("text", ""),
-            timeout=10.0,
-        )
-    except TimeoutError:
         await consumer.stop()
-        pytest.skip("Socket Mode canary failed — events not flowing")
-    consumer.drain()
+        pytest.skip(f"Socket Mode connection failed: {exc}")
 
     yield consumer
     await consumer.stop()
