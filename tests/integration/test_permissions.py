@@ -304,14 +304,14 @@ class TestAskUserQuestion:
 
         client.post_interactive.assert_called_once()
 
-        # Verify blocks contain something about the question
+        # Verify blocks contain an actions block with option buttons
         call_kwargs = client.post_interactive.call_args
         kwargs = call_kwargs.kwargs if call_kwargs.kwargs else {}
         args = call_kwargs.args if call_kwargs.args else ()
         blocks = kwargs.get("blocks") or (args[1] if len(args) > 1 else None)
         assert blocks is not None
-        block_text = str(blocks)
-        assert "Pick one?" in block_text or "Choice" in block_text
+        action_blocks = [b for b in blocks if b.get("type") == "actions"]
+        assert action_blocks, "AskUserQuestion should produce an actions block"
 
         # Resolve by simulating option click
         request_id = _extract_request_id(client)
