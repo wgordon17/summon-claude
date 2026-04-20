@@ -349,7 +349,7 @@ class ResponseStreamer:
                                 self._spawn_background(
                                     self.on_subagent_return(agent_input, message.summary or "")
                                 )
-                        elif message.status in ("error", "cancelled"):
+                        else:
                             self._pending_agent_verifications.pop(message.tool_use_id)
                             logger.debug(
                                 "Subagent %s %s — skipping verification",
