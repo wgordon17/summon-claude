@@ -115,7 +115,9 @@ class TestJiraTriageInstructions:
             jira_cloud_id="abc\nmalicious",
             jira_jql="project = FOO",
         )
-        assert "\n" not in result.split("cloudId")[1].split("\n")[0]
+        # Newline must be stripped — sanitized value on same line as cloudId
+        assert "abc malicious" in result
+        assert "abc\nmalicious" not in result
 
     def test_builder_sanitizes_jql_newlines(self):
         result = build_jira_triage_instructions(
@@ -320,7 +322,7 @@ class TestRefactoredScanPrompt:
         result = build_pm_scan_prompt()
         assert "status=active" in result
 
-    def test_triage_section_includes_error_branch(self):
+    def test_triage_section_includes_clear_error_branch(self):
         """Triage sections must instruct PM what to do if session_clear fails."""
         result = build_pm_scan_prompt(
             github_enabled=True,
@@ -328,7 +330,8 @@ class TestRefactoredScanPrompt:
             jira_enabled=True,
         )
         assert "session_clear" in result
-        assert "error" in result.lower()
+        # Verify triage-specific error handling, not just generic "errored" in health check
+        assert "`session_clear` returns an error" in result
 
     def test_each_triage_name_in_scan_prompt(self):
         """Each name in _TRIAGE_SESSION_NAMES must appear in the scan prompt."""
