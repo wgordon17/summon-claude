@@ -815,13 +815,14 @@ class TestMultiselectAction:
         )
         assert handler._ask_user.multi_selections.get((req_id, 0)) == ["A"]
 
-        # Deselect everything (empty list from Slack)
+        # Deselect everything (empty list from Slack) — early return, state unchanged
         await handler.handle_ask_user_multiselect_action(
             action_id="ask_user_0_multiselect",
             selected_values=[],
             user_id="U1",
         )
-        assert handler._ask_user.multi_selections.get((req_id, 0)) == []
+        # CR-002 fix: empty selection returns early, preserving previous state
+        assert handler._ask_user.multi_selections.get((req_id, 0)) == ["A"]
 
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

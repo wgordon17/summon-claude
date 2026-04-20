@@ -27,6 +27,7 @@ from summon_claude.file_handler import (
     download_file,
     prepare_image_content,
     prepare_text_content,
+    sanitize_filename,
 )
 from summon_claude.slack.client import SlackClient
 
@@ -124,6 +125,15 @@ class EventDispatcher:
         """Return True if a session is registered for this channel."""
         return channel_id in self._sessions
 
+    def update_pending_turns(self, channel_id: str, queue: asyncio.Queue) -> None:  # type: ignore[type-arg]
+        """Update the pending_turns queue for an existing registered handle.
+
+        Called after compaction restart to point the handle at the new queue.
+        """
+        handle = self._sessions.get(channel_id)
+        if handle is not None:
+            handle.pending_turns = queue
+
     def has_active_sessions(self) -> bool:
         """Return True if any sessions are currently registered."""
         return bool(self._sessions)
@@ -195,7 +205,7 @@ class EventDispatcher:
 
         await self._process_file_shared(file_id, handle)
 
-    async def _process_file_shared(self, file_id: str, handle: SessionHandle) -> None:
+    async def _process_file_shared(self, file_id: str, handle: SessionHandle) -> None:  # noqa: PLR0911
         """Fetch, classify, download, and enqueue a file for the session.
 
         Security:
@@ -248,6 +258,11 @@ class EventDispatcher:
 
         # Download file content (token from web_client, never logged)
         token: str = self._web_client.token or ""
+        if not token:
+            logger.warning(
+                "dispatch_file_shared: no auth token — skipping download for %s", filename
+            )
+            return
         try:
             content_bytes = await download_file(url_private, token, max_size=MAX_FILE_SIZE)
         except Exception as e:
@@ -264,7 +279,7 @@ class EventDispatcher:
             pending: _PendingTurn = _PendingTurn(message=text_content, pre_sent=False)
         else:  # image
             content_blocks = prepare_image_content(filename, content_bytes, mimetype)
-            safe_name = filename.replace("\n", "")[:200]
+            safe_name = sanitize_filename(filename)
             pending = _PendingTurn(
                 message=f"User shared image: {safe_name}",
                 pre_sent=False,

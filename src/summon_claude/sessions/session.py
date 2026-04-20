@@ -2469,6 +2469,10 @@ class SummonSession:
                     logger.warning("Max restart count (%d) exceeded", _MAX_SESSION_RESTARTS)
                     break
                 self._pending_turns = asyncio.Queue(maxsize=_MAX_PENDING_TURNS)
+                # Re-register the handle so the dispatcher's reference points
+                # to the new queue (not the old one with the sentinel).
+                if self._dispatcher is not None and self._channel_id:
+                    self._dispatcher.update_pending_turns(self._channel_id, self._pending_turns)
                 self._context_warned_threshold = 0.0
                 self._last_context = None
                 self._claude_session_id = None
@@ -4255,8 +4259,7 @@ class SummonSession:
         3. Identity verification — non-owner users are rejected.
         4. Message truncation at ``_MAX_USER_MESSAGE_CHARS``.
         5. File reference extraction via ``format_file_references``.
-        6. AskUserQuestion free-text capture via ``permission_handler``.
-        7. Command detection via ``find_commands`` (standalone and mid-message).
+        6. Command detection via ``find_commands`` (standalone and mid-message).
 
         Returns ``(full_text, thread_ts)`` when the message should be forwarded
         to Claude, or ``None`` when it has been handled/filtered internally.

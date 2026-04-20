@@ -8,6 +8,8 @@ from typing import Any
 
 from markdown_to_mrkdwn import SlackMarkdownConverter
 
+from summon_claude.slack.client import sanitize_for_mrkdwn
+
 logger = logging.getLogger(__name__)
 
 _converter = SlackMarkdownConverter()
@@ -87,9 +89,11 @@ def build_home_view(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         )
     else:
         for s in capped:
-            name = s.get("session_name") or s.get("session_id", "")[:8]
-            model = s.get("model") or "default"
-            channel = s.get("slack_channel_name") or s.get("slack_channel_id") or "—"
+            name = sanitize_for_mrkdwn(s.get("session_name") or s.get("session_id", "")[:8])
+            model = sanitize_for_mrkdwn(s.get("model") or "default")
+            channel = sanitize_for_mrkdwn(
+                s.get("slack_channel_name") or s.get("slack_channel_id") or "—"
+            )
             status = s.get("status", "unknown")
             context_pct = s.get("context_pct")
             ctx_text = f"{context_pct:.0f}%" if context_pct is not None else "—"

@@ -1398,9 +1398,8 @@ class PermissionHandler:
         request_id, labels = self._resolve_multiselect_labels(selected_values, q_idx)
 
         if request_id is None:
-            # Empty selection — clear state (user deselected everything)
-            for rid in list(self._ask_user.events.keys()):
-                self._ask_user.multi_selections[(rid, q_idx)] = []
+            # Empty selection — state will be cleaned up by _cleanup_ask_user
+            # when the request completes. Skip now to avoid touching unrelated requests.
             return
 
         if request_id not in self._ask_user.events:
@@ -1490,9 +1489,16 @@ class PermissionHandler:
     async def handle_ask_user_view_submission(self, view: dict, user_id: str) -> None:
         """Handle modal submission for an 'Other' free-text answer.
 
-        Called by EventDispatcher after verifying user_id == authenticated_user_id.
         Extracts the answer from the view state and completes the question.
+        Performs its own auth check as defense-in-depth (EventDispatcher also checks).
         """
+        if user_id != self._authenticated_user_id:
+            logger.warning(
+                "View submission from unauthorized user %s (expected %s)",
+                user_id,
+                self._authenticated_user_id,
+            )
+            return
         try:
             meta = json.loads(view.get("private_metadata", "{}"))
             request_id: str = meta["request_id"]
@@ -1709,7 +1715,7 @@ def _build_ask_user_blocks(request_id: str, questions: list[dict]) -> list[dict]
     for i, q in enumerate(questions):
         header = q.get("header", "")
         question_text = q.get("question", "")
-        options = q.get("options", [])
+        options = q.get("options", [])[:100]  # Slack static_select cap
         multi_select = q.get("multiSelect", False)
 
         # Question text (with multi-select hint)
