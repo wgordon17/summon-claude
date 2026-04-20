@@ -599,6 +599,34 @@ async def _sync_tasks_to_canvas(
     await canvas_store.update_section(heading, "\n".join(lines))
 
 
+async def verify_subagent_return(
+    agent_input: dict,
+    agent_result: str,
+    permission_handler: PermissionHandler,
+    router: ThreadRouter,
+) -> None:
+    """Verify a subagent's return value for safety concerns.
+
+    Warn-only — posts a Slack notice on "block", never prevents the result.
+    Does NOT update classifier fallback counters (SEC-D-010).
+    """
+    classifier = permission_handler.classifier
+    if not permission_handler.classifier_enabled or classifier is None:
+        return
+    context = f"Subagent task: {agent_input.get('prompt', '')[:500]}\n"
+    context += f"Subagent result: {agent_result[:2000]}"
+    try:
+        result = await classifier.classify_content(context)
+        if result.decision == "block":
+            await router.post_to_main(
+                ":warning: **Security notice**: The subagent's action history "
+                "was flagged by the auto-mode classifier. Review the results "
+                "carefully before acting on them."
+            )
+    except Exception:
+        logger.debug("Subagent return verification failed", exc_info=True)
+
+
 class SummonSession:
     """Orchestrates a Claude Code session bridged to a Slack channel.
 
@@ -2053,21 +2081,7 @@ class SummonSession:
         mcp_health_tracker = McpHealthTracker(on_degraded=_on_mcp_degraded)
 
         async def _verify_subagent_return(agent_input: dict, agent_result: str) -> None:
-            classifier = rt.permission_handler.classifier
-            if not rt.permission_handler.classifier_enabled or classifier is None:
-                return
-            context = f"Subagent task: {agent_input.get('prompt', '')[:500]}\n"
-            context += f"Subagent result: {agent_result[:2000]}"
-            try:
-                result = await classifier.classify_content(context)
-                if result.decision == "block":
-                    await router.post_to_main(
-                        ":warning: **Security notice**: The subagent's action history "
-                        "was flagged by the auto-mode classifier. Review the results "
-                        "carefully before acting on them."
-                    )
-            except Exception:
-                logger.debug("Subagent return verification failed", exc_info=True)
+            await verify_subagent_return(agent_input, agent_result, rt.permission_handler, router)
 
         streamer = ResponseStreamer(
             router=router,

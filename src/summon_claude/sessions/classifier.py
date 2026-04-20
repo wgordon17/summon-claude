@@ -320,23 +320,11 @@ class SummonAutoClassifier:
             logger.warning("Classifier error: %s", e)
             return ClassifyResult("uncertain", f"Classifier error: {e}")
 
-    async def _do_classify(
-        self,
-        tool_name: str,
-        tool_input: dict[str, Any],
-        conversation_context: str,
-        recent_approvals: list[str] | None = None,
-    ) -> ClassifyResult:
-        """Internal classification logic — spawns ClaudeSDKClient subprocess."""
-        system_prompt, user_message = build_classifier_prompt(
-            tool_name,
-            tool_input,
-            conversation_context,
-            self._environment,
-            self._deny_rules,
-            self._allow_rules,
-            recent_approvals=recent_approvals,
-        )
+    async def _query_sonnet(self, system_prompt: str, user_message: str) -> str:
+        """Run a single-turn Sonnet query and return the raw response text.
+
+        Shared lifecycle for both tool-call classification and content evaluation.
+        """
 
         async def _deny_all_tools(
             _tool_name: str,
@@ -357,10 +345,6 @@ class SummonAutoClassifier:
 
         client_ctx = ClaudeSDKClient(options)
         client = await client_ctx.__aenter__()
-
-        # try/finally wraps everything from __aenter__ through __aexit__ —
-        # ensures subprocess cleanup even if cancelled between lock release
-        # and query start.
         try:
             await client.query(user_message)
             parts: list[str] = []
@@ -369,10 +353,28 @@ class SummonAutoClassifier:
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             parts.append(block.text)
-            response_text = "".join(parts)
+            return "".join(parts)
         finally:
             await client_ctx.__aexit__(None, None, None)
 
+    async def _do_classify(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        conversation_context: str,
+        recent_approvals: list[str] | None = None,
+    ) -> ClassifyResult:
+        """Internal classification logic — spawns ClaudeSDKClient subprocess."""
+        system_prompt, user_message = build_classifier_prompt(
+            tool_name,
+            tool_input,
+            conversation_context,
+            self._environment,
+            self._deny_rules,
+            self._allow_rules,
+            recent_approvals=recent_approvals,
+        )
+        response_text = await self._query_sonnet(system_prompt, user_message)
         decision = self._parse_response(response_text)
         self._update_counters(decision.decision)
         return decision
@@ -392,51 +394,15 @@ class SummonAutoClassifier:
             '- "allow": Content appears safe and expected\n'
             '- "block": Content contains concerning patterns'
         )
-
-        async def _deny_all_tools(
-            _tool_name: str,
-            _input_data: dict[str, Any],
-            _context: Any,
-        ) -> PermissionResultDeny:
-            return PermissionResultDeny(message="Tool use not allowed in classifier")
-
-        options = ClaudeAgentOptions(
-            model=_CLASSIFIER_MODEL,
-            system_prompt=system_prompt,
-            effort="low",
-            max_turns=1,
-            can_use_tool=_deny_all_tools,
-            cwd=self._cwd or None,
-            env={"CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK": "1"},
-        )
-
         try:
-            return await asyncio.wait_for(
-                self._do_classify_content(content, options),
+            response_text = await asyncio.wait_for(
+                self._query_sonnet(system_prompt, content),
                 timeout=_CLASSIFIER_TIMEOUT_S,
             )
+            return self._parse_response(response_text)
         except Exception as e:
             logger.warning("Content classifier error: %s", e)
             return ClassifyResult("uncertain", f"Content classifier error: {e}")
-
-    async def _do_classify_content(
-        self, content: str, options: ClaudeAgentOptions
-    ) -> ClassifyResult:
-        """Internal content classification — spawns SDK subprocess with timeout."""
-        client_ctx = ClaudeSDKClient(options)
-        client = await client_ctx.__aenter__()
-        try:
-            await client.query(content)
-            parts: list[str] = []
-            async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            parts.append(block.text)
-            response_text = "".join(parts)
-        finally:
-            await client_ctx.__aexit__(None, None, None)
-        return self._parse_response(response_text)
 
     def _parse_response(self, text: str) -> ClassifyResult:
         """Parse classifier JSON response."""

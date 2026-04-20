@@ -488,6 +488,11 @@ class PermissionHandler:
         """The auto-mode classifier instance, or None if not configured."""
         return self._classifier
 
+    @property
+    def _classifier_active(self) -> bool:
+        """True when the classifier is the decision authority for tool calls."""
+        return self._classifier_enabled and self._classifier is not None and self._in_worktree
+
     def set_classifier_enabled(self, enabled: bool) -> None:
         """Toggle classifier on/off. Resets fallback counters when enabling."""
         if enabled and not self._in_worktree:
@@ -658,7 +663,7 @@ class PermissionHandler:
             return PermissionResultAllow()
 
         # 2i. Auto-mode classifier (only active after worktree entry)
-        if self._classifier_enabled and self._classifier is not None and self._in_worktree:
+        if self._classifier_active:
             context_text = extract_classifier_context(self._context_history)
             classify_result = await self._classifier.classify(
                 tool_name,
@@ -705,13 +710,10 @@ class PermissionHandler:
         # When classifier is active, it is the authority —
         # "uncertain" means "ask the human", don't let SDK suggestions override that.
         _write_gated_fallthrough = tool_name in _WRITE_GATED_TOOLS and self._write_access_granted
-        _classifier_active = (
-            self._classifier_enabled and self._classifier is not None and self._in_worktree
-        )
         if (
             _sdk_suggests_allow(context, tool_name)
             and not _write_gated_fallthrough
-            and not _classifier_active
+            and not self._classifier_active
         ):
             self._resolve_approval(tool_name, _LABEL_SDK_ALLOWED)
             return PermissionResultAllow()
