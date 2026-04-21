@@ -41,12 +41,6 @@ Bug hunter is enabled per-project at registration time:
 summon project add my-api --bug-hunter
 ```
 
-Or enable it on an existing project:
-
-```{ .bash .notest }
-summon project update my-api --bug-hunter
-```
-
 The bug hunter starts automatically the next time you run `summon project up`. A confirmation message appears in the PM channel when it starts.
 
 If Matchlock is not installed when you pass `--bug-hunter`, the CLI prints an error and does not enable it. If Matchlock is missing at `project up` time, a warning is posted to the PM's Slack channel with install instructions.
@@ -121,15 +115,15 @@ Code comments, strings, docstrings, and commit messages are treated as untrusted
 
 Each scan cycle runs through five phases:
 
-| Phase | What happens | Timeout |
-|-------|-------------|---------|
-| Bootstrap | Read SETUP.md, SCAN_LOG.md, check git changes | -- |
-| Static analysis | Run linters/SAST on changed files | -- |
-| LLM analysis | Review code for issues static tools miss | -- |
-| Runtime validation | Run tests for changed modules | -- |
-| Report | Update FINDINGS.md, canvas, scan log | -- |
+| Phase | What happens |
+|-------|-------------|
+| Bootstrap | Read SETUP.md, SCAN_LOG.md, check git changes |
+| Static analysis | Run linters/SAST on changed files |
+| LLM analysis | Review code for issues static tools miss |
+| Runtime validation | Run tests for changed modules |
+| Report | Update FINDINGS.md, canvas, scan log |
 
-The entire cycle has a 30-minute timeout. If exceeded, partial results are recorded and the next cycle resumes from where it left off.
+The entire scan cycle has a 30-minute timeout. If exceeded, partial results are recorded and the next cycle resumes from where it left off.
 
 ---
 
@@ -187,7 +181,7 @@ The bug hunter checks `SUPPRESSIONS.md` before reporting new findings and skips 
 
 The PM agent can read the bug hunter's canvas using the `summon_canvas_read` MCP tool. During scan cycles, the PM can monitor bug hunter findings and incorporate them into task planning -- for example, spawning a child session to fix a critical finding.
 
-The bug hunter channel follows the project's channel prefix convention: if your project prefix is `my-api`, the bug hunter channel is `my-api-bug-hunter`.
+The bug hunter gets its own Slack channel, named with the project's channel prefix (e.g., `my-api-bug-hunter-...`).
 
 ---
 

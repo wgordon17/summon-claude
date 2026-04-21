@@ -1339,7 +1339,10 @@ class SummonSession:
 
             try:
                 bh_backend = MatchlockBackend()
-                memory_vol_path = get_data_dir() / "bug-hunter-memory"
+                # Per-project memory isolation — prevents cross-contamination
+                # when multiple projects have bug hunter enabled
+                _bh_project_slug = self._project_id or "default"
+                memory_vol_path = get_data_dir() / "bug-hunter-memory" / _bh_project_slug
                 bh_vm_config = create_bug_hunter_vm_config(
                     workspace_path=self._cwd,
                     claude_code_version="latest",

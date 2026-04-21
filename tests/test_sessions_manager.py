@@ -1120,9 +1120,9 @@ class TestInjectProxyOptionsPropagation:
 
         src = inspect.getsource(SessionManager)
         count = src.count("_inject_proxy_options(")
-        # 1 definition + 9 call sites = 10 occurrences
-        assert count == 10, (
-            f"Expected 10 occurrences of _inject_proxy_options (1 def + 9 calls), "
+        # 1 definition + 10 call sites = 11 occurrences
+        assert count == 11, (
+            f"Expected 11 occurrences of _inject_proxy_options (1 def + 10 calls), "
             f"found {count}. A new SummonSession construction site may be missing the call."
         )
 

@@ -22,6 +22,7 @@ import logging
 import os
 import pathlib
 import secrets
+import shutil
 import time
 import uuid
 from functools import partial
@@ -913,11 +914,14 @@ class SessionManager:
             needing_pm = [p for p in projects if not p.get("pm_running")]
             gpm_running = any(s.is_global_pm for s in self._sessions.values())
             scribe_running = any(s.is_scribe for s in self._sessions.values())
-            if not needing_pm and gpm_running and scribe_running:
+            # Bug hunter is checked independently of needing_pm — a project
+            # may have its PM running but still need a bug hunter started.
+            bh_needing = [p for p in projects if p.get("bug_hunter_enabled")]
+            if not needing_pm and gpm_running and scribe_running and not bh_needing:
                 self._project_up_in_flight = False
                 return {"type": "project_up_complete"}
             if not needing_pm:
-                # All project PMs running but GPM or scribe needs starting.
+                # All project PMs running but GPM, scribe, or bug hunter needs starting.
                 # Grab user_id from an existing session to avoid a new auth flow.
                 user_id: str | None = None
                 for s in self._sessions.values():
@@ -933,6 +937,15 @@ class SessionManager:
                         await self._resume_or_start_scribe(user_id)
                     except Exception as e:
                         logger.error("Scribe: failed to start: %s", e)
+                    for project in bh_needing:
+                        try:
+                            await self._resume_or_start_bug_hunter(project, user_id)
+                        except Exception as e:
+                            logger.error(
+                                "Bug hunter: failed to start for project %s: %s",
+                                project.get("name", "?"),
+                                e,
+                            )
                 self._project_up_in_flight = False
                 return {"type": "project_up_complete"}
 
@@ -1028,8 +1041,13 @@ class SessionManager:
             # Resume suspended scribe or start fresh.
             await self._resume_or_start_scribe(user_id)
 
-            # Start bug hunter for projects that have it enabled.
-            for project in needing_pm:
+            # Start bug hunter for ALL projects that have it enabled
+            # (not just needing_pm — a project's PM may already be running
+            # while its bug hunter still needs starting).
+            all_projects: list[dict[str, Any]] = []
+            async with SessionRegistry() as registry:
+                all_projects = await registry.list_projects()
+            for project in all_projects:
                 if project.get("bug_hunter_enabled"):
                     try:
                         await self._resume_or_start_bug_hunter(project, user_id)
@@ -1068,6 +1086,17 @@ class SessionManager:
                 for sess in suspended:
                     sess_id = sess["session_id"]
                     sess_name = sess.get("session_name", "")
+                    # Skip bug hunter — it needs fresh VM creation via
+                    # _resume_or_start_bug_hunter, not generic resume
+                    if sess_name == "bug-hunter":
+                        await registry.update_status(sess_id, "completed")
+                        logger.info(
+                            "PM: cleared suspended bug-hunter %s for project %s"
+                            " (will be restarted fresh)",
+                            sess_id[:8],
+                            project["name"],
+                        )
+                        continue
                     is_pm = "-pm-" in sess_name
                     try:
                         channel_id = sess.get("slack_channel_id")
@@ -1389,12 +1418,10 @@ class SessionManager:
     async def _resume_or_start_bug_hunter(self, project: dict[str, Any], user_id: str) -> None:
         """Start a bug hunter session for *project* if not already running.
 
-        Follows the scribe pattern: check for already-running, check for
-        suspended, start fresh. Wraps SandboxNotAvailableError so a missing
-        Matchlock install does not abort the orchestrator for other projects.
+        Pre-checks for Matchlock availability so a missing install produces
+        a clear PM-channel alert without spawning a session that would
+        immediately fail.
         """
-        from summon_claude.sandbox import SandboxNotAvailableError  # noqa: PLC0415
-
         project_id = project["project_id"]
 
         # Check for already-running bug hunter in this project
@@ -1406,7 +1433,28 @@ class SessionManager:
                 )
                 return
 
+        # Pre-flight: check Matchlock availability before creating the session.
+        # SandboxNotAvailableError is raised inside session.start() (not __init__),
+        # so catching it at session creation time would be dead code.
+        if not shutil.which("matchlock"):
+            logger.error("Bug hunter: Matchlock not installed for project %s", project_id)
+            pm_session = next(
+                (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
+                None,
+            )
+            if pm_session:
+                await self._alert_channel(
+                    pm_session,
+                    ":warning: *Bug hunter could not start* — Matchlock is not installed.\n"
+                    "Install via: `brew install jingkaihe/essentials/matchlock`\n"
+                    "Then run `summon project up` to retry.",
+                )
+            return
+
         project_dir = project.get("directory", "")
+        if not pathlib.Path(project_dir).is_dir():  # noqa: ASYNC240
+            raise FileNotFoundError(f"Bug hunter directory not found: {project_dir!r}")
+
         scan_interval_s = max(
             60,
             project.get(
@@ -1424,34 +1472,19 @@ class SessionManager:
             bug_hunter_profile=True,
             scan_interval_s=scan_interval_s,
         )
-        try:
-            new_session = SummonSession(
-                config=self._config,
-                options=bh_options,
-                auth=None,
-                session_id=new_session_id,
-                web_client=self._web_client,
-                dispatcher=self._dispatcher,
-                bot_user_id=self._bot_user_id,
-                ipc_spawn=self.create_session_with_spawn_token,
-                ipc_resume=self._ipc_resume,
-                ipc_queue=self.queue_session,
-            )
-        except SandboxNotAvailableError as e:
-            logger.error("Bug hunter: sandbox not available for project %s — %s", project_id, e)
-            # Alert the PM channel so the user sees the error in Slack
-            pm_session = next(
-                (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
-                None,
-            )
-            if pm_session:
-                await self._alert_channel(
-                    pm_session,
-                    ":warning: *Bug hunter could not start* — Matchlock is not installed.\n"
-                    "Install via: `brew install jingkaihe/essentials/matchlock`\n"
-                    "Then run `summon project up` to retry.",
-                )
-            return
+        bh_options = self._inject_proxy_options(bh_options)
+        new_session = SummonSession(
+            config=self._config,
+            options=bh_options,
+            auth=None,
+            session_id=new_session_id,
+            web_client=self._web_client,
+            dispatcher=self._dispatcher,
+            bot_user_id=self._bot_user_id,
+            ipc_spawn=self.create_session_with_spawn_token,
+            ipc_resume=self._ipc_resume,
+            ipc_queue=self.queue_session,
+        )
 
         new_session.authenticate(user_id)
 
@@ -1470,18 +1503,23 @@ class SessionManager:
             project_id,
         )
 
-        # Notify the PM channel that bug hunter is active
+        # Notify the PM channel that bug hunter is active (fire-and-forget
+        # to avoid blocking the orchestrator loop with Slack RTT)
         pm_session = next(
             (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
             None,
         )
         if pm_session:
-            channel_prefix = project.get("channel_prefix", project.get("name", ""))
-            await self._alert_channel(
-                pm_session,
-                f":mag: *Bug hunter started* for {project.get('name', project_id)}. "
-                f"Findings will appear in #{channel_prefix}-bug-hunter.",
+            t = asyncio.create_task(
+                self._alert_channel(
+                    pm_session,
+                    f":mag: *Bug hunter started* for {project.get('name', project_id)}. "
+                    "A bug-hunter channel will appear in Slack shortly.",
+                ),
+                name=f"bug-hunter-notify-{new_session_id}",
             )
+            t.add_done_callback(self._on_background_task_done)
+            self._background_tasks.add(t)
 
     def _resolve_gpm_cwd(self, suspended_cwd: str | None = None) -> str:
         """Resolve Global PM working directory with mkdir."""
