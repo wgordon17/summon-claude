@@ -115,6 +115,10 @@ Security mitigations:
 
 The intended security layering is: **read-only** (pre-containment) → **write gate** (containment entry + one-time approval) → **auto-classifier** (post-worktree, configurable rules) → **Slack HITL** (fallback).
 
+#### Content classification (warn-only)
+
+The classifier also evaluates subagent output via `classify_content()`, but in **warn-only mode**: a "block" posts a Slack notice without suppressing the result. By the time the result arrives, the subagent has already acted; blocking the text would hide information without undoing anything. Content evaluations do not update fallback counters, so flagged output cannot shut down the tool classifier.
+
 ### 7. SDK Allow Suggestions
 
 If the SDK provides an `allow` suggestion (from `settings.json` `allowedTools`), the tool is approved. Write-gated tools that fell through CWD containment checks (paths outside the containment root, or `Bash`) are excluded — `allowedTools` cannot override CWD containment.
