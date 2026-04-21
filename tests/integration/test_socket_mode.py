@@ -37,7 +37,7 @@ class TestSocketConnect:
         assert nonce in event.get("text", "")
 
 
-@pytest.mark.xdist_group("slack_socket_isolated")
+@pytest.mark.xdist_group("slack_socket")
 class TestSocketDisconnect:
     async def test_socket_disconnect_clean(self, _slack_socket_lock, event_store, slack_harness):
         """A stopped consumer's socket client reports disconnected."""
@@ -56,7 +56,7 @@ class TestSocketDisconnect:
         assert not await consumer._handler.client.is_connected()
 
 
-@pytest.mark.xdist_group("slack_socket_isolated")
+@pytest.mark.xdist_group("slack_socket")
 class TestSocketReconnect:
     async def test_socket_reconnect_after_close(
         self, _slack_socket_lock, event_store, slack_harness, test_channel
@@ -120,7 +120,7 @@ class TestHealthMonitorConnected:
         on_exhausted.assert_not_called()
 
 
-@pytest.mark.xdist_group("slack_socket_isolated")
+@pytest.mark.xdist_group("slack_socket")
 class TestHealthMonitorDisconnected:
     async def test_health_monitor_detects_disconnect(
         self, _slack_socket_lock, event_store, slack_harness

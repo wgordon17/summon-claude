@@ -59,10 +59,11 @@ class TestAuthCountdown:
 
         handler, log_messages = _capture_session_logs()
         try:
-            # With 0.2s timeout and 0.04s interval, expect at least 2 countdown messages
+            # With 1.0s timeout and 0.1s interval, expect at least 2 countdown messages.
+            # Wide margins prevent flakiness under xdist CPU contention.
             with (
-                patch("summon_claude.sessions.session._AUTH_TIMEOUT_S", 0.2),
-                patch("summon_claude.sessions.session._AUTH_COUNTDOWN_INTERVAL_S", 0.04),
+                patch("summon_claude.sessions.session._AUTH_TIMEOUT_S", 1.0),
+                patch("summon_claude.sessions.session._AUTH_COUNTDOWN_INTERVAL_S", 0.1),
             ):
                 await session._wait_for_auth()
         finally:

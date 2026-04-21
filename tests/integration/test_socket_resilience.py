@@ -25,7 +25,7 @@ pytestmark = [
 ]
 
 
-@pytest.mark.xdist_group("slack_socket_isolated")
+@pytest.mark.xdist_group("slack_socket")
 class TestForceDisconnect:
     async def test_reconnect_after_force_disconnect(
         self, _slack_socket_lock, event_store, slack_harness, test_channel
@@ -126,7 +126,7 @@ class TestForceDisconnect:
             await new_consumer.stop()
 
 
-@pytest.mark.xdist_group("slack_socket_isolated")
+@pytest.mark.xdist_group("slack_socket")
 class TestReconnectCycles:
     async def test_rapid_disconnect_reconnect_cycles(
         self, _slack_socket_lock, event_store, slack_harness
@@ -154,7 +154,7 @@ class TestReconnectCycles:
             await consumer.stop()
 
 
-@pytest.mark.xdist_group("slack_socket_isolated")
+@pytest.mark.xdist_group("slack_socket")
 class TestHealthMonitorRecovery:
     async def test_reconnect_exhaustion(self):
         """_HealthMonitor triggers on_exhausted after max_reconnect_attempts failures."""
