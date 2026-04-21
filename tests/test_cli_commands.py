@@ -120,6 +120,7 @@ class TestCmdInit:
                     "",  # channel_prefix
                     "n",  # scribe_enabled
                     "y",  # Configure advanced settings? (YES)
+                    "",  # bug_hunter_scan_interval_minutes (accept default)
                     "",  # global_pm_scan_interval_minutes (accept default)
                     "",  # global_pm_cwd (accept default)
                     "",  # global_pm_model (choice: Enter accepts default)

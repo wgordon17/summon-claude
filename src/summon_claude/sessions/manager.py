@@ -1028,6 +1028,18 @@ class SessionManager:
             # Resume suspended scribe or start fresh.
             await self._resume_or_start_scribe(user_id)
 
+            # Start bug hunter for projects that have it enabled.
+            for project in needing_pm:
+                if project.get("bug_hunter_enabled"):
+                    try:
+                        await self._resume_or_start_bug_hunter(project, user_id)
+                    except Exception as e:
+                        logger.error(
+                            "Bug hunter: failed to start for project %s: %s",
+                            project.get("name", "?"),
+                            e,
+                        )
+
         except TimeoutError:
             logger.error("project_up orchestrator: authentication timed out")
         except Exception as e:
@@ -1373,6 +1385,103 @@ class SessionManager:
         self._tasks[new_session_id] = task
 
         logger.info("SessionManager: started scribe session %s", new_session_id)
+
+    async def _resume_or_start_bug_hunter(self, project: dict[str, Any], user_id: str) -> None:
+        """Start a bug hunter session for *project* if not already running.
+
+        Follows the scribe pattern: check for already-running, check for
+        suspended, start fresh. Wraps SandboxNotAvailableError so a missing
+        Matchlock install does not abort the orchestrator for other projects.
+        """
+        from summon_claude.sandbox import SandboxNotAvailableError  # noqa: PLC0415
+
+        project_id = project["project_id"]
+
+        # Check for already-running bug hunter in this project
+        for sess in self._sessions.values():
+            if sess.is_bug_hunter and sess.project_id == project_id:
+                logger.info(
+                    "SessionManager: bug hunter already running for project %s — skipping",
+                    project_id,
+                )
+                return
+
+        project_dir = project.get("directory", "")
+        scan_interval_s = max(
+            60,
+            project.get(
+                "bug_hunter_scan_interval_minutes",
+                self._config.bug_hunter_scan_interval_minutes,
+            )
+            * 60,
+        )
+
+        new_session_id = str(uuid.uuid4())
+        bh_options = SessionOptions(
+            cwd=project_dir,
+            name="bug-hunter",
+            project_id=project_id,
+            bug_hunter_profile=True,
+            scan_interval_s=scan_interval_s,
+        )
+        try:
+            new_session = SummonSession(
+                config=self._config,
+                options=bh_options,
+                auth=None,
+                session_id=new_session_id,
+                web_client=self._web_client,
+                dispatcher=self._dispatcher,
+                bot_user_id=self._bot_user_id,
+                ipc_spawn=self.create_session_with_spawn_token,
+                ipc_resume=self._ipc_resume,
+                ipc_queue=self.queue_session,
+            )
+        except SandboxNotAvailableError as e:
+            logger.error("Bug hunter: sandbox not available for project %s — %s", project_id, e)
+            # Alert the PM channel so the user sees the error in Slack
+            pm_session = next(
+                (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
+                None,
+            )
+            if pm_session:
+                await self._alert_channel(
+                    pm_session,
+                    ":warning: *Bug hunter could not start* — Matchlock is not installed.\n"
+                    "Install via: `brew install jingkaihe/essentials/matchlock`\n"
+                    "Then run `summon project up` to retry.",
+                )
+            return
+
+        new_session.authenticate(user_id)
+
+        self._cancel_grace_timer()
+        self._sessions[new_session_id] = new_session
+        task = asyncio.create_task(
+            self._supervised_session(new_session, new_session_id),
+            name=f"session-bug-hunter-{new_session_id}",
+        )
+        task.add_done_callback(partial(self._on_task_done, session_id=new_session_id))
+        self._tasks[new_session_id] = task
+
+        logger.info(
+            "SessionManager: started bug hunter session %s for project %s",
+            new_session_id,
+            project_id,
+        )
+
+        # Notify the PM channel that bug hunter is active
+        pm_session = next(
+            (s for s in self._sessions.values() if s.is_pm and s.project_id == project_id),
+            None,
+        )
+        if pm_session:
+            channel_prefix = project.get("channel_prefix", project.get("name", ""))
+            await self._alert_channel(
+                pm_session,
+                f":mag: *Bug hunter started* for {project.get('name', project_id)}. "
+                f"Findings will appear in #{channel_prefix}-bug-hunter.",
+            )
 
     def _resolve_gpm_cwd(self, suspended_cwd: str | None = None) -> str:
         """Resolve Global PM working directory with mkdir."""

@@ -6,6 +6,7 @@ import json
 import logging
 import pathlib
 import re
+import shutil
 from typing import Any
 
 import click
@@ -55,12 +56,26 @@ def _resolve_directory(directory: str) -> str:
     return str(resolved)
 
 
-async def async_project_add(name: str, directory: str, *, jira_jql: str | None = None) -> str:
+async def async_project_add(
+    name: str,
+    directory: str,
+    *,
+    jira_jql: str | None = None,
+    bug_hunter_enabled: bool = False,
+    bug_hunter_scan_interval_minutes: int | None = None,
+) -> str:
     """Register a new project and return the project_id.
 
     When *jira_jql* is provided, the JQL filter is stored immediately after
-    project creation.
+    project creation. When *bug_hunter_enabled* is True, the bug hunter is
+    configured for the project.
     """
+    if bug_hunter_enabled and not shutil.which("matchlock"):
+        raise click.ClickException(
+            "Bug hunter requires Matchlock "
+            "(brew install jingkaihe/essentials/matchlock). "
+            "Install it first, then re-run with --bug-hunter."
+        )
     resolved = _resolve_directory(directory)
     project_id: str = ""
     async with SessionRegistry() as registry:
@@ -68,8 +83,15 @@ async def async_project_add(name: str, directory: str, *, jira_jql: str | None =
             project_id = await registry.add_project(name, resolved)
         except ValueError as e:
             raise click.ClickException(str(e)) from e
+        update_kwargs: dict[str, Any] = {}
         if jira_jql is not None:
-            await registry.update_project(project_id, jira_jql=jira_jql or None)
+            update_kwargs["jira_jql"] = jira_jql or None
+        if bug_hunter_enabled:
+            update_kwargs["bug_hunter_enabled"] = True
+            if bug_hunter_scan_interval_minutes is not None:
+                update_kwargs["bug_hunter_scan_interval_minutes"] = bug_hunter_scan_interval_minutes
+        if update_kwargs:
+            await registry.update_project(project_id, **update_kwargs)
     return project_id
 
 

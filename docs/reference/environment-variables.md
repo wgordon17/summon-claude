@@ -98,6 +98,19 @@ See [GitHub Integration](../guide/github-integration.md) for setup details.
 
 ---
 
+## Bug Hunter
+
+!!! note "Advanced"
+    These options are hidden behind "Configure advanced settings?" in the `summon init` wizard. They can always be set directly with `summon config set`.
+
+<!-- config:bug-hunter -->
+| Config Key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `SUMMON_BUG_HUNTER_SCAN_INTERVAL_MINUTES` | integer | `60` | How often the bug hunter scans for issues (minutes, minimum 1). Default: 60. Per-project bug hunter is enabled via `summon project add --bug-hunter`. This setting controls the global default scan interval. |
+<!-- /config:bug-hunter -->
+
+---
+
 ## Global PM
 
 !!! note "Advanced"

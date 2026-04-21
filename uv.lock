@@ -1177,6 +1177,15 @@ wheels = [
 ]
 
 [[package]]
+name = "matchlock"
+version = "0.2.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/60/34/169b12fad162c28bc152e54716ab3cad6fe293996219dc6a7ee6f5241e44/matchlock-0.2.9.tar.gz", hash = "sha256:fb2f03fddc4046a57a4c7c1f2be4890c976dbcc553808553c506c43188a778cd", size = 34287, upload-time = "2026-04-08T07:40:49.038Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/a2/4481243101613cfd1664eb3c47f0a801d0270b7d7975ed5061260bedf672/matchlock-0.2.9-py3-none-any.whl", hash = "sha256:92a3016e03e23257b02a4ee3f7ea294b631321d50395d6ecfa5f6413462fbdaa", size = 23491, upload-time = "2026-04-08T07:40:47.525Z" },
+]
+
+[[package]]
 name = "mcp"
 version = "1.26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2446,11 +2455,15 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "matchlock" },
     { name = "playwright" },
     { name = "workspace-mcp" },
 ]
 google = [
     { name = "workspace-mcp" },
+]
+sandbox = [
+    { name = "matchlock" },
 ]
 slack-browser = [
     { name = "playwright" },
@@ -2486,6 +2499,8 @@ requires-dist = [
     { name = "click", specifier = "==8.3.1" },
     { name = "cronsim", specifier = "==2.7" },
     { name = "markdown-to-mrkdwn", specifier = "==0.3.1" },
+    { name = "matchlock", marker = "extra == 'all'", specifier = ">=0.2.9" },
+    { name = "matchlock", marker = "extra == 'sandbox'", specifier = ">=0.2.9" },
     { name = "packaging", specifier = "==26.0" },
     { name = "pick", specifier = "==2.6.0" },
     { name = "playwright", marker = "extra == 'all'", specifier = "==1.58.0" },
@@ -2497,7 +2512,7 @@ requires-dist = [
     { name = "workspace-mcp", marker = "extra == 'all'", specifier = "==1.14.2" },
     { name = "workspace-mcp", marker = "extra == 'google'", specifier = "==1.14.2" },
 ]
-provides-extras = ["all", "google", "slack-browser"]
+provides-extras = ["all", "google", "sandbox", "slack-browser"]
 
 [package.metadata.requires-dev]
 dev = [

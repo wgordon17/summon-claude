@@ -112,6 +112,7 @@ nav:
     - guide/index.md
     - Projects: guide/projects.md
     - PM Agents: guide/pm-agents.md
+    - Bug Hunter: guide/bug-hunter.md
     - Scribe: guide/scribe.md
     - GitHub Integration: guide/github-integration.md
     - Jira Integration: guide/jira-integration.md

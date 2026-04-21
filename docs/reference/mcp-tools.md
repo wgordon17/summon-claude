@@ -268,6 +268,7 @@ Start a new summon-claude session. Generates a spawn token and creates a pre-aut
 | `model` | string | No | _(inherited)_ | Model override |
 | `system_prompt` | string | No | — | Additional system prompt text appended to the session (max 10,000 characters) |
 | `initial_prompt` | string | No | — | First message injected into the session after startup (max 10,000 characters). Eliminates the need for a follow-up `session_message` call |
+| `bug_hunter_profile` | boolean | No | false | Start a sandboxed bug hunter session (PM sessions only, requires Matchlock) |
 
 **Returns:** The new session ID and a note that the Slack channel will appear shortly. If the active session cap is reached and the caller is a PM, the session is queued and starts automatically when a slot opens.
 

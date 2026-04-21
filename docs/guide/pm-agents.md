@@ -266,8 +266,17 @@ For full details on cron expressions, task tool parameters, and canvas integrati
 
 ---
 
+## Bug hunter integration
+
+When the [bug hunter](bug-hunter.md) is enabled for a project, the PM can read its findings canvas using the `summon_canvas_read` MCP tool. During scan cycles, the PM can monitor new findings and incorporate them into task planning --- for example, spawning a child session to fix a critical security finding.
+
+The bug hunter starts automatically during `project up` and posts a confirmation message to the PM channel.
+
+---
+
 ## See also
 
 - [Projects](projects.md) — setting up and managing projects
+- [Bug Hunter](bug-hunter.md) — automated security scanning
 - [Canvas](canvas.md) — persistent markdown in Slack channel tabs
 - [Cron & Tasks](cron-tasks.md) — scheduled jobs and task tracking

@@ -78,6 +78,10 @@ from summon_claude.sessions.prompts import (
     build_scribe_system_prompt,
     format_pm_topic,
 )
+from summon_claude.sessions.prompts.bug_hunter import (
+    build_bug_hunter_scan_prompt,
+    build_bug_hunter_system_prompt,
+)
 from summon_claude.sessions.prompts.pm import _PM_WELCOME_PREFIX
 from summon_claude.sessions.prompts.shared import (
     _CANVAS_PROMPT_SECTION,
@@ -261,6 +265,29 @@ _SCRIBE_DISALLOWED_TOOLS: frozenset[str] = frozenset(
         "Bash",
         "WebSearch",
         "WebFetch",
+    }
+)
+
+
+# Bug hunter agent: least-privilege tool restrictions.
+# The bug hunter reads source code and posts findings to its canvas.
+# Session management tools are blocked — the bug hunter does not spawn sessions.
+# Cron tools are blocked — scheduling is managed by the daemon scan timer,
+# not by the agent itself. Guard test pins this set.
+#
+# NOTE: disallowed_tools bare names don't match MCP-namespaced tool names.
+# See _SCRIBE_DISALLOWED_TOOLS comment for the defense-in-depth rationale.
+_BUG_HUNTER_DISALLOWED_TOOLS: frozenset[str] = frozenset(
+    {
+        "session_start",
+        "session_stop",
+        "session_message",
+        "session_resume",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "TeamCreate",
+        "TeamDelete",
     }
 )
 
@@ -508,6 +535,7 @@ class SessionOptions:
     initial_prompt: str | None = None
     jira_proxy_port: int | None = None
     jira_proxy_token: str | None = field(default=None, repr=False)
+    bug_hunter_profile: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,6 +692,16 @@ class SummonSession:
         self._pm_profile = options.pm_profile
         self._scribe_profile = options.scribe_profile
         self._global_pm_profile = options.global_pm_profile
+        self._bug_hunter_profile = options.bug_hunter_profile
+        # global_pm_profile always accompanies pm_profile — they are not mutually exclusive.
+        # The exclusive profiles are: scribe, bug_hunter, and (pm without global_pm).
+        exclusive_profiles = [
+            options.scribe_profile,
+            options.bug_hunter_profile,
+            options.pm_profile and not options.global_pm_profile,
+        ]
+        if sum(exclusive_profiles) > 1:
+            raise ValueError("Only one session profile can be active at a time")
         self._auth_only = options.auth_only
         self._project_id = options.project_id
         self._scan_interval_s = max(30, options.scan_interval_s)
@@ -742,6 +780,11 @@ class SummonSession:
         self._slack_monitors: list[Any] = []  # SlackBrowserMonitor instances
         self._scribe_welcomed: bool = False
 
+        # Bug hunter VM state — populated in _run_session if bug_hunter_profile=True
+        self._bh_backend: Any | None = None  # MatchlockBackend
+        self._bh_vm_config: Any | None = None  # VmConfig
+        self._bh_vm_handle: str | None = None  # VmHandle
+
     # ------------------------------------------------------------------
     # Public API (called by SessionManager / BoltRouter)
     # ------------------------------------------------------------------
@@ -770,6 +813,11 @@ class SummonSession:
     def is_global_pm(self) -> bool:
         """Whether this session is the Global PM agent session."""
         return self._global_pm_profile
+
+    @property
+    def is_bug_hunter(self) -> bool:
+        """Whether this session is a Bug Hunter agent session."""
+        return self._bug_hunter_profile
 
     @property
     def project_id(self) -> str | None:
@@ -1278,6 +1326,51 @@ class SummonSession:
                 is_git_repo=False,
             )
 
+        # Bug hunter: create Matchlock VM and set up unattended write access
+        if self._bug_hunter_profile:
+            from summon_claude.sandbox import (  # noqa: PLC0415
+                SandboxNotAvailableError,
+                create_bug_hunter_vm_config,
+            )
+            from summon_claude.sandbox.bug_hunter_memory import (  # noqa: PLC0415
+                initialize_bug_hunter_memory,
+            )
+            from summon_claude.sandbox.matchlock import MatchlockBackend  # noqa: PLC0415
+
+            try:
+                bh_backend = MatchlockBackend()
+                memory_vol_path = get_data_dir() / "bug-hunter-memory"
+                bh_vm_config = create_bug_hunter_vm_config(
+                    workspace_path=self._cwd,
+                    claude_code_version="latest",
+                    memory_volume_path=str(memory_vol_path),
+                )
+                bh_vm_handle = await bh_backend.create_vm(bh_vm_config)
+                self._bh_backend = bh_backend
+                self._bh_vm_config = bh_vm_config
+                self._bh_vm_handle = bh_vm_handle
+                # Store VM handle in registry for orphan cleanup
+                await registry.update_status(self._session_id, "active", vm_id=bh_vm_handle)
+                if bh_vm_config.memory_volume_path:
+                    initialize_bug_hunter_memory(Path(bh_vm_config.memory_volume_path))
+                # VM is the containment boundary — activate containment and grant
+                # unattended write access immediately (SEC-D-001)
+                permission_handler.notify_containment_active(
+                    containment_root=Path(bh_vm_config.guest_workspace_path),
+                    is_git_repo=False,
+                )
+                permission_handler.grant_unattended_write_access(
+                    reason="bug_hunter_profile: VM is containment boundary"
+                )
+                logger.info("Bug hunter VM created: %s", bh_vm_handle)
+            except (SandboxNotAvailableError, RuntimeError, ValueError) as e:
+                logger.error("Bug hunter: failed to start — %s", e)
+                try:
+                    await client.post(f":warning: Bug hunter could not start.\n{e}")
+                except Exception:
+                    logger.debug("Failed to post bug hunter error to Slack")
+                raise
+
         rt = _SessionRuntime(
             registry=registry,
             client=client,
@@ -1776,6 +1869,8 @@ class SummonSession:
             profile = "pm"
         elif self._scribe_profile:
             profile = "scribe"
+        elif self._bug_hunter_profile:
+            profile = "bug_hunter"
         else:
             profile = "agent"
         template = get_canvas_template(profile, jira_enabled=self._config.jira_enabled)
@@ -1807,6 +1902,7 @@ class SummonSession:
         """Create SDK client, then run preprocessor + response consumer concurrently."""
         is_pm = self._pm_profile
         is_scribe = self._scribe_profile
+        is_bug_hunter = self._bug_hunter_profile
 
         # Channel scoping: every session type gets an explicit async resolver.
         # Regular sessions: own channel only.
@@ -1900,7 +1996,7 @@ class SummonSession:
         # first tool use, not at startup. If the remote server is unreachable,
         # individual tool calls return errors and Claude adapts. If the SDK
         # subprocess itself fails to start, the session error handler catches it.
-        if not is_scribe:
+        if not is_scribe and not is_bug_hunter:
             gh_mcp = self._config.github_mcp_config()
             if gh_mcp:
                 mcp_servers["github"] = gh_mcp
@@ -1989,8 +2085,8 @@ class SummonSession:
         if is_pm and self._authenticated_user_id is None:
             raise RuntimeError("_run_session_tasks reached PM path without authenticated_user_id")
 
-        # [SEC-003] Scribe sessions get cron+task tools only (is_pm=False excludes
-        # session_start/stop/message/resume). Regular sessions get full CLI MCP.
+        # [SEC-003] Scribe/bug-hunter sessions get cron+task tools only (is_pm=False
+        # excludes session_start/stop/message/resume). Regular sessions get full CLI MCP.
         if is_scribe and self._authenticated_user_id is not None:
             cli_mcp = create_summon_cli_mcp_server(
                 registry=rt.registry,
@@ -2006,7 +2102,23 @@ class SummonSession:
                 on_task_change=_on_task_change,
             )
             mcp_servers["summon-cli"] = cli_mcp
-        elif not is_scribe and self._authenticated_user_id is not None:
+        elif is_bug_hunter and self._authenticated_user_id is not None:
+            cli_mcp = create_summon_cli_mcp_server(
+                registry=rt.registry,
+                session_id=self._session_id,
+                authenticated_user_id=self._authenticated_user_id,
+                channel_id=rt.client.channel_id,
+                cwd=self._cwd,
+                session_name=self._name,
+                web_client=self._web_client,
+                is_pm=False,
+                is_bug_hunter=True,
+                scheduler=scheduler,
+                project_id=self._project_id,
+                on_task_change=_on_task_change,
+            )
+            mcp_servers["summon-cli"] = cli_mcp
+        elif not is_scribe and not is_bug_hunter and self._authenticated_user_id is not None:
             cli_mcp = create_summon_cli_mcp_server(
                 registry=rt.registry,
                 session_id=self._session_id,
@@ -2072,7 +2184,7 @@ class SummonSession:
             ext_slack_mcp = self._create_external_slack_mcp()
             mcp_servers["external-slack"] = ext_slack_mcp
 
-        setting_sources = ["user"] if (is_pm or is_scribe) else ["user", "project"]
+        setting_sources = ["user"] if (is_pm or is_scribe or is_bug_hunter) else ["user", "project"]
 
         # MCP health tracker — detects auth failures and notifies via inject_message
         bg_tasks: set[asyncio.Task[None]] = set()
@@ -2205,6 +2317,39 @@ class SummonSession:
                     internal=True,
                     max_lifetime_s=0,
                 )
+            if is_bug_hunter and self._bh_vm_config is not None:
+                from summon_claude.sandbox.bug_hunter_memory import (  # noqa: PLC0415
+                    get_last_scan_hash,
+                )
+
+                bh_mem_path = (
+                    Path(self._bh_vm_config.memory_volume_path)
+                    if self._bh_vm_config.memory_volume_path
+                    else None
+                )
+                last_scan_hash = get_last_scan_hash(bh_mem_path) if bh_mem_path else None
+                # git hash — best-effort (empty string triggers first-scan logic)
+                try:
+                    import anyio  # noqa: PLC0415
+
+                    _gh_result = await anyio.run_process(
+                        ["git", "-C", self._cwd, "rev-parse", "HEAD"],
+                        check=False,
+                    )
+                    git_hash = (
+                        _gh_result.stdout.decode().strip() if _gh_result.returncode == 0 else ""
+                    )
+                except Exception:
+                    git_hash = ""
+                await scheduler.create(
+                    cron_expr=_build_scan_cron(self._scan_interval_s),
+                    prompt=build_bug_hunter_scan_prompt(
+                        git_hash=git_hash,
+                        last_scan_hash=last_scan_hash,
+                    ),
+                    internal=True,
+                    max_lifetime_s=0,
+                )
             # Restore agent cron jobs from DB (no-op on first iteration if none persisted)
             await scheduler.restore_from_db()
             if self._global_pm_profile:
@@ -2244,6 +2389,15 @@ class SummonSession:
                 )
                 if self._system_prompt_append:
                     system_prompt["append"] += "\n\n" + self._system_prompt_append
+            elif is_bug_hunter:
+                project_name = Path(self._cwd).name
+                system_prompt = build_bug_hunter_system_prompt(
+                    cwd=self._cwd,
+                    scan_interval_s=self._scan_interval_s,
+                    project_name=project_name,
+                )
+                if self._system_prompt_append:
+                    system_prompt["append"] += "\n\n" + self._system_prompt_append
             else:
                 effective_append = system_prompt_append
                 if self._system_prompt_append:
@@ -2279,8 +2433,10 @@ class SummonSession:
                 system_prompt=system_prompt,
                 include_partial_messages=True,
                 setting_sources=setting_sources,
-                plugins=discover_installed_plugins(),
-                can_use_tool=rt.permission_handler.handle,
+                plugins=[] if is_bug_hunter else discover_installed_plugins(),
+                # Bug hunter: can_use_tool is dead under --dangerously-skip-permissions
+                # (SEC-D-002). Pass None so the SDK doesn't install the callback.
+                can_use_tool=None if is_bug_hunter else rt.permission_handler.handle,
                 mcp_servers=mcp_servers,
                 model=self._model,
                 # TODO: if config gains thinking_budget_tokens, use
@@ -2293,15 +2449,36 @@ class SummonSession:
                 ),
                 effort=self._effort,
                 disallowed_tools=list(
-                    (_WORKTREE_DISALLOWED_TOOLS | _SCRIBE_DISALLOWED_TOOLS)
+                    (_WORKTREE_DISALLOWED_TOOLS | _BUG_HUNTER_DISALLOWED_TOOLS)
+                    if is_bug_hunter
+                    else (_WORKTREE_DISALLOWED_TOOLS | _SCRIBE_DISALLOWED_TOOLS)
                     if is_scribe
                     else _WORKTREE_DISALLOWED_TOOLS
                 ),
             )
 
+            # Bug hunter uses a custom Matchlock transport (inside-VM execution)
+            bh_transport = None
+            if is_bug_hunter and self._bh_backend is not None and self._bh_vm_config is not None:
+                from summon_claude.sandbox.transport import (  # noqa: PLC0415
+                    create_matchlock_transport,
+                )
+
+                bh_transport = await create_matchlock_transport(
+                    self._bh_backend,
+                    self._bh_vm_config,
+                    options,
+                    vm_handle=self._bh_vm_handle,
+                )
+
             restart: _SessionRestartError | None = None
 
-            async with ClaudeSDKClient(options) as claude:
+            if bh_transport is not None:
+                claude_client = ClaudeSDKClient(options, transport=bh_transport)
+            else:
+                claude_client = ClaudeSDKClient(options)
+
+            async with claude_client as claude:
                 self._claude = claude
                 try:
                     # Validate SDK commands and extract model info from server info
@@ -2839,6 +3016,15 @@ class SummonSession:
         logger.info(
             "Session ended. Turns: %d, Total cost: $%.4f", self._total_turns, self._total_cost
         )
+
+        # Destroy bug hunter VM before other cleanup
+        if self._bh_vm_handle and self._bh_backend:
+            try:
+                await self._bh_backend.destroy_vm(self._bh_vm_handle)
+                logger.info("Destroyed bug hunter VM %s", self._bh_vm_handle)
+            except Exception:
+                logger.warning("Failed to destroy VM %s", self._bh_vm_handle, exc_info=True)
+            self._bh_vm_handle = None
 
         # Post change summary before disconnect (Task 6)
         if self._changed_files:

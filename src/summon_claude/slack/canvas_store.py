@@ -8,6 +8,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from summon_claude.security import validate_agent_output
+
 if TYPE_CHECKING:
     from summon_claude.sessions.registry import SessionRegistry
     from summon_claude.slack.client import SlackClient
@@ -162,6 +164,13 @@ class CanvasStore:
         async with self._write_lock:
             md = self._markdown
             self._dirty = False
+        md, warnings = validate_agent_output(md)
+        if warnings:
+            logger.warning(
+                "Canvas output validation modified content for session %s: %s",
+                self._session_id,
+                "; ".join(warnings),
+            )
         ok = await self._client.canvas_sync(self._canvas_id, md)
         if not ok:
             self._consecutive_failures += 1

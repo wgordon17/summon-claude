@@ -61,7 +61,7 @@ For the complete list of all configuration options with config keys, environment
 summon config show
 ```
 
-Displays all configuration options organized by section (Slack Credentials, Session Defaults, Scribe, Scribe Google, Scribe Slack, Global PM, Display, Behavior, Thinking, Auto Mode). Each option shows a source indicator:
+Displays all configuration options organized by section (Slack Credentials, Session Defaults, Scribe, Scribe Google, Scribe Slack, Bug Hunter, Global PM, Display, Behavior, Thinking, Auto Mode). Each option shows a source indicator:
 
 - **(set)** — explicitly configured in the config file
 - **(default)** — using the built-in default value

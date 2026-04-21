@@ -139,11 +139,40 @@ _No artifacts captured._
 """
 )
 
+BUG_HUNTER_CANVAS_TEMPLATE = (
+    """\
+# Bug Hunter — Session Status
+
+| Field | Value |
+|-------|-------|
+| Status | Starting... |
+| Model | {model} |
+| Directory | `{cwd}` |
+"""
+    + _SCHED_JOBS_SECTION
+    + """
+## Findings
+
+| Severity | File | Line | Description | Confidence | Category |
+|----------|------|------|-------------|------------|----------|
+| _No findings yet_ | | | | | |
+
+## Suppressions
+
+_No suppressions recorded._
+
+## Last Scan
+
+_No scan completed yet._
+"""
+)
+
 _TEMPLATES: dict[str, str] = {
     "agent": AGENT_CANVAS_TEMPLATE,
     "pm": PM_CANVAS_TEMPLATE,
     "global-pm": GLOBAL_PM_CANVAS_TEMPLATE,
     "scribe": SCRIBE_CANVAS_TEMPLATE,
+    "bug_hunter": BUG_HUNTER_CANVAS_TEMPLATE,
 }
 
 

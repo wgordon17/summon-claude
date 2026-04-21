@@ -416,14 +416,42 @@ def cmd_project() -> None:
 @click.argument("name")
 @click.argument("directory", default=".", type=click.Path())
 @click.option("--jql", default=None, help="JQL filter for Jira issue triage (optional).")
+@click.option(
+    "--bug-hunter/--no-bug-hunter",
+    default=False,
+    help="Enable the automated bug hunter agent for this project (requires Matchlock).",
+)
+@click.option(
+    "--bug-hunter-scan-interval",
+    default=None,
+    type=int,
+    help="Bug hunter scan interval in minutes (default: 60).",
+)
 @click.pass_context
-def project_add(ctx: click.Context, name: str, directory: str, jql: str | None) -> None:
+def project_add(
+    ctx: click.Context,
+    name: str,
+    directory: str,
+    jql: str | None,
+    bug_hunter: bool,
+    bug_hunter_scan_interval: int | None,
+) -> None:
     """Register a project directory for PM agent management."""
     if jql and len(jql) > _MAX_JQL_LEN:
         raise click.BadParameter(f"JQL filter too long (max {_MAX_JQL_LEN} chars)")
-    project_id = asyncio.run(async_project_add(name, directory, jira_jql=jql))
+    project_id = asyncio.run(
+        async_project_add(
+            name,
+            directory,
+            jira_jql=jql,
+            bug_hunter_enabled=bug_hunter,
+            bug_hunter_scan_interval_minutes=bug_hunter_scan_interval,
+        )
+    )
     if not ctx.obj.get("quiet"):
         click.echo(f"Project {name!r} registered (id: {project_id[:8]}...)")
+        if bug_hunter:
+            click.echo("Bug hunter enabled — will start on next 'summon project up'.")
         click.echo("Run 'summon project up' to start a PM agent for this project.")
 
 

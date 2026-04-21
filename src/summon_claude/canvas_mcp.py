@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
+from summon_claude.sandbox import BUG_HUNTER_SESSION_NAME
+from summon_claude.security import mark_untrusted
 from summon_claude.sessions.registry import SessionRegistry
 
 if TYPE_CHECKING:
@@ -65,6 +67,18 @@ def create_canvas_mcp_tools(
                     ],
                     "is_error": True,
                 }
+            # Wrap bug hunter canvas content as untrusted — findings are external
+            # data that must never be followed as instructions (SEC-D-013).
+            # Check regardless of session status: a completed/errored bug hunter
+            # session's canvas content is still untrusted.
+            async with registry.db.execute(
+                "SELECT session_name FROM sessions "
+                "WHERE slack_channel_id = ? AND session_name = ? LIMIT 1",
+                (target_channel, BUG_HUNTER_SESSION_NAME),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    canvas_markdown = mark_untrusted(canvas_markdown, source="bug-hunter-canvas")
             return {"content": [{"type": "text", "text": canvas_markdown}]}
         except Exception:
             logger.exception("Cross-channel canvas read failed for %s", target_channel)

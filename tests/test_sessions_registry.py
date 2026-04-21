@@ -103,6 +103,7 @@ class TestUpdatableFields:
             "model",
             "effort",
             "project_id",
+            "vm_id",
         }
         assert expected == SessionRegistry._UPDATABLE_FIELDS
 
@@ -1520,6 +1521,7 @@ class TestReleasedMigrationsImmutable:
         "_migrate_14_to_15": "d9d62bd4554b85bd",
         "_migrate_15_to_16": "72d8ce098dcaa6a0",
         "_migrate_16_to_17": "4ee7cc86287aa662",
+        "_migrate_17_to_18": "ac07abb2f5c43e1a",
     }
 
     def test_released_migrations_unchanged(self):

@@ -682,7 +682,13 @@ class TestProjectAddJQL:
             )
 
         assert result.exit_code == 0, result.output
-        mock_add.assert_called_once_with("myproj", ".", jira_jql="project = FOO")
+        mock_add.assert_called_once_with(
+            "myproj",
+            ".",
+            jira_jql="project = FOO",
+            bug_hunter_enabled=False,
+            bug_hunter_scan_interval_minutes=None,
+        )
 
     def test_add_project_without_jql_passes_none(self):
         """project add NAME DIR without --jql passes jira_jql=None."""
@@ -697,7 +703,13 @@ class TestProjectAddJQL:
             result = runner.invoke(cli, ["project", "add", "myproj", "."])
 
         assert result.exit_code == 0, result.output
-        mock_add.assert_called_once_with("myproj", ".", jira_jql=None)
+        mock_add.assert_called_once_with(
+            "myproj",
+            ".",
+            jira_jql=None,
+            bug_hunter_enabled=False,
+            bug_hunter_scan_interval_minutes=None,
+        )
 
     def test_add_project_rejects_jql_too_long(self):
         """project add --jql with >500 chars is rejected."""

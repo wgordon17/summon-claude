@@ -12,6 +12,10 @@ Learn how to use summon-claude effectively. Most users work through **projects**
 
     Autonomous project manager that spawns, directs, and monitors child sessions.
 
+-   :material-bug: **[Bug Hunter](bug-hunter.md)**
+
+    Automated security and correctness scanning in a sandboxed VM.
+
 -   :material-typewriter: **[Scribe](scribe.md)**
 
     Background monitoring agent for Slack and Google Workspace.

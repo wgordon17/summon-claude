@@ -34,7 +34,8 @@ dependencies = [
 [project.optional-dependencies]
 google = ["workspace-mcp==1.14.2"]
 slack-browser = ["playwright==1.58.0"]
-all = ["summon-claude[google,slack-browser]"]
+sandbox = ["matchlock>=0.2.9"]
+all = ["summon-claude[google,slack-browser,sandbox]"]
 
 [project.urls]
 Homepage = "https://github.com/summon-claude/summon-claude"

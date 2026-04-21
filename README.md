@@ -5,7 +5,7 @@
 [![CI](https://github.com/summon-claude/summon-claude/actions/workflows/ci.yaml/badge.svg)](https://github.com/summon-claude/summon-claude/actions/workflows/ci.yaml)
 [![Docs](https://img.shields.io/badge/docs-summon--claude.github.io-blue)](https://summon-claude.github.io/summon-claude/)
 
-Bridge Claude Code sessions to Slack channels. Run `summon start` in a terminal, authenticate from Slack, and interact with Claude entirely through a dedicated Slack channel.
+Bridge Claude Code sessions to Slack channels. Run `summon start` in a terminal, authenticate from Slack, and interact with Claude entirely through a dedicated Slack channel. Includes PM agents for multi-session coordination, a scribe for inbox monitoring, and a bug hunter for automated security scanning in sandboxed VMs.
 
 ## Install
 

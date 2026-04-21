@@ -272,6 +272,7 @@ class SessionRegistry:
             "model",
             "effort",
             "project_id",
+            "vm_id",
         }
     )
 
@@ -932,6 +933,8 @@ class SessionRegistry:
             "directory",
             "jira_jql",
             "auto_mode_rules",
+            "bug_hunter_enabled",
+            "bug_hunter_scan_interval_minutes",
         }
     )
 

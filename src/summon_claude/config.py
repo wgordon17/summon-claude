@@ -747,6 +747,12 @@ class SummonConfig(BaseSettings):
     scribe_slack_monitored_channels: str = ""  # comma-separated channel IDs (e.g. "C01ABC,C02DEF")
 
     # ------------------------------------------------------------------
+    # Bug hunter settings
+    # ------------------------------------------------------------------
+
+    bug_hunter_scan_interval_minutes: int = 60
+
+    # ------------------------------------------------------------------
     # Global PM settings
     # ------------------------------------------------------------------
 
@@ -1452,6 +1458,21 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         help_text="Comma-separated Slack channel IDs to monitor.",
         input_type="text",
         visible=lambda _config: False,  # Hidden from init — use `summon auth slack channels`
+    ),
+    # Bug Hunter
+    ConfigOption(
+        field_name="bug_hunter_scan_interval_minutes",
+        env_key="SUMMON_BUG_HUNTER_SCAN_INTERVAL_MINUTES",
+        group="Bug Hunter",
+        label="Scan Interval (minutes)",
+        help_text=(
+            "How often the bug hunter scans for issues (minutes, minimum 1). Default: 60. "
+            "Per-project bug hunter is enabled via `summon project add --bug-hunter`. "
+            "This setting controls the global default scan interval."
+        ),
+        input_type="int",
+        advanced=True,
+        validate_fn=_validate_scan_interval_minutes,
     ),
     # Global PM
     ConfigOption(

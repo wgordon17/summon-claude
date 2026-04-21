@@ -728,6 +728,23 @@ class PermissionHandler:
         """Return True if directory containment is currently active."""
         return self._in_containment
 
+    def grant_unattended_write_access(self, *, reason: str) -> None:
+        """Bypass the one-time HITL write-gate approval for unattended sessions.
+
+        MUST be called after notify_containment_active() — raises ValueError
+        if containment is not active (SEC-D-001).
+        """
+        if not self._in_containment:
+            raise ValueError(
+                "grant_unattended_write_access() requires active containment. "
+                "Call notify_containment_active() first."
+            )
+        if self._write_access_granted:
+            logger.warning("grant_unattended_write_access: already granted, ignoring")
+            return
+        self._write_access_granted = True
+        logger.info("Write access granted for unattended session: %s", reason)
+
     def notify_containment_active(
         self, containment_root: Path, *, is_git_repo: bool = True
     ) -> None:

@@ -16,7 +16,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 18
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +302,35 @@ async def _migrate_16_to_17(db: aiosqlite.Connection) -> None:
         logger.debug("Column auto_mode_rules already exists, skipping")
 
 
+async def _migrate_17_to_18(db: aiosqlite.Connection) -> None:
+    """Add bug hunter columns to projects and sessions tables."""
+    project_cols = [
+        "bug_hunter_enabled INTEGER DEFAULT 0",
+        "bug_hunter_scan_interval_minutes INTEGER DEFAULT 60",
+        "bug_hunter_network_allowlist TEXT DEFAULT NULL",
+        "bug_hunter_secrets TEXT DEFAULT NULL",
+    ]
+    for col in project_cols:
+        try:
+            await db.execute(f"ALTER TABLE projects ADD COLUMN {col}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+
+    try:
+        await db.execute("ALTER TABLE sessions ADD COLUMN vm_id TEXT DEFAULT NULL")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc):
+            raise
+
+    # One bug hunter per project — enforced at DB level
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_bug_hunter_active "
+        "ON sessions(project_id) "
+        "WHERE session_name = 'bug-hunter' AND status IN ('active', 'pending_auth')"
+    )
+
+
 # Mapping from version N to the coroutine that migrates N → N+1.
 # Migration 0→1 is a no-op: the baseline DDL in _connect() produces schema v1.
 _MIGRATIONS: dict[int, Any] = {
@@ -322,6 +351,7 @@ _MIGRATIONS: dict[int, Any] = {
     14: _migrate_14_to_15,
     15: _migrate_15_to_16,
     16: _migrate_16_to_17,
+    17: _migrate_17_to_18,
 }
 
 

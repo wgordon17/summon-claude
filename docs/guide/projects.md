@@ -49,6 +49,12 @@ To associate a [Jira JQL filter](jira-integration.md#per-project-jql-filters) wi
 summon project add my-api --jql "project = MYAPI AND status != Done"
 ```
 
+To enable the [bug hunter](bug-hunter.md) agent for automated security and correctness scanning:
+
+```{ .bash .notest }
+summon project add my-api --bug-hunter
+```
+
 After registering, set workflow instructions and other project settings using the `summon project workflow` subcommands documented [below](#managing-workflow-instructions).
 
 ### `summon project list`
@@ -233,6 +239,7 @@ Without `$INCLUDE_GLOBAL`, project-specific instructions fully replace the globa
 
 ## See also
 
+- [Bug Hunter](bug-hunter.md) — automated security and correctness scanning
 - [Jira Integration](jira-integration.md) — JQL filters and PM triage
 - [Scribe](scribe.md) — background monitoring agent
 - [Configuration](configuration.md) — project-level config options

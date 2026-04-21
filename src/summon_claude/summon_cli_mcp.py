@@ -54,6 +54,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     session_name: str = "",
     is_pm: bool = False,
     is_global_pm: bool = False,
+    is_bug_hunter: bool = False,
     scheduler: SessionScheduler,
     project_id: str | None = None,
     on_task_change: Callable[[], Coroutine[Any, Any, None]] | None = None,
@@ -77,6 +78,8 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         session_name: Calling session's name (for sender_info attribution).
         is_pm: Whether this is a PM session (gates session_start/stop/log_status).
         is_global_pm: Whether this is the Global PM session (excludes session_start).
+        is_bug_hunter: Whether this is a bug hunter session
+            (skips session_start/stop/message/resume).
         scheduler: SessionScheduler for cron/task scheduling.
         project_id: Project ID for cross-session task queries (optional).
         on_task_change: Async callback for task mutations (canvas sync).
@@ -195,7 +198,9 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             "system_prompt: additional system prompt text appended to session, "
             f"max {MAX_PROMPT_CHARS} chars (optional). "
             "initial_prompt: first message injected into the session after startup, "
-            f"max {MAX_PROMPT_CHARS} chars (optional)."
+            f"max {MAX_PROMPT_CHARS} chars (optional). "
+            "bug_hunter_profile: if true, starts a sandboxed bug hunter session "
+            "(PM sessions only, requires Matchlock to be installed)."
         ),
         {
             "type": "object",
@@ -205,6 +210,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 "model": {"type": "string"},
                 "system_prompt": {"type": "string", "maxLength": MAX_PROMPT_CHARS},
                 "initial_prompt": {"type": "string", "maxLength": MAX_PROMPT_CHARS},
+                "bug_hunter_profile": {"type": "boolean"},
             },
             "required": ["name"],
         },
@@ -324,6 +330,19 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
 
         from summon_claude.sessions.session import SessionOptions  # noqa: PLC0415
 
+        # bug_hunter_profile: only PM sessions may spawn bug hunters
+        bug_hunter_profile_val = bool(args.get("bug_hunter_profile", False))
+        if bug_hunter_profile_val and not is_pm:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Error: bug_hunter_profile=True requires a PM session.",
+                    }
+                ],
+                "is_error": True,
+            }
+
         options = SessionOptions(
             cwd=target_cwd,
             name=name,
@@ -331,6 +350,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             project_id=parent_project_id,
             system_prompt_append=system_prompt_val,
             initial_prompt=initial_prompt_val,
+            bug_hunter_profile=bug_hunter_profile_val,
         )
 
         # Enforce active-child cap before spawning (fail-closed)
@@ -1265,6 +1285,10 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         task_update,
         task_list,
     ]
+    if is_bug_hunter:
+        # Bug hunter: remove session lifecycle tools — it reads code, not manages sessions
+        _bug_hunter_skip = {"session_start", "session_stop", "session_message", "session_resume"}
+        return [t for t in tools if getattr(t, "name", None) not in _bug_hunter_skip]
     if is_pm:
         pm_tools: list[SdkMcpTool] = [
             session_stop,
