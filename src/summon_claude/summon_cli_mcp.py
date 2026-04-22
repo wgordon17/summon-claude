@@ -370,8 +370,9 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                             }
                         ]
                     }
-                # Fetch active list only for the error message
-                children = await registry.list_children(session_id, limit=MAX_SPAWN_CHILDREN_PM)
+                # Fetch active list only for the error message (default limit=50
+                # is generous enough to capture all active among recent children)
+                children = await registry.list_children(session_id)
                 active = [c for c in children if c.get("status") in ("pending_auth", "active")]
                 active_list = ", ".join(
                     f"{c.get('session_name', 'unnamed')} ({c['session_id']})" for c in active
