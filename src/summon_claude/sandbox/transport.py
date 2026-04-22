@@ -351,11 +351,14 @@ class MatchlockTransport(Transport):
             # Build the full command:
             # 1. Quote every claude arg individually for the inner su -c shell
             claude_cmd_str = " ".join(shlex.quote(arg) for arg in cmd)
-            # 2. Wrap with su to run as the non-root claude user
-            su_command = f"su -c {shlex.quote(claude_cmd_str)} claude"
-            # 3. Prepend env vars
+            # 2. Build env var prefix — must be INSIDE the su -c argument because
+            #    su resets the environment for the target user (vars set in the
+            #    outer shell are lost on Debian/PAM systems).
             env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env_vars.items())
-            full_sh_cmd = f"{env_prefix} {su_command}"
+            inner_cmd = f"{env_prefix} {claude_cmd_str}"
+            # 3. Wrap with su to run as the non-root claude user
+            su_command = f"su -c {shlex.quote(inner_cmd)} claude"
+            full_sh_cmd = su_command
 
             # 4. Wrap in matchlock exec -i <handle> -- sh -c <full_cmd>
             exec_cmd = [
@@ -490,13 +493,17 @@ async def create_matchlock_transport(
     options: ClaudeAgentOptions,
     *,
     vm_handle: VmHandle | None = None,
+    skip_running_check: bool = False,
 ) -> MatchlockTransport:
     """Create a MatchlockTransport, optionally reusing an existing VM.
 
     If vm_handle is provided, checks is_running first. Falls back to
     creating a new VM with fresh volume on crash (Decision 6 security).
+
+    Pass skip_running_check=True on compaction restart — the VM was running
+    moments ago and the subprocess RTT is unnecessary.
     """
-    if vm_handle is not None and not await backend.is_running(vm_handle):
+    if vm_handle is not None and not skip_running_check and not await backend.is_running(vm_handle):
         logger.warning("VM %s is not running — creating fresh VM (crash recovery)", vm_handle)
         vm_handle = None  # Force new VM creation in connect()
     from summon_claude.sandbox.matchlock import MatchlockBackend  # noqa: PLC0415

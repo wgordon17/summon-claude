@@ -191,9 +191,8 @@ async def _cleanup_orphaned_vms() -> None:
     """Destroy any Matchlock VMs left running from a previous daemon instance.
 
     Cross-references ``matchlock list --running`` with the registry's ``vm_id``
-    column for sessions that are no longer active (errored/completed/suspended).
-    Only destroys VMs that are in the matchlock list AND whose session is not
-    active in the registry — fail-closed on any error.
+    column. At startup all VM-bearing sessions are orphans (the daemon's live
+    ``_sessions`` dict is empty). Fail-closed on any error.
     """
     try:
         import shutil  # noqa: PLC0415
@@ -225,12 +224,12 @@ async def _cleanup_orphaned_vms() -> None:
         if not running_vm_ids:
             return
 
-        # Cross-reference with registry: only destroy VMs for non-active sessions
+        # Cross-reference with registry: all vm_id rows are orphans at startup
+        # (_sessions is empty; _cleanup_orphaned_sessions may have partially failed)
         orphaned_vm_ids: set[str] = set()
         async with SessionRegistry() as registry:
             async with registry.db.execute(
-                "SELECT vm_id FROM sessions WHERE vm_id IS NOT NULL "
-                "AND status NOT IN ('active', 'pending_auth')"
+                "SELECT vm_id FROM sessions WHERE vm_id IS NOT NULL"
             ) as cursor:
                 rows = await cursor.fetchall()
             orphaned_vm_ids = {row[0] for row in rows if row[0] in running_vm_ids}

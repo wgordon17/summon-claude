@@ -668,6 +668,41 @@ class TestCleanupOrphanedSessions:
 
 
 # ---------------------------------------------------------------------------
+# Orphaned VM cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupOrphanedVMs:
+    @pytest.mark.asyncio
+    async def test_no_matchlock_returns_early(self):
+        """If matchlock CLI is not installed, function returns without error."""
+        from summon_claude.daemon import _cleanup_orphaned_vms
+
+        with patch("shutil.which", return_value=None):
+            await _cleanup_orphaned_vms()
+
+    @pytest.mark.asyncio
+    async def test_no_running_vms_skips_registry(self):
+        """Empty matchlock list output → no registry query needed."""
+        from summon_claude.daemon import _cleanup_orphaned_vms
+
+        list_result = MagicMock()
+        list_result.returncode = 0
+        list_result.stdout = b""
+
+        run_mock = AsyncMock(return_value=list_result)
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/matchlock"),
+            patch("anyio.run_process", new=run_mock),
+            patch("summon_claude.daemon.SessionRegistry") as mock_reg,
+        ):
+            await _cleanup_orphaned_vms()
+
+        run_mock.assert_called_once()
+        mock_reg.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # IPC framing protocol tests (absorbed from test_ipc.py)
 # ---------------------------------------------------------------------------
 

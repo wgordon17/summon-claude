@@ -52,6 +52,11 @@ class TestBugHunterDisallowedTools:
                 "CronList",
                 "TeamCreate",
                 "TeamDelete",
+                "slack_upload_file",
+                "slack_create_thread",
+                "slack_react",
+                "slack_post_snippet",
+                "slack_update_message",
             }
         )
         assert expected == _BUG_HUNTER_DISALLOWED_TOOLS
@@ -95,12 +100,12 @@ class TestBugHunterMcpGating:
         assert "session_stop" not in tool_names
         assert "session_message" not in tool_names
         assert "session_resume" not in tool_names
-        # Cron and task tools should still be present
-        assert (
-            "cron_create" in tool_names
-            or "CronCreate" in tool_names
-            or any("cron" in (n or "").lower() for n in tool_names)
-        )
+        assert "session_list" not in tool_names
+        assert "session_info" not in tool_names
+        assert "cron_create" not in tool_names
+        assert "cron_delete" not in tool_names
+        assert "cron_list" not in tool_names
+        assert any("task" in (n or "").lower() for n in tool_names)
 
     def test_is_bug_hunter_false_includes_session_tools_for_pm(self):
         """When is_pm=True and is_bug_hunter=False, PM lifecycle tools are included."""
@@ -136,8 +141,8 @@ class TestBugHunterCanvasTemplate:
             get_canvas_template,
         )
 
-        assert "bug_hunter" in _TEMPLATES
-        assert _TEMPLATES["bug_hunter"] is BUG_HUNTER_CANVAS_TEMPLATE
+        assert "bug-hunter" in _TEMPLATES
+        assert _TEMPLATES["bug-hunter"] is BUG_HUNTER_CANVAS_TEMPLATE
 
     def test_get_canvas_template_bug_hunter(self):
         """get_canvas_template('bug_hunter') returns the bug hunter template."""
@@ -146,7 +151,7 @@ class TestBugHunterCanvasTemplate:
             get_canvas_template,
         )
 
-        result = get_canvas_template("bug_hunter")
+        result = get_canvas_template("bug-hunter")
         assert result is BUG_HUNTER_CANVAS_TEMPLATE
 
     def test_bug_hunter_canvas_contains_findings_table(self):
@@ -222,3 +227,47 @@ class TestBugHunterPmSpawnGate:
         # Non-PM sessions don't get session_start at all — the gate is upstream of
         # any bug_hunter_profile validation inside the handler.
         assert session_start is None
+
+
+class TestBugHunterMutualExclusion:
+    def _make_session(self, **option_kwargs):
+        config = MagicMock()
+        config.permission_debounce_ms = 2000
+        config.permission_timeout_s = 900
+        config.safe_write_dirs = ""
+        config.auto_classifier_enabled = False
+        options = _make_options(**option_kwargs)
+        return SummonSession(
+            config=config,
+            options=options,
+            session_id="test-bh-excl",
+        )
+
+    def test_bug_hunter_and_pm_profile_raises_value_error(self):
+        with pytest.raises(ValueError, match=r"[Oo]nly one.*profile"):
+            self._make_session(bug_hunter_profile=True, pm_profile=True)
+
+    def test_bug_hunter_and_scribe_profile_raises_value_error(self):
+        with pytest.raises(ValueError, match=r"[Oo]nly one.*profile"):
+            self._make_session(bug_hunter_profile=True, scribe_profile=True)
+
+
+class TestBugHunterMemoryVolumePath:
+    def _compute_memory_vol_path(self, project_id: str | None) -> str:
+        from summon_claude.config import get_data_dir
+
+        slug = project_id or "default"
+        return str(get_data_dir() / "bug-hunter-memory" / slug)
+
+    def test_project_id_produces_project_slug(self):
+        path = self._compute_memory_vol_path("proj-abc")
+        assert path.endswith("bug-hunter-memory/proj-abc")
+
+    def test_none_project_id_produces_default_slug(self):
+        path = self._compute_memory_vol_path(None)
+        assert path.endswith("bug-hunter-memory/default")
+
+    def test_different_project_ids_produce_different_paths(self):
+        path_a = self._compute_memory_vol_path("proj-a")
+        path_b = self._compute_memory_vol_path("proj-b")
+        assert path_a != path_b

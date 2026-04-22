@@ -7,7 +7,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_MEMORY_FILES = ("SETUP.md", "PATTERNS.md", "FINDINGS.md", "SUPPRESSIONS.md", "SCAN_LOG.md")
+_MEMORY_FILES = ("PATTERNS.md", "FINDINGS.md", "SUPPRESSIONS.md", "SCAN_LOG.md")
 
 
 def initialize_bug_hunter_memory(path: Path) -> None:

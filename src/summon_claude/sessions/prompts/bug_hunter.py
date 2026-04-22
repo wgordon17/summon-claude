@@ -162,7 +162,7 @@ def build_bug_hunter_system_prompt(
     """
     scan_interval_min = max(1, scan_interval_s // 60)
     append_text = (
-        _BUG_HUNTER_SYSTEM_PROMPT_APPEND.replace("{cwd}", cwd)
+        _BUG_HUNTER_SYSTEM_PROMPT_APPEND.replace("{cwd}", sanitize_prompt_value(cwd))
         .replace("{scan_interval_min}", str(scan_interval_min))
         .replace("{project_name}", sanitize_prompt_value(project_name))
     )

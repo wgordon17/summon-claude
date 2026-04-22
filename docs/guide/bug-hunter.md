@@ -96,7 +96,7 @@ The bug hunter runs inside a Matchlock VM with strict isolation:
 
 - **Read-only workspace**: the project directory is mounted read-only -- the bug hunter cannot modify your code
 - **Restricted network**: only allowlisted domains are reachable
-- **Credential proxy**: API keys are proxied per-domain, not injected as environment variables
+- **Credential proxy**: API keys are proxied per-domain. Vertex ADC config vars (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`) are passed as environment variables when Vertex is configured.
 - **Non-root execution**: Claude Code runs as a non-root user inside the VM
 - **Resource limits**: configurable CPU and memory caps (default: 4 CPUs, 4GB RAM)
 

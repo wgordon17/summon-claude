@@ -290,6 +290,11 @@ _BUG_HUNTER_DISALLOWED_TOOLS: frozenset[str] = frozenset(
         "CronList",
         "TeamCreate",
         "TeamDelete",
+        "slack_upload_file",
+        "slack_create_thread",
+        "slack_react",
+        "slack_post_snippet",
+        "slack_update_message",
     }
 )
 
@@ -1879,7 +1884,7 @@ class SummonSession:
         elif self._scribe_profile:
             profile = "scribe"
         elif self._bug_hunter_profile:
-            profile = "bug_hunter"
+            profile = "bug-hunter"
         else:
             profile = "agent"
         template = get_canvas_template(profile, jira_enabled=self._config.jira_enabled)
@@ -2232,6 +2237,7 @@ class SummonSession:
 
         # System prompt state — modified on compaction restart
         restart_count = 0
+        last_restart_was_recovery = False
         base_prompt = _HEADLESS_BOILERPLATE
         if self._canvas_store is not None:
             base_prompt += _CANVAS_PROMPT_SECTION
@@ -2379,6 +2385,10 @@ class SummonSession:
                     scan_interval_s=self._scan_interval_s,
                     project_name=project_name,
                 )
+                if restart_count > 0 and system_prompt_append != base_prompt:
+                    compaction_delta = system_prompt_append[len(base_prompt) :]
+                    if compaction_delta:
+                        system_prompt["append"] += compaction_delta
                 if self._system_prompt_append:
                     system_prompt["append"] += "\n\n" + self._system_prompt_append
             else:
@@ -2452,6 +2462,7 @@ class SummonSession:
                     self._bh_vm_config,
                     options,
                     vm_handle=self._bh_vm_handle,
+                    skip_running_check=restart_count > 0 and not last_restart_was_recovery,
                 )
 
             restart: _SessionRestartError | None = None
@@ -2555,6 +2566,7 @@ class SummonSession:
 
             # After client teardown: restart if compaction requested
             if restart is not None:
+                last_restart_was_recovery = restart.recovery_mode
                 if restart.summary:
                     system_prompt_append = base_prompt + _COMPACT_SUMMARY_PREFIX + restart.summary
                 elif restart.recovery_mode:

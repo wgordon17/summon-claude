@@ -1286,8 +1286,17 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         task_list,
     ]
     if is_bug_hunter:
-        # Bug hunter: remove session lifecycle tools — it reads code, not manages sessions
-        _bug_hunter_skip = {"session_start", "session_stop", "session_message", "session_resume"}
+        _bug_hunter_skip = {
+            "session_start",
+            "session_stop",
+            "session_message",
+            "session_resume",
+            "session_list",
+            "session_info",
+            "cron_create",
+            "cron_delete",
+            "cron_list",
+        }
         return [t for t in tools if getattr(t, "name", None) not in _bug_hunter_skip]
     if is_pm:
         pm_tools: list[SdkMcpTool] = [

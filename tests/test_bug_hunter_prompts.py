@@ -50,10 +50,8 @@ class TestBuildBugHunterSystemPrompt:
             scan_interval_s=30,
             project_name="MyProject",
         )
-        # The scan interval replacement should produce "1" not "0"
-        # (clamped via max(1, ...)), but the template may contain
-        # "0 minutes" in other instructional text — just verify "1" is present
-        assert "1" in result["append"]
+        assert "every 1 minute" in result["append"]
+        assert "every 0 minute" not in result["append"]
 
     def test_no_unresolved_user_placeholders(self) -> None:
         result = build_bug_hunter_system_prompt(

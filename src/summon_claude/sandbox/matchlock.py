@@ -23,8 +23,6 @@ _MIN_VERSION = (0, 2, 9)
 
 
 class MatchlockBackend(SandboxBackend):
-    """Matchlock VM backend — all operations via CLI subprocess (Decision 3)."""
-
     def __init__(self) -> None:
         cli_path = shutil.which("matchlock")
         if not cli_path:

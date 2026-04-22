@@ -598,3 +598,344 @@ class TestCreateBugHunterVmConfig:
             claude_code_version="latest",
         )
         assert any("@latest" in step for step in config.pre_install)
+
+
+# ---------------------------------------------------------------------------
+# VmConfig.__post_init__ semver validation
+# ---------------------------------------------------------------------------
+
+
+class TestVmConfigSemverValidation:
+    @pytest.mark.parametrize("version", ["1.2.3", "0.0.1", "100.200.300", "latest"])
+    def test_valid_versions_accepted(self, version: str) -> None:
+        config = VmConfig(claude_code_version=version, workspace_path="/workspace")
+        assert config.claude_code_version == version
+
+    @pytest.mark.parametrize(
+        "version",
+        [
+            "1.2",
+            "1.2.3-alpha",
+            "1.2.3+build",
+            "latest ",
+            " latest",
+            "",
+            "foo",
+            "foo; rm -rf /",
+            "v1.2.3",
+        ],
+    )
+    def test_invalid_versions_rejected(self, version: str) -> None:
+        with pytest.raises(ValueError, match="must be 'latest' or"):
+            VmConfig(claude_code_version=version, workspace_path="/workspace")
+
+
+# ---------------------------------------------------------------------------
+# validate_vm_id injection guard
+# ---------------------------------------------------------------------------
+
+
+class TestValidateVmId:
+    @pytest.mark.parametrize(
+        "vm_id",
+        ["vm-00000000", "vm-deadbeef", "vm-12345678", "vm-abcdef01"],
+    )
+    def test_valid_ids_pass(self, vm_id: str) -> None:
+        from summon_claude.sandbox import validate_vm_id
+
+        assert validate_vm_id(vm_id) == vm_id
+
+    @pytest.mark.parametrize(
+        "vm_id",
+        [
+            "",
+            "vm-",
+            "vm-1234567",
+            "vm-123456789",
+            "vm-DEADBEEF",
+            "vm-GGGGGGGG",
+            "../evil",
+            "vm-1234; rm -rf /",
+            "vm 12345678",
+        ],
+    )
+    def test_invalid_ids_rejected(self, vm_id: str) -> None:
+        from summon_claude.sandbox import validate_vm_id
+
+        with pytest.raises(ValueError, match="Invalid VM ID"):
+            validate_vm_id(vm_id)
+
+
+# ---------------------------------------------------------------------------
+# validate_bug_hunter_secrets — direct edge case coverage
+# ---------------------------------------------------------------------------
+
+
+class TestValidateBugHunterSecrets:
+    def test_valid_single_entry(self) -> None:
+        from summon_claude.sandbox import validate_bug_hunter_secrets
+
+        result = validate_bug_hunter_secrets({"MY_TOKEN": "api.example.com"})
+        assert result == (("MY_TOKEN", "api.example.com"),)
+
+    def test_valid_domain_with_port(self) -> None:
+        from summon_claude.sandbox import validate_bug_hunter_secrets
+
+        result = validate_bug_hunter_secrets({"MY_TOKEN": "api.example.com:8080"})
+        assert result == (("MY_TOKEN", "api.example.com:8080"),)
+
+    def test_empty_dict_returns_empty_tuple(self) -> None:
+        from summon_claude.sandbox import validate_bug_hunter_secrets
+
+        assert validate_bug_hunter_secrets({}) == ()
+
+    @pytest.mark.parametrize(
+        "key",
+        ["A", "a", "my_token", "MY TOKEN", "", "1TOKEN", "_TOKEN"],
+    )
+    def test_invalid_env_var_name_raises(self, key: str) -> None:
+        from summon_claude.sandbox import validate_bug_hunter_secrets
+
+        with pytest.raises(ValueError, match="Invalid env var name"):
+            validate_bug_hunter_secrets({key: "api.example.com"})
+
+    @pytest.mark.parametrize(
+        "domain",
+        [
+            "",
+            "notadomain",
+            "not a domain",
+            "http://example.com",
+            "example.com/path",
+            "api.example.com; rm -rf /",
+        ],
+    )
+    def test_invalid_domain_raises(self, domain: str) -> None:
+        from summon_claude.sandbox import validate_bug_hunter_secrets
+
+        with pytest.raises(ValueError, match="Invalid domain"):
+            validate_bug_hunter_secrets({"MY_TOKEN": domain})
+
+
+# ---------------------------------------------------------------------------
+# MatchlockBackend.is_running() output parsing
+# ---------------------------------------------------------------------------
+
+
+class TestIsRunning:
+    def _make_backend(self):
+        from summon_claude.sandbox.matchlock import MatchlockBackend
+
+        with patch("shutil.which", return_value="/usr/local/bin/matchlock"):
+            return MatchlockBackend()
+
+    def _make_list_output(self, *vm_ids: str) -> bytes:
+        lines = [f"{vm_id}\trunning\tnode:24-slim\t2026-01-01T00:00:00Z\t12345" for vm_id in vm_ids]
+        return "\n".join(lines).encode()
+
+    @pytest.mark.anyio
+    async def test_vm_present_returns_true(self) -> None:
+        backend = self._make_backend()
+
+        async def fake_run_process(cmd, **kwargs):
+            result = MagicMock()
+            result.stdout = self._make_list_output("vm-aabbccdd", "vm-11223344")
+            result.stderr = b""
+            result.returncode = 0
+            return result
+
+        with patch("anyio.run_process", side_effect=fake_run_process):
+            assert await backend.is_running("vm-aabbccdd") is True
+
+    @pytest.mark.anyio
+    async def test_vm_absent_returns_false(self) -> None:
+        backend = self._make_backend()
+
+        async def fake_run_process(cmd, **kwargs):
+            result = MagicMock()
+            result.stdout = self._make_list_output("vm-11223344")
+            result.stderr = b""
+            result.returncode = 0
+            return result
+
+        with patch("anyio.run_process", side_effect=fake_run_process):
+            assert await backend.is_running("vm-aabbccdd") is False
+
+    @pytest.mark.anyio
+    async def test_empty_output_returns_false(self) -> None:
+        backend = self._make_backend()
+
+        async def fake_run_process(cmd, **kwargs):
+            result = MagicMock()
+            result.stdout = b""
+            result.stderr = b""
+            result.returncode = 0
+            return result
+
+        with patch("anyio.run_process", side_effect=fake_run_process):
+            assert await backend.is_running("vm-aabbccdd") is False
+
+    @pytest.mark.anyio
+    async def test_nonzero_returncode_returns_false(self) -> None:
+        backend = self._make_backend()
+
+        async def fake_run_process(cmd, **kwargs):
+            result = MagicMock()
+            result.stdout = self._make_list_output("vm-aabbccdd")
+            result.stderr = b"matchlock: permission denied"
+            result.returncode = 1
+            return result
+
+        with patch("anyio.run_process", side_effect=fake_run_process):
+            assert await backend.is_running("vm-aabbccdd") is False
+
+
+# ---------------------------------------------------------------------------
+# MatchlockTransport.connect() — PTY allocation and command construction
+# ---------------------------------------------------------------------------
+
+
+class TestMatchlockTransportConnect:
+    def _make_transport(self, vm_handle=None, **option_kwargs) -> MatchlockTransport:
+        config = VmConfig(
+            claude_code_version="1.2.3",
+            workspace_path="/workspace",
+        )
+        options = ClaudeAgentOptions(**option_kwargs)
+        backend = MagicMock()
+        backend.create_vm = AsyncMock(return_value="vm-aabbccdd")
+        backend.destroy_vm = AsyncMock()
+        return MatchlockTransport(
+            backend, config, options, vm_handle=vm_handle, cli_path="matchlock"
+        )
+
+    @pytest.mark.anyio
+    async def test_connect_creates_vm_when_no_handle(self) -> None:
+        transport = self._make_transport()
+        fake_process = MagicMock()
+        fake_process.stdin = MagicMock()
+        fake_process.returncode = None
+
+        with (
+            patch("pty.openpty", return_value=(10, 11)),
+            patch("fcntl.ioctl"),
+            patch("os.close"),
+            patch("anyio.open_process", new_callable=AsyncMock, return_value=fake_process),
+        ):
+            await transport.connect()
+
+        transport._backend.create_vm.assert_called_once()
+        assert transport._vm_handle == "vm-aabbccdd"
+        assert transport._ready is True
+
+    @pytest.mark.anyio
+    async def test_connect_skips_create_when_handle_provided(self) -> None:
+        transport = self._make_transport(vm_handle="vm-deadbeef")
+        fake_process = MagicMock()
+        fake_process.stdin = MagicMock()
+        fake_process.returncode = None
+
+        with (
+            patch("pty.openpty", return_value=(10, 11)),
+            patch("fcntl.ioctl"),
+            patch("os.close"),
+            patch("anyio.open_process", new_callable=AsyncMock, return_value=fake_process),
+        ):
+            await transport.connect()
+
+        transport._backend.create_vm.assert_not_called()
+        assert transport._vm_handle == "vm-deadbeef"
+
+    @pytest.mark.anyio
+    async def test_connect_command_contains_vm_handle(self) -> None:
+        transport = self._make_transport(vm_handle="vm-cafebabe")
+        captured: list[list[str]] = []
+        fake_process = MagicMock()
+        fake_process.stdin = MagicMock()
+        fake_process.returncode = None
+
+        async def capture_open_process(cmd, **kwargs):
+            captured.append(list(cmd))
+            return fake_process
+
+        with (
+            patch("pty.openpty", return_value=(10, 11)),
+            patch("fcntl.ioctl"),
+            patch("os.close"),
+            patch("anyio.open_process", side_effect=capture_open_process),
+        ):
+            await transport.connect()
+
+        assert captured
+        exec_cmd = captured[0]
+        assert exec_cmd[0] == "matchlock"
+        assert exec_cmd[1] == "exec"
+        assert exec_cmd[3] == "vm-cafebabe"
+        assert exec_cmd[5] == "sh"
+        assert exec_cmd[6] == "-c"
+
+    @pytest.mark.anyio
+    async def test_connect_env_vars_inside_su_command(self) -> None:
+        transport = self._make_transport(vm_handle="vm-cafebabe")
+        captured: list[list[str]] = []
+        fake_process = MagicMock()
+        fake_process.stdin = MagicMock()
+        fake_process.returncode = None
+
+        async def capture_open_process(cmd, **kwargs):
+            captured.append(list(cmd))
+            return fake_process
+
+        with (
+            patch("pty.openpty", return_value=(10, 11)),
+            patch("fcntl.ioctl"),
+            patch("os.close"),
+            patch("anyio.open_process", side_effect=capture_open_process),
+        ):
+            await transport.connect()
+
+        full_sh_cmd = captured[0][7]
+        assert "su -c" in full_sh_cmd
+        assert full_sh_cmd.rstrip().endswith("claude")
+        # Verify env vars are INSIDE the su -c argument (not before su).
+        # The structure is: su -c '<env_prefix> <claude_cmd>' claude
+        # Extract the su -c argument (the single-quoted inner command).
+        import shlex
+
+        parts = shlex.split(full_sh_cmd)
+        su_idx = parts.index("su")
+        su_c_arg = parts[su_idx + 2]  # su -c <this_arg> claude
+        assert "CLAUDE_CODE_ENTRYPOINT" in su_c_arg, (
+            f"env vars must be inside su -c argument, not outside. su -c arg: {su_c_arg}"
+        )
+
+    @pytest.mark.anyio
+    async def test_connect_cleanup_on_failure_destroys_new_vm(self) -> None:
+        transport = self._make_transport()
+
+        with (
+            patch("pty.openpty", return_value=(10, 11)),
+            patch("fcntl.ioctl"),
+            patch("os.close"),
+            patch("anyio.open_process", new_callable=AsyncMock, side_effect=OSError("fail")),
+            pytest.raises(OSError, match="fail"),
+        ):
+            await transport.connect()
+
+        transport._backend.destroy_vm.assert_called_once_with("vm-aabbccdd")
+        assert transport._vm_handle is None
+
+    @pytest.mark.anyio
+    async def test_connect_cleanup_does_not_destroy_preexisting_vm(self) -> None:
+        transport = self._make_transport(vm_handle="vm-existing")
+
+        with (
+            patch("pty.openpty", return_value=(10, 11)),
+            patch("fcntl.ioctl"),
+            patch("os.close"),
+            patch("anyio.open_process", new_callable=AsyncMock, side_effect=OSError("fail")),
+            pytest.raises(OSError),
+        ):
+            await transport.connect()
+
+        transport._backend.destroy_vm.assert_not_called()

@@ -172,7 +172,7 @@ _TEMPLATES: dict[str, str] = {
     "pm": PM_CANVAS_TEMPLATE,
     "global-pm": GLOBAL_PM_CANVAS_TEMPLATE,
     "scribe": SCRIBE_CANVAS_TEMPLATE,
-    "bug_hunter": BUG_HUNTER_CANVAS_TEMPLATE,
+    "bug-hunter": BUG_HUNTER_CANVAS_TEMPLATE,
 }
 
 
