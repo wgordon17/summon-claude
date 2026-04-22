@@ -76,24 +76,20 @@ async def test_result_message_has_cost():
 
 async def test_text_block_content():
     """AssistantMessage should contain at least one TextBlock with non-empty text."""
+    text_blocks: list[TextBlock] = []
     with tempfile.TemporaryDirectory() as cwd:
         options = ClaudeAgentOptions(cwd=cwd, max_turns=1, **_COMMON_OPTS)
         async with ClaudeSDKClient(options) as client:
             await client.query("Say hello.")
-            assistant_msgs: list[AssistantMessage] = []
+            got_assistant = False
             async for msg in client.receive_response():
                 if isinstance(msg, AssistantMessage):
-                    assistant_msgs.append(msg)
+                    got_assistant = True
+                    text_blocks.extend(b for b in msg.content if isinstance(b, TextBlock))
 
-    assert assistant_msgs, "Expected at least one AssistantMessage"
-    # Collect all blocks across all AssistantMessages (the SDK may split
-    # ThinkingBlock and TextBlock into separate messages).
-    all_text_blocks = [b for m in assistant_msgs for b in m.content if isinstance(b, TextBlock)]
-    block_summary = [[type(b).__name__ for b in m.content] for m in assistant_msgs]
-    assert len(all_text_blocks) > 0, (
-        f"No TextBlock in any AssistantMessage. Got {len(assistant_msgs)} messages: {block_summary}"
-    )
-    assert any(b.text.strip() for b in all_text_blocks), "TextBlock should have non-empty text"
+    assert got_assistant, "Should receive at least one AssistantMessage"
+    assert len(text_blocks) > 0, "AssistantMessage(s) should have at least one TextBlock"
+    assert any(b.text.strip() for b in text_blocks), "TextBlock should have non-empty text"
 
 
 async def test_can_use_tool_callback():
