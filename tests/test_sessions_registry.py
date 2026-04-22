@@ -298,6 +298,37 @@ class TestSchemaMigrationWarning:
         assert not any("newer than this code" in record.message for record in caplog.records)
 
 
+class TestGetProject:
+    async def test_get_project_by_id(self, registry):
+        project_id = await registry.add_project("alpha", "/projects/alpha")
+        result = await registry.get_project(project_id)
+        assert result is not None
+        assert result["project_id"] == project_id
+        assert result["name"] == "alpha"
+
+    async def test_get_project_by_name(self, registry):
+        project_id = await registry.add_project("beta", "/projects/beta")
+        result = await registry.get_project("beta")
+        assert result is not None
+        assert result["project_id"] == project_id
+
+    async def test_id_lookup_takes_precedence_over_name(self, registry):
+        """When a string matches project A's ID AND project B's name, ID wins."""
+        id_a = await registry.add_project("project-a", "/projects/a")
+        # Create project B whose name is project A's ID — the collision scenario
+        await registry.add_project(id_a, "/projects/b")
+
+        # Looking up id_a should return project A (by ID), not project B (by name)
+        result = await registry.get_project(id_a)
+        assert result is not None
+        assert result["project_id"] == id_a
+        assert result["name"] == "project-a"
+
+    async def test_missing_returns_none(self, registry):
+        result = await registry.get_project("does-not-exist")
+        assert result is None
+
+
 class TestResolveSession:
     async def test_resolve_exact_id(self, registry):
         await registry.register("sess-resolve-1", 111, "/tmp")

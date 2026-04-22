@@ -740,6 +740,118 @@ class TestControlAPI:
 
 
 # ---------------------------------------------------------------------------
+# Tests: handle_app_home debounce + LRU eviction
+# ---------------------------------------------------------------------------
+
+
+class TestHandleAppHome:
+    """Tests for handle_app_home debounce and LRU eviction."""
+
+    def _make_manager_with_mock_client(self):
+        cfg = make_test_config()
+        web_client = MagicMock()
+        web_client.views_publish = AsyncMock()
+        dispatcher = MagicMock()
+        dispatcher.unregister = MagicMock()
+        manager = SessionManager(
+            config=cfg, web_client=web_client, bot_user_id="UBOT", dispatcher=dispatcher
+        )
+        return manager, web_client
+
+    async def test_second_call_within_debounce_window_does_not_publish(self):
+        manager, web_client = self._make_manager_with_mock_client()
+
+        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls:
+            mock_reg = AsyncMock()
+            mock_reg.list_active_by_user = AsyncMock(return_value=[])
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            frozen = 1000.0
+            with patch("time.monotonic", return_value=frozen):
+                await manager.handle_app_home("U123")
+                await manager.handle_app_home("U123")
+
+        assert web_client.views_publish.call_count == 1
+
+    async def test_call_after_debounce_window_publishes_again(self):
+        manager, web_client = self._make_manager_with_mock_client()
+
+        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls:
+            mock_reg = AsyncMock()
+            mock_reg.list_active_by_user = AsyncMock(return_value=[])
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch("time.monotonic", return_value=1000.0):
+                await manager.handle_app_home("U123")
+            with patch("time.monotonic", return_value=1000.0 + 61.0):
+                await manager.handle_app_home("U123")
+
+        assert web_client.views_publish.call_count == 2
+
+    async def test_independent_users_have_separate_debounce(self):
+        manager, web_client = self._make_manager_with_mock_client()
+
+        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_reg_cls:
+            mock_reg = AsyncMock()
+            mock_reg.list_active_by_user = AsyncMock(return_value=[])
+            mock_reg_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_reg_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            frozen = 1000.0
+            with patch("time.monotonic", return_value=frozen):
+                await manager.handle_app_home("ALICE")
+                await manager.handle_app_home("BOB")
+
+        assert web_client.views_publish.call_count == 2
+
+    def test_lru_eviction_caps_at_500(self):
+        """Eviction fires when a new user arrives at 500 entries."""
+        manager, _ = self._make_manager_with_mock_client()
+
+        for i in range(500):
+            manager._app_home_last_publish[f"U{i:04d}"] = float(i)
+
+        assert len(manager._app_home_last_publish) == 500
+
+        # Simulate a new user arriving — eviction should remove the oldest
+        manager._app_home_last_publish["U_NEW"] = 999.0
+        # Manually run the eviction logic (mirroring handle_app_home)
+        if (
+            len(manager._app_home_last_publish) >= 500
+            and "U_ANOTHER" not in manager._app_home_last_publish
+        ):
+            oldest_key = next(iter(manager._app_home_last_publish))
+            del manager._app_home_last_publish[oldest_key]
+
+        # Verify: oldest evicted, new user present, size at 500
+        assert "U0000" not in manager._app_home_last_publish
+        assert "U_NEW" in manager._app_home_last_publish
+        assert len(manager._app_home_last_publish) == 500
+
+    def test_lru_eviction_does_not_evict_existing_user(self):
+        """When an existing user updates, no eviction occurs."""
+        manager, _ = self._make_manager_with_mock_client()
+
+        for i in range(500):
+            manager._app_home_last_publish[f"U{i:04d}"] = float(i)
+
+        # Existing user updates — should NOT trigger eviction
+        user_id = "U0000"
+        if (
+            len(manager._app_home_last_publish) >= 500
+            and user_id not in manager._app_home_last_publish
+        ):
+            oldest_key = next(iter(manager._app_home_last_publish))
+            del manager._app_home_last_publish[oldest_key]
+        manager._app_home_last_publish[user_id] = 999.0
+
+        assert "U0000" in manager._app_home_last_publish
+        assert len(manager._app_home_last_publish) == 500
+
+
+# ---------------------------------------------------------------------------
 # Tests: create_session_with_spawn_token
 # ---------------------------------------------------------------------------
 

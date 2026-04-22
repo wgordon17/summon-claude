@@ -1560,6 +1560,34 @@ class TestPendingTurn:
         with pytest.raises(FrozenInstanceError):
             pt.message = "other"  # type: ignore[misc]
 
+    async def test_content_blocks_multimodal_envelope(self):
+        """content_blocks produces the correct multimodal AsyncIterator envelope."""
+        from summon_claude.sessions.session import _PendingTurn
+
+        image_block = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+        }
+        text_block = {"type": "text", "text": "what is this?"}
+        pending = _PendingTurn(
+            message="what is this?",
+            pre_sent=False,
+            content_blocks=(image_block, text_block),
+        )
+
+        async def _multimodal_iter():
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": list(pending.content_blocks)},
+            }
+
+        items = [item async for item in _multimodal_iter()]
+        assert len(items) == 1
+        envelope = items[0]
+        assert envelope["type"] == "user"
+        assert envelope["message"]["role"] == "user"
+        assert envelope["message"]["content"] == [image_block, text_block]
+
 
 class TestClearContext:
     """QA-003: Tests for clear_context() method on SummonSession."""

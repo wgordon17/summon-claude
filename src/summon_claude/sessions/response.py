@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -45,6 +45,8 @@ if TYPE_CHECKING:
     from summon_claude.sessions.permissions import ApprovalBridge, ApprovalInfo
 
 logger = logging.getLogger(__name__)
+
+_TaskStatus = Literal["in_progress", "complete", "error"]
 
 _MAX_MESSAGE_CHARS = 3000
 _FLUSH_HEADROOM_CHARS = 100
@@ -310,7 +312,7 @@ class ResponseStreamer:
         """Build compact summary blocks for the stream's final ``stop()`` message.
 
         Uses turn state (tool count, files) which is available before context/cost.
-        Returns ``None`` if no tools were called (no stream was opened).
+        Returns ``None`` if no tools were called and no files were touched (nothing to summarize).
         """
         parts = self._tool_file_summary_parts()
         if not parts:
@@ -376,7 +378,9 @@ class ResponseStreamer:
             self._turn.stream_failed = True
             return False
 
-    async def _stream_task_update(self, tool_use_id: str, tool_name: str, status: str) -> None:
+    async def _stream_task_update(
+        self, tool_use_id: str, tool_name: str, status: _TaskStatus
+    ) -> None:
         """Emit a TaskUpdateChunk to the active stream (best-effort).
 
         Falls back silently on error — the tool use/result context blocks
@@ -394,7 +398,7 @@ class ResponseStreamer:
             await self._close_stream_on_error()
 
     async def _stop_stream(self, blocks: list[dict[str, Any]] | None = None) -> None:
-        """Stop the active chat stream (best-effort). Clears _active_stream."""
+        """Stop the active chat stream (best-effort). Clears active_stream."""
         stream = self._turn.active_stream
         if stream is None:
             return

@@ -2565,6 +2565,29 @@ class TestHybridStreaming:
         assert "xoxb-" not in streamed_text
         assert "[REDACTED]" in streamed_text
 
+    async def test_flush_to_thread_stream_logs_validation_warnings(self, caplog):
+        """validate_agent_output warnings are logged when flushing through the stream path."""
+        import logging
+        from unittest.mock import patch
+
+        streamer, router, client, mock_stream = self._make_stream_streamer()
+        await self._setup_turn(streamer, client)
+
+        streamer._turn.active_stream = mock_stream
+        streamer._turn.posting_to_thread = True
+        streamer._turn.buffer = "some text"
+
+        with (
+            patch(
+                "summon_claude.sessions.response.validate_agent_output",
+                return_value=("some text", ["warning: suspicious pattern detected"]),
+            ),
+            caplog.at_level(logging.WARNING, logger="summon_claude.sessions.response"),
+        ):
+            await streamer._flush_buffer()
+
+        assert any("suspicious pattern detected" in record.message for record in caplog.records)
+
     async def test_no_stream_without_team_id(self):
         """No stream is opened when team_id is not set."""
         streamer, router, client = make_streamer(user_id="U456")

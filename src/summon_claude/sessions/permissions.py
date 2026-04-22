@@ -1607,15 +1607,18 @@ class PermissionHandler:
             if msg_ts:
                 await self._router.client.delete_message(msg_ts)
 
-            # Post a persistent summary of all answers to the turn thread
-            questions = self._ask_user.questions.get(request_id, [])
-            lines = [":white_check_mark: *Questions answered:*"]
-            for q in questions:
-                q_text = q.get("question", "")
-                header = sanitize_for_mrkdwn(q.get("header", q_text))
-                answer = sanitize_for_mrkdwn(answers.get(q_text, ""))
-                lines.append(f"\u2022 *{header}*: {answer}")
-            await _post_quietly(self._router, "\n".join(lines))
+            # Post a persistent summary when multiple questions were asked.
+            # Single-question requests already get a per-answer ack from the
+            # handler — a duplicate summary would be redundant.
+            if expected > 1:
+                questions = self._ask_user.questions.get(request_id, [])
+                lines = [":white_check_mark: *Questions answered:*"]
+                for q in questions:
+                    q_text = q.get("question", "")
+                    header = sanitize_for_mrkdwn(q.get("header", q_text))
+                    answer = sanitize_for_mrkdwn(answers.get(q_text, ""))
+                    lines.append(f"\u2022 *{header}*: {answer}")
+                await _post_quietly(self._router, "\n".join(lines))
 
             event = self._ask_user.events.get(request_id)
             if event:

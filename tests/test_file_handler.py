@@ -16,6 +16,8 @@ from summon_claude.file_handler import (
     sanitize_filename,
 )
 
+_SLACK_URL = "https://files.slack.com/files-pri/T0000-F0000/file"
+
 # ---------------------------------------------------------------------------
 # classify_file
 # ---------------------------------------------------------------------------
@@ -127,7 +129,7 @@ class TestDownloadFile:
         mock_session = self._make_mock_session([data])
 
         with patch("summon_claude.file_handler.aiohttp.ClientSession", return_value=mock_session):
-            result = await download_file("https://example.com/file", "xoxb-token")
+            result = await download_file(_SLACK_URL, "xoxb-token")
 
         assert result == data
 
@@ -136,7 +138,7 @@ class TestDownloadFile:
         mock_session = self._make_mock_session(chunks)
 
         with patch("summon_claude.file_handler.aiohttp.ClientSession", return_value=mock_session):
-            result = await download_file("https://example.com/file", "xoxb-token")
+            result = await download_file(_SLACK_URL, "xoxb-token")
 
         assert result == b"foobarbaz"
 
@@ -150,7 +152,7 @@ class TestDownloadFile:
             patch("summon_claude.file_handler.aiohttp.ClientSession", return_value=mock_session),
             pytest.raises(ValueError, match="exceeds maximum size"),
         ):
-            await download_file("https://example.com/file", "xoxb-token")
+            await download_file(_SLACK_URL, "xoxb-token")
 
     async def test_custom_max_size_enforced(self):
         """Custom max_size of 10 bytes is respected."""
@@ -160,7 +162,22 @@ class TestDownloadFile:
             patch("summon_claude.file_handler.aiohttp.ClientSession", return_value=mock_session),
             pytest.raises(ValueError),
         ):
-            await download_file("https://example.com/file", "xoxb-token", max_size=10)
+            await download_file(_SLACK_URL, "xoxb-token", max_size=10)
+
+    async def test_rejects_non_slack_url(self):
+        """download_file rejects URLs not on files.slack.com."""
+        with pytest.raises(ValueError, match="Unexpected file URL scheme or host"):
+            await download_file("https://evil.example.com/steal-token", "xoxb-token")
+
+    async def test_rejects_http_url(self):
+        """download_file rejects non-HTTPS Slack URLs."""
+        with pytest.raises(ValueError, match="Unexpected file URL scheme or host"):
+            await download_file("http://files.slack.com/files-pri/T0000-F0000/file", "xoxb-token")
+
+    async def test_rejects_userinfo_authority_bypass(self):
+        """download_file rejects @-authority URLs that spoof the host prefix."""
+        with pytest.raises(ValueError, match="Unexpected file URL scheme or host"):
+            await download_file("https://files.slack.com@evil.com/path", "xoxb-token")
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +249,15 @@ class TestPrepareImageContent:
         blocks = prepare_image_content("img.png", b"data", "application/octet-stream")
         assert blocks[1]["source"]["media_type"] == "image/png"
 
-    def test_media_type_fallback_to_provided(self):
-        """Unknown extension falls back to provided mimetype."""
+    def test_media_type_fallback_defaults_to_png_for_unknown_mime(self):
+        """Unknown extension with non-allowlisted MIME defaults to image/png."""
         blocks = prepare_image_content("img.bmp", b"data", "image/bmp")
-        assert blocks[1]["source"]["media_type"] == "image/bmp"
+        assert blocks[1]["source"]["media_type"] == "image/png"
+
+    def test_media_type_fallback_allows_known_mime(self):
+        """Unknown extension with allowlisted MIME is passed through."""
+        blocks = prepare_image_content("img.bmp", b"data", "image/jpeg")
+        assert blocks[1]["source"]["media_type"] == "image/jpeg"
 
     def test_filename_sanitized_in_text_block(self):
         blocks = prepare_image_content("path/to/img.png", b"data", "image/png")

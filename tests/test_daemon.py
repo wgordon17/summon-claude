@@ -275,6 +275,7 @@ class TestDaemonMain:
         mock_bolt.start_health_monitor = MagicMock(return_value=_mock_health_task)
 
         mock_dispatcher = MagicMock()
+        mock_dispatcher.close = AsyncMock()
         mock_session_manager = AsyncMock()
         mock_session_manager.shutdown = AsyncMock()
         # shutdown_event that fires immediately after setup
@@ -309,6 +310,7 @@ class TestDaemonMain:
         mock_bolt.start.assert_awaited_once()
         mock_bolt.stop.assert_awaited_once()
         mock_session_manager.shutdown.assert_awaited_once()
+        mock_dispatcher.close.assert_awaited_once()
         # CR-007: verify the critical shutdown callback wiring
         # Verify shutdown callback wiring — calling it should set the event
         mock_bolt.shutdown_callback()
@@ -411,7 +413,10 @@ class TestDaemonMainStartupProbe:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", return_value=mock_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -435,7 +440,10 @@ class TestDaemonMainStartupProbe:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", return_value=AsyncMock()),
             patch("asyncio.start_unix_server", return_value=AsyncMock()),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -466,7 +474,10 @@ class TestDaemonMainStartupProbe:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", return_value=mock_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -497,7 +508,10 @@ class TestDaemonMainStartupProbe:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", return_value=mock_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -539,7 +553,10 @@ class TestDaemonMainStartupProbe:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", return_value=mock_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -1032,7 +1049,10 @@ class TestJiraProxyLifecycle:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", side_effect=_capture_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -1088,7 +1108,10 @@ class TestJiraProxyLifecycle:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", side_effect=_capture_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -1150,7 +1173,10 @@ class TestJiraProxyLifecycle:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", return_value=mock_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -1200,7 +1226,10 @@ class TestJiraProxyLifecycle:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", side_effect=_capture_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),
@@ -1256,7 +1285,10 @@ class TestJiraProxyLifecycle:
         with (
             _patch_data_dir(tmp_path),
             patch("summon_claude.daemon.BoltRouter", return_value=mock_bolt),
-            patch("summon_claude.daemon.EventDispatcher", return_value=MagicMock()),
+            patch(
+                "summon_claude.daemon.EventDispatcher",
+                return_value=MagicMock(close=AsyncMock()),
+            ),
             patch("summon_claude.daemon.SessionManager", side_effect=_capture_session_manager),
             patch("asyncio.start_unix_server", return_value=mock_server),
             patch("summon_claude.daemon._cleanup_orphaned_sessions", new=AsyncMock()),

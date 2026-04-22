@@ -439,6 +439,11 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
 
         await bolt_router.stop()
 
+        try:
+            await dispatcher.close()
+        except Exception:
+            logger.debug("dispatcher.close() failed during shutdown", exc_info=True)
+
         # Disarm SIGALRM so we don't get killed during clean exit
         _disarm_sigalrm_watchdog()
 

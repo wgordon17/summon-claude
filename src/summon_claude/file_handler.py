@@ -11,6 +11,7 @@ import base64
 import logging
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -78,6 +79,10 @@ _IMAGE_MIME: dict[str, str] = {
     ".webp": "image/webp",
 }
 
+_ALLOWED_MEDIA_TYPES: frozenset[str] = frozenset(_IMAGE_MIME.values())
+
+_SLACK_FILE_HOST: str = "files.slack.com"
+
 
 def classify_file(filename: str, mimetype: str) -> str:
     """Classify a file as 'text', 'image', or 'unsupported'.
@@ -116,6 +121,9 @@ async def download_file(
     The token is only used in the Authorization header and never logged.
     Pass an existing *session* to reuse a connection pool across downloads.
     """
+    parsed = urlparse(url_private)
+    if parsed.scheme != "https" or parsed.hostname != _SLACK_FILE_HOST:
+        raise ValueError(f"Unexpected file URL scheme or host: {url_private!r}")
     headers = {"Authorization": f"Bearer {token}"}
     chunks: list[bytes] = []
     total = 0
@@ -170,8 +178,10 @@ def prepare_image_content(
     """
     safe_name = sanitize_filename(filename)
     ext = PurePosixPath(filename).suffix.lower()
-    # Prefer known MIME from extension; fall back to provided mimetype
+    # Prefer known MIME from extension; validate fallback against allowlist
     media_type = _IMAGE_MIME.get(ext, mimetype)
+    if media_type not in _ALLOWED_MEDIA_TYPES:
+        media_type = "image/png"
 
     encoded = base64.standard_b64encode(content_bytes).decode("ascii")
     return [

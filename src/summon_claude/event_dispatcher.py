@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from slack_sdk.web.async_client import AsyncWebClient
 
 from summon_claude.file_handler import (
@@ -93,6 +94,7 @@ class EventDispatcher:
         self._app_home_handler: AppHomeHandler | None = None
         self._web_client = web_client
         self._bot_user_id: str | None = None
+        self._http_session: aiohttp.ClientSession | None = None
 
     # ------------------------------------------------------------------
     # Registry
@@ -133,6 +135,12 @@ class EventDispatcher:
         handle = self._sessions.get(channel_id)
         if handle is not None:
             handle.pending_turns = queue
+
+    async def close(self) -> None:
+        """Close the shared HTTP session, if any."""
+        if self._http_session is not None and not self._http_session.closed:
+            await self._http_session.close()
+            self._http_session = None
 
     def has_active_sessions(self) -> bool:
         """Return True if any sessions are currently registered."""
@@ -181,6 +189,10 @@ class EventDispatcher:
         user_id: str = event.get("user_id", "")
         channel_id: str = event.get("channel_id", "")
         file_id: str = event.get("file_id", "")
+
+        if not file_id or not channel_id:
+            logger.warning("dispatch_file_shared: malformed event — missing file_id or channel_id")
+            return
 
         # Filter self-uploads (bot-created files: diffs, Write uploads, etc.)
         if self._bot_user_id and user_id == self._bot_user_id:
@@ -263,8 +275,12 @@ class EventDispatcher:
                 "dispatch_file_shared: no auth token — skipping download for %s", filename
             )
             return
+        if self._http_session is None:
+            self._http_session = aiohttp.ClientSession()
         try:
-            content_bytes = await download_file(url_private, token, max_size=MAX_FILE_SIZE)
+            content_bytes = await download_file(
+                url_private, token, max_size=MAX_FILE_SIZE, session=self._http_session
+            )
         except Exception as e:
             logger.warning(
                 "dispatch_file_shared: download failed for %s: %s", filename, type(e).__name__

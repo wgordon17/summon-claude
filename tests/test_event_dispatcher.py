@@ -412,6 +412,73 @@ class TestHasHandler:
         assert dispatcher.has_handler("C001") is False
 
 
+class TestUpdatePendingTurns:
+    """Tests for update_pending_turns()."""
+
+    def test_updates_queue_on_registered_handle(self):
+        dispatcher = EventDispatcher()
+        old_queue: asyncio.Queue = asyncio.Queue()
+        new_queue: asyncio.Queue = asyncio.Queue()
+        handle = _make_handle(channel_id="C001", queue=old_queue)
+        dispatcher.register("C001", handle)
+
+        dispatcher.update_pending_turns("C001", new_queue)
+
+        assert dispatcher._sessions["C001"].pending_turns is new_queue
+
+    def test_unknown_channel_is_noop(self):
+        dispatcher = EventDispatcher()
+        new_queue: asyncio.Queue = asyncio.Queue()
+        dispatcher.update_pending_turns("C_UNKNOWN", new_queue)
+        assert dispatcher._sessions == {}
+
+    def test_does_not_affect_other_sessions(self):
+        dispatcher = EventDispatcher()
+        new_queue: asyncio.Queue = asyncio.Queue()
+        handle_1 = _make_handle(channel_id="C001")
+        handle_2 = _make_handle(channel_id="C002")
+        original_q2 = handle_2.pending_turns
+        dispatcher.register("C001", handle_1)
+        dispatcher.register("C002", handle_2)
+
+        dispatcher.update_pending_turns("C001", new_queue)
+
+        assert dispatcher._sessions["C001"].pending_turns is new_queue
+        assert dispatcher._sessions["C002"].pending_turns is original_q2
+
+
+class TestClose:
+    """Tests for EventDispatcher.close()."""
+
+    async def test_close_with_no_session(self):
+        """close() is a no-op when no HTTP session was created."""
+        dispatcher = EventDispatcher()
+        assert dispatcher._http_session is None
+        await dispatcher.close()
+        assert dispatcher._http_session is None
+
+    async def test_close_closes_open_session(self):
+        """close() closes an active HTTP session and nulls the reference."""
+        dispatcher = EventDispatcher()
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.close = AsyncMock()
+        dispatcher._http_session = mock_session
+        await dispatcher.close()
+        mock_session.close.assert_awaited_once()
+        assert dispatcher._http_session is None
+
+    async def test_close_skips_already_closed_session(self):
+        """close() is a no-op when the HTTP session is already closed."""
+        dispatcher = EventDispatcher()
+        mock_session = MagicMock()
+        mock_session.closed = True
+        mock_session.close = AsyncMock()
+        dispatcher._http_session = mock_session
+        await dispatcher.close()
+        mock_session.close.assert_not_awaited()
+
+
 class TestUnroutedMessageFallback:
     """Tests for _handle_unrouted_message fallback."""
 
@@ -673,6 +740,22 @@ class TestDispatchFileShared:
                 "url_private_download": url,
             }
         }
+
+    async def test_malformed_event_missing_file_id(self):
+        """Event with empty file_id is rejected with warning."""
+        mock_web = AsyncMock()
+        dispatcher = EventDispatcher(web_client=mock_web)
+        event = self._make_file_event(file_id="")
+        await dispatcher.dispatch_file_shared(event)
+        mock_web.files_info.assert_not_awaited()
+
+    async def test_malformed_event_missing_channel_id(self):
+        """Event with empty channel_id is rejected with warning."""
+        mock_web = AsyncMock()
+        dispatcher = EventDispatcher(web_client=mock_web)
+        event = self._make_file_event(channel_id="")
+        await dispatcher.dispatch_file_shared(event)
+        mock_web.files_info.assert_not_awaited()
 
     async def test_self_upload_filtered(self):
         """Bot self-uploads are silently dropped."""
