@@ -293,6 +293,31 @@ class ResponseStreamer:
             blocks = _build_turn_header_blocks(text)
             await self._router.update(self._router.active_thread_ref.ts, text, blocks=blocks)
 
+    def _build_stream_summary_blocks(self) -> list[dict[str, Any]] | None:
+        """Build compact summary blocks for the stream's final ``stop()`` message.
+
+        Uses turn state (tool count, files) which is available before context/cost.
+        Returns ``None`` if no tools were called (no stream was opened).
+        """
+        parts: list[str] = []
+        if self._turn.tool_call_count:
+            suffix = "s" if self._turn.tool_call_count != 1 else ""
+            parts.append(f"{self._turn.tool_call_count} tool call{suffix}")
+        if self._turn.files_touched:
+            short_names = [p.rsplit("/", 1)[-1] for p in self._turn.files_touched[:3]]
+            if len(self._turn.files_touched) > 3:
+                short_names.append(f"+{len(self._turn.files_touched) - 3} more")
+            parts.append(", ".join(short_names))
+        if not parts:
+            return None
+        summary = " \u00b7 ".join(parts)
+        return [
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f":white_check_mark: {summary}"}],
+            }
+        ]
+
     def _generate_turn_summary(self, context: ContextUsage | None = None) -> str:
         """Build a concise summary string for the turn starter message."""
         parts: list[str] = []
@@ -452,16 +477,15 @@ class ResponseStreamer:
                 added_this_turn = set(self._pending_agent_verifications) - keys_before
                 for stale_key in added_this_turn:
                     self._pending_agent_verifications.pop(stale_key, None)
-            with contextlib.suppress(BaseException):
-                await self._stop_stream()
+                with contextlib.suppress(BaseException):
+                    await self._stop_stream()
 
-        # Final flush (stream already stopped in finally for CancelledError safety;
-        # second stop is idempotent and preserves correct lifecycle ordering)
+        # Final flush, then stop stream with summary blocks
         if self._turn.thinking_buffer:
             await self._flush_thinking()
         if self._turn.buffer:
             await self._flush_buffer()
-        await self._stop_stream()
+        await self._stop_stream(blocks=self._build_stream_summary_blocks())
         if result:
             await self._post_result_summary(result)
             # Clear thread status at turn end

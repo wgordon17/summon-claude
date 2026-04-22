@@ -2442,6 +2442,29 @@ class TestHybridStreaming:
         error_chunk = chunk_calls[-1].kwargs["chunks"][0]
         assert error_chunk.status == "error"
 
+    async def test_stream_stopped_with_summary_blocks(self):
+        """Stream stop includes summary blocks with tool count and files."""
+        streamer, router, client, mock_stream = self._make_stream_streamer()
+        await self._setup_turn(streamer, client)
+
+        tool_result = ToolResultBlock(tool_use_id="tu_1", content="ok", is_error=False)
+        messages = [
+            make_assistant_message([make_tool_use_block("Read", {"file_path": "/src/a.py"})]),
+            make_assistant_message([tool_result]),
+            make_result_message(),
+        ]
+        await streamer.stream_with_flush(agen(messages))
+
+        # stop() should have been called with summary blocks
+        mock_stream.stop.assert_awaited()
+        stop_kwargs = mock_stream.stop.call_args.kwargs
+        blocks = stop_kwargs.get("blocks")
+        assert blocks is not None, "stop() should include summary blocks"
+        assert blocks[0]["type"] == "context"
+        summary_text = blocks[0]["elements"][0]["text"]
+        assert "1 tool call" in summary_text
+        assert "a.py" in summary_text
+
     async def test_stream_stopped_on_result(self):
         """The stream is stopped when ResultMessage arrives."""
         streamer, router, client, mock_stream = self._make_stream_streamer()
