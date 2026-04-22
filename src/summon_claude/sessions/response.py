@@ -387,7 +387,7 @@ class ResponseStreamer:
         stream = self._turn.active_stream
         self._turn.active_stream = None
         if stream is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(BaseException):
                 await stream.stop()
 
     # --- Streaming ---
@@ -451,13 +451,16 @@ class ResponseStreamer:
                 added_this_turn = set(self._pending_agent_verifications) - keys_before
                 for stale_key in added_this_turn:
                     self._pending_agent_verifications.pop(stale_key, None)
-            await self._stop_stream()
+            with contextlib.suppress(BaseException):
+                await self._stop_stream()
 
-        # Final flush
+        # Final flush (stream already stopped in finally for CancelledError safety;
+        # second stop is idempotent and preserves correct lifecycle ordering)
         if self._turn.thinking_buffer:
             await self._flush_thinking()
         if self._turn.buffer:
             await self._flush_buffer()
+        await self._stop_stream()
         if result:
             await self._post_result_summary(result)
             # Clear thread status at turn end
@@ -554,8 +557,13 @@ class ResponseStreamer:
         # so this persists during actual tool execution until the result arrives.
         await self._set_status(f"Running {block.name}...")
 
-        # Hybrid streaming: emit TaskUpdateChunk(in_progress) for non-subagent tools
-        if parent_id is None and self._can_stream() and await self._ensure_stream():
+        # Hybrid streaming: emit TaskUpdateChunk(in_progress) for non-subagent, non-denied tools
+        if (
+            parent_id is None
+            and block.id not in self._turn.denied_tool_use_ids
+            and self._can_stream()
+            and await self._ensure_stream()
+        ):
             await self._stream_task_update(block.id, block.name, "in_progress")
 
     async def _handle_tool_result_block(
@@ -575,15 +583,15 @@ class ResponseStreamer:
                 await self._mcp_health.record_tool_result(
                     tool_name, is_error=block.is_error, error_content=error_text
                 )
-        # Hybrid streaming: emit TaskUpdateChunk(complete/error) for non-subagent tools
-        if parent_id is None and self._turn.active_stream is not None:
+        # Suppress redundant task cards and :x: for denied tools — the denial label
+        # on the tool use block already communicates the outcome.
+        denied = block.tool_use_id in self._turn.denied_tool_use_ids
+
+        # Hybrid streaming: emit TaskUpdateChunk(complete/error) for non-subagent, non-denied
+        if parent_id is None and self._turn.active_stream is not None and not denied:
             tool_name = self._turn.tool_names.get(block.tool_use_id, "tool")
             status = "error" if block.is_error else "complete"
             await self._stream_task_update(block.tool_use_id, tool_name, status)
-
-        # Suppress redundant :x: Tool error for denied tools — the denial label
-        # on the tool use block already communicates the outcome.
-        denied = block.tool_use_id in self._turn.denied_tool_use_ids
         if denied and block.is_error:
             return
         if pending_fc is not None and not block.is_error and not denied:

@@ -2609,3 +2609,35 @@ class TestHybridStreaming:
         # Should not raise
         result = await streamer.stream_with_flush(agen(messages))
         assert result is not None
+
+    async def test_denied_tool_skips_task_update_chunks(self):
+        """Denied tools do not emit TaskUpdateChunk (in_progress or error)."""
+        streamer, router, client, mock_stream = self._make_stream_streamer()
+        await self._setup_turn(streamer, client)
+        # Simulate a turn already in progress (reset doesn't wipe these)
+        streamer._turn.active_stream = mock_stream
+        streamer._turn.has_seen_tool_use = True
+
+        # Simulate denial: add tool_use_id to denied set (as bridge would)
+        streamer._turn.denied_tool_use_ids.add("tu_denied")
+        streamer._turn.tool_names["tu_denied"] = "Bash"
+
+        # Directly call _handle_tool_use_block with a denied tool
+        denied_block = make_tool_use_block("Bash", {"command": "rm"}, tool_use_id="tu_denied")
+        await streamer._handle_tool_use_block(denied_block, parent_id=None)
+
+        # in_progress should NOT have been emitted for the denied tool
+        chunk_calls = [c for c in mock_stream.append.call_args_list if c.kwargs.get("chunks")]
+        assert len(chunk_calls) == 0, (
+            f"Denied tool should not emit in_progress TaskUpdateChunk, got {chunk_calls}"
+        )
+
+        # Now handle the tool result (denied + error)
+        denied_result = ToolResultBlock(tool_use_id="tu_denied", content="denied", is_error=True)
+        await streamer._handle_tool_result_block(denied_result, parent_id=None)
+
+        # complete/error should NOT have been emitted either
+        chunk_calls = [c for c in mock_stream.append.call_args_list if c.kwargs.get("chunks")]
+        assert len(chunk_calls) == 0, (
+            f"Denied tool should not emit any TaskUpdateChunks, got {chunk_calls}"
+        )

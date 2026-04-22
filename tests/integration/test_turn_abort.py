@@ -177,6 +177,7 @@ class TestReactionAbort:
                 permission_handler=MagicMock(spec=PermissionHandler),
                 abort_callback=_abort,
                 authenticated_user_id=bot_user_id,
+                pending_turns=asyncio.Queue(),
             )
             dispatcher.register(test_channel, handle)
 
@@ -237,6 +238,7 @@ class TestReactionAuthorization:
             permission_handler=MagicMock(spec=PermissionHandler),
             abort_callback=abort_event.set,
             authenticated_user_id="U_REAL_OWNER",
+            pending_turns=asyncio.Queue(),
         )
         dispatcher.register(channel_id, handle)
 
