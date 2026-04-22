@@ -357,14 +357,6 @@ def _make_channel_name(prefix: str, session_name: str, hex_bytes: int = 3) -> st
     return name[:_MAX_CHANNEL_NAME_LEN].lower()
 
 
-def is_pm_session_name(name: str) -> bool:
-    """Return True if *name* matches PM session naming conventions.
-
-    Handles both legacy ``{prefix}-pm-{hex}`` and new ``pm-{hex}`` formats.
-    """
-    return "-pm-" in name or name.startswith("pm-")
-
-
 def _read_bounded(path: str, limit: int) -> tuple[str, bool]:
     """Read up to *limit* characters from *path*; return (content, truncated)."""
     with open(path) as f:  # noqa: PTH123
@@ -1511,6 +1503,37 @@ class SummonSession:
         )
         return channel_id, channel_name
 
+    async def _validate_reusable_channel(
+        self, web_client: AsyncWebClient, ch: dict, label: str
+    ) -> str | None:
+        """Check that *ch* was created by this bot and is not archived.
+
+        Returns the channel ID if valid, or ``None`` if the channel should
+        be skipped (wrong creator or unarchive failed).
+
+        [SEC-003] Prevents channel name-squatting by workspace members.
+        """
+        if ch.get("creator") != self._bot_user_id:
+            logger.warning(
+                "%s: channel #%s exists but was created by %s, not bot (%s) — skipping",
+                label,
+                ch.get("name"),
+                ch.get("creator"),
+                self._bot_user_id,
+            )
+            return None
+        channel_id = ch["id"]
+        if ch.get("is_archived"):
+            logger.info("%s: channel #%s is archived — unarchiving", label, ch.get("name"))
+            try:
+                await web_client.conversations_unarchive(channel=channel_id)
+            except Exception as _unarch_err:
+                logger.warning(
+                    "%s: failed to unarchive #%s: %s", label, ch.get("name"), _unarch_err
+                )
+                return None
+        return channel_id
+
     async def _get_or_create_pm_channel(  # noqa: PLR0912, PLR0915
         self, web_client: AsyncWebClient, registry: SessionRegistry, project_id: str
     ) -> tuple[str, str]:
@@ -1570,30 +1593,10 @@ class SummonSession:
                     channels = resp.get("channels", [])
                     for ch in channels:
                         if ch.get("name") == new_channel_name:
-                            if ch.get("creator") != self._bot_user_id:
-                                logger.warning(
-                                    "PM: channel #%s exists but was created by %s, not bot"
-                                    " (%s) — skipping to prevent channel hijack",
-                                    new_channel_name,
-                                    ch.get("creator"),
-                                    self._bot_user_id,
-                                )
+                            valid_id = await self._validate_reusable_channel(web_client, ch, "PM")
+                            if valid_id is None:
                                 continue
-                            if ch.get("is_archived"):
-                                logger.info(
-                                    "PM: channel #%s is archived — unarchiving",
-                                    new_channel_name,
-                                )
-                                try:
-                                    await web_client.conversations_unarchive(channel=ch["id"])
-                                except Exception as _unarch_err:
-                                    logger.warning(
-                                        "PM: failed to unarchive #%s: %s",
-                                        new_channel_name,
-                                        _unarch_err,
-                                    )
-                                    continue
-                            new_id = ch["id"]
+                            new_id = valid_id
                             cname = ch["name"]
                             found = True
                             break
@@ -1635,30 +1638,9 @@ class SummonSession:
             resp = await web_client.conversations_list(**kwargs)
             for ch in resp.get("channels", []):
                 if ch.get("name") == scribe_channel_name:
-                    if ch.get("creator") != self._bot_user_id:
-                        logger.warning(
-                            "Scribe: channel #%s exists but was created by %s, not bot"
-                            " (%s) — skipping",
-                            scribe_channel_name,
-                            ch.get("creator"),
-                            self._bot_user_id,
-                        )
+                    channel_id = await self._validate_reusable_channel(web_client, ch, "Scribe")
+                    if channel_id is None:
                         continue
-                    channel_id = ch["id"]
-                    if ch.get("is_archived"):
-                        logger.info(
-                            "Scribe: channel #%s is archived — unarchiving",
-                            scribe_channel_name,
-                        )
-                        try:
-                            await web_client.conversations_unarchive(channel=channel_id)
-                        except Exception as _unarch_err:
-                            logger.warning(
-                                "Scribe: failed to unarchive #%s: %s",
-                                scribe_channel_name,
-                                _unarch_err,
-                            )
-                            continue
                     await web_client.conversations_join(channel=channel_id)
                     logger.info("Scribe: reusing existing channel #%s", scribe_channel_name)
                     return channel_id, scribe_channel_name
@@ -1688,27 +1670,9 @@ class SummonSession:
             for ch in resp.get("channels", []):
                 ch_name = ch.get("name", "")
                 if ch_name in (gpm_channel_name, zzz_gpm_name):
-                    # [SEC-003] Verify the bot created this channel to prevent
-                    # name-squatting by workspace members who pre-create the name.
-                    if ch.get("creator") != self._bot_user_id:
-                        logger.warning(
-                            "Global PM: channel #%s exists but was created by %s, not bot "
-                            "(%s) — skipping to prevent channel hijack",
-                            ch_name,
-                            ch.get("creator"),
-                            self._bot_user_id,
-                        )
+                    channel_id = await self._validate_reusable_channel(web_client, ch, "Global PM")
+                    if channel_id is None:
                         continue
-                    channel_id = ch["id"]
-                    if ch.get("is_archived"):
-                        logger.info("Global PM: channel #%s is archived — unarchiving", ch_name)
-                        try:
-                            await web_client.conversations_unarchive(channel=channel_id)
-                        except Exception as _unarch_err:
-                            logger.warning(
-                                "Global PM: failed to unarchive #%s: %s", ch_name, _unarch_err
-                            )
-                            continue
                     await web_client.conversations_join(channel=channel_id)
                     if ch_name == zzz_gpm_name:
                         # Restore canonical name (strip zzz- prefix on resume)

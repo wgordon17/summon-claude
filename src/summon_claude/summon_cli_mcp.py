@@ -225,27 +225,6 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                 "is_error": True,
             }
 
-        # Reject names that would be misclassified as PM sessions on resume.
-        # is_pm_session_name() matches "-pm-" substring or "pm-" prefix —
-        # allowing these as child names causes privilege escalation after
-        # suspend/resume (_restart_suspended_sessions infers pm_profile from name).
-        from summon_claude.sessions.session import is_pm_session_name  # noqa: PLC0415
-
-        if is_pm_session_name(name):
-            return {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Error: session name must not match PM naming pattern "
-                            "(avoid 'pm-' prefix and '-pm-' substring). "
-                            "Use a task description like 'fix-auth' or 'add-search'."
-                        ),
-                    }
-                ],
-                "is_error": True,
-            }
-
         system_prompt_val = args.get("system_prompt")
         if system_prompt_val and len(system_prompt_val) > MAX_PROMPT_CHARS:
             return {
@@ -356,9 +335,8 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
 
         # Enforce active-child cap before spawning (fail-closed)
         try:
-            children = await registry.list_children(session_id, limit=500)
-            active = [c for c in children if c.get("status") in ("pending_auth", "active")]
-            if len(active) >= MAX_SPAWN_CHILDREN_PM:
+            active_count = await registry.count_active_children(session_id)
+            if active_count >= MAX_SPAWN_CHILDREN_PM:
                 # Queue if this is a PM with a project and a queue callback is available
                 if is_pm and parent_project_id and _ipc_queue_session is not None:
                     position = _ipc_queue_session(
@@ -392,6 +370,9 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                             }
                         ]
                     }
+                # Fetch active list only for the error message
+                children = await registry.list_children(session_id, limit=MAX_SPAWN_CHILDREN_PM)
+                active = [c for c in children if c.get("status") in ("pending_auth", "active")]
                 active_list = ", ".join(
                     f"{c.get('session_name', 'unnamed')} ({c['session_id']})" for c in active
                 )
@@ -401,7 +382,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
                             "type": "text",
                             "text": (
                                 f"Error: active session limit reached "
-                                f"({len(active)}/{MAX_SPAWN_CHILDREN_PM}). "
+                                f"({active_count}/{MAX_SPAWN_CHILDREN_PM}). "
                                 f"Stop existing sessions before starting new ones.\n"
                                 f"Active sessions: {active_list}"
                             ),

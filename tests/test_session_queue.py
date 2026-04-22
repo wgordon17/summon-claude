@@ -735,11 +735,15 @@ class TestMcpQueueBehavior:
             queued_calls.append((options, project_id, pm_session_id))
             return 1  # position 1
 
-        # Patch list_children and get_session directly on the registry object
+        # Patch count_active_children, list_children, and get_session on the registry
+        original_count_active = registry.count_active_children
         original_list_children = registry.list_children
         original_get_session = registry.get_session
 
-        async def patched_list_children(sid, limit=500):
+        async def patched_count_active(sid):
+            return MAX_SPAWN_CHILDREN_PM
+
+        async def patched_list_children(sid, limit=50):
             return active_children
 
         async def patched_get_session(sid):
@@ -749,6 +753,7 @@ class TestMcpQueueBehavior:
                 "authenticated_user_id": "U_OWNER",
             }
 
+        registry.count_active_children = patched_count_active
         registry.list_children = patched_list_children
         registry.get_session = patched_get_session
 
@@ -770,6 +775,7 @@ class TestMcpQueueBehavior:
 
             result = await tools["session_start"].handler({"name": "new-task"})
         finally:
+            registry.count_active_children = original_count_active
             registry.list_children = original_list_children
             registry.get_session = original_get_session
 
@@ -838,10 +844,14 @@ class TestMcpQueueBehavior:
         ):
             return -1  # queue is full
 
+        original_count_active = registry.count_active_children
         original_list_children = registry.list_children
         original_get_session = registry.get_session
 
-        async def patched_list_children(sid, limit=500):
+        async def patched_count_active(sid):
+            return MAX_SPAWN_CHILDREN_PM
+
+        async def patched_list_children(sid, limit=50):
             return active_children
 
         async def patched_get_session(sid):
@@ -851,6 +861,7 @@ class TestMcpQueueBehavior:
                 "authenticated_user_id": "U_OWNER",
             }
 
+        registry.count_active_children = patched_count_active
         registry.list_children = patched_list_children
         registry.get_session = patched_get_session
 
@@ -872,6 +883,7 @@ class TestMcpQueueBehavior:
 
             result = await tools["session_start"].handler({"name": "overflow-task"})
         finally:
+            registry.count_active_children = original_count_active
             registry.list_children = original_list_children
             registry.get_session = original_get_session
 

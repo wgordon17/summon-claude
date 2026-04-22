@@ -388,6 +388,49 @@ class TestGetOrCreateScribeChannel:
         web_client.conversations_create.assert_not_called()
         assert channel_id == "C_EXISTING"
 
+    @pytest.mark.asyncio
+    async def test_get_or_create_scribe_channel_rejects_wrong_creator(self):
+        """Scribe channel created by non-bot user is skipped; a new one is created."""
+        sess = self._make_session()
+        web_client = AsyncMock()
+        web_client.conversations_list.return_value = {
+            "channels": [{"id": "C_HIJACK", "name": "0-scribe", "creator": "U_OTHER"}],
+            "response_metadata": {"next_cursor": ""},
+        }
+        web_client.conversations_create.return_value = {
+            "channel": {"id": "C_NEW", "name": "0-scribe"}
+        }
+
+        channel_id, channel_name = await sess._get_or_create_scribe_channel(web_client)
+
+        web_client.conversations_join.assert_not_called()
+        web_client.conversations_create.assert_called_once()
+        assert channel_id == "C_NEW"
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_scribe_channel_unarchives_bot_channel(self):
+        """Archived bot-created scribe channel is unarchived and reused."""
+        sess = self._make_session()
+        web_client = AsyncMock()
+        web_client.conversations_list.return_value = {
+            "channels": [
+                {
+                    "id": "C_ARCH",
+                    "name": "0-scribe",
+                    "creator": "B001",
+                    "is_archived": True,
+                }
+            ],
+            "response_metadata": {"next_cursor": ""},
+        }
+        web_client.conversations_unarchive = AsyncMock()
+
+        channel_id, channel_name = await sess._get_or_create_scribe_channel(web_client)
+
+        web_client.conversations_unarchive.assert_awaited_once_with(channel="C_ARCH")
+        web_client.conversations_join.assert_called_once_with(channel="C_ARCH")
+        assert channel_id == "C_ARCH"
+
 
 # ---------------------------------------------------------------------------
 # _start_slack_monitors

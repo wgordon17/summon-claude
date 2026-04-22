@@ -412,7 +412,10 @@ class TestSupervisedSession:
 
         global_pm.inject_message.assert_awaited_once()
         call_args = global_pm.inject_message.call_args
-        assert "RuntimeError" in call_args[0][0]
+        msg = call_args[0][0]
+        assert "RuntimeError" in msg
+        assert "UNTRUSTED_EXTERNAL_DATA" in msg
+        assert "[Source: session-manager-error]" in msg
         assert call_args[1]["sender_info"] == "session-manager"
 
 
@@ -1081,31 +1084,6 @@ class TestDispatchSpawnToken:
         )
         assert response["type"] == "error"
         assert "initial_prompt" in response["message"]
-
-    async def test_dispatch_create_session_rejects_pm_name(self):
-        """Defense-in-depth: create_session rejects PM-pattern session names."""
-        manager, _, _ = _make_manager()
-        response = await manager._dispatch_control(
-            {
-                "type": "create_session",
-                "options": {"cwd": "/tmp", "name": "pm-evil"},
-            }
-        )
-        assert response["type"] == "error"
-        assert "PM naming pattern" in response["message"]
-
-    async def test_dispatch_spawn_rejects_pm_name(self):
-        """Defense-in-depth: spawn rejects PM-pattern session names."""
-        manager, _, _ = _make_manager()
-        response = await manager._dispatch_control(
-            {
-                "type": "create_session_with_spawn_token",
-                "options": {"cwd": "/tmp", "name": "fix-pm-bug"},
-                "spawn_token": "tok",
-            }
-        )
-        assert response["type"] == "error"
-        assert "PM naming pattern" in response["message"]
 
 
 class TestDispatchStripsProxyFields:
@@ -2834,6 +2812,48 @@ class TestRestartSuspendedSessionsResume:
         await asyncio.gather(
             *manager._tasks.values(), *manager._background_tasks, return_exceptions=True
         )
+
+    async def test_non_pm_with_pm_like_name_not_treated_as_pm(self):
+        """Suspended session named 'fix-pm-bug' with pm_profile=0 is NOT resumed as PM."""
+        manager, _, _ = _make_manager()
+        manager._project_up_in_flight = True
+
+        non_pm_session = {
+            "session_id": "child-old",
+            "session_name": "fix-pm-bug",
+            "cwd": "/tmp/myproj",
+            "model": "claude-opus-4-6",
+            "status": "suspended",
+            "slack_channel_id": "C_CHILD",
+            "slack_channel_name": "zzz-myproj-fix-pm-bug-abc123",
+            "claude_session_id": "claude-child-sid",
+            "authenticated_user_id": "U001",
+            "pm_profile": 0,
+        }
+
+        captured_options: list = []
+
+        async def fake_create(opts, **kwargs):
+            captured_options.append(opts)
+
+        manager.create_resumed_session = fake_create
+
+        mock_reg = AsyncMock()
+        mock_reg.get_project_sessions = AsyncMock(return_value=[non_pm_session])
+        mock_reg.get_channel = AsyncMock(return_value={"claude_session_id": "claude-child-sid"})
+        mock_reg.update_status = AsyncMock()
+
+        with patch("summon_claude.sessions.manager.SessionRegistry") as mock_registry_cls:
+            mock_registry_cls.return_value.__aenter__ = AsyncMock(return_value=mock_reg)
+            mock_registry_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            await manager._restart_suspended_sessions(
+                [{"project_id": "p1", "directory": "/tmp/myproj", "name": "myproj"}],
+                "U001",
+            )
+
+        assert len(captured_options) == 1
+        opts = captured_options[0]
+        assert opts.pm_profile is not True
 
     async def test_project_up_resume_missing_claude_sid(self):
         """Session with no claude_session_id falls back to channel-reuse-only (resume=None)."""

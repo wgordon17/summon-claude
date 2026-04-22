@@ -190,18 +190,6 @@ class TestSessionStart:
         result = await tools["session_start"].handler({"name": "a" * 21})
         assert result["is_error"] is True
 
-    async def test_pm_name_rejected(self, tools):
-        """Names matching PM pattern are rejected to prevent privilege escalation."""
-        result = await tools["session_start"].handler({"name": "pm-fix"})
-        assert result["is_error"] is True
-        assert "PM naming pattern" in result["content"][0]["text"]
-
-    async def test_pm_substring_name_rejected(self, tools):
-        """Names containing -pm- substring are rejected."""
-        result = await tools["session_start"].handler({"name": "fix-pm-bug"})
-        assert result["is_error"] is True
-        assert "PM naming pattern" in result["content"][0]["text"]
-
     async def test_invalid_cwd(self, tools):
         result = await tools["session_start"].handler(
             {"name": "test-session", "cwd": "/nonexistent/path/12345"}
@@ -453,7 +441,7 @@ class TestSessionStart:
     async def test_registry_error_blocks_spawn(self, tmp_path):
         """Registry failure during cap check is fail-closed, not fail-open."""
         mock_reg = AsyncMock()
-        mock_reg.list_children = AsyncMock(side_effect=RuntimeError("DB locked"))
+        mock_reg.count_active_children = AsyncMock(side_effect=RuntimeError("DB locked"))
 
         local_tools = {
             t.name: t
@@ -637,6 +625,7 @@ class TestSessionStart:
     async def test_pm_at_cap_without_queue_returns_hard_error(self, populated_registry, tmp_path):
         """PM at cap with _ipc_queue_session=None falls through to hard error."""
         original_list_children = populated_registry.list_children
+        original_count_active = populated_registry.count_active_children
         original_get_session = populated_registry.get_session
 
         active_children = [
@@ -644,12 +633,16 @@ class TestSessionStart:
             for i in range(MAX_SPAWN_CHILDREN_PM)
         ]
 
-        async def patched_list_children(sid, limit=500):
+        async def patched_count_active(sid):
+            return MAX_SPAWN_CHILDREN_PM
+
+        async def patched_list_children(sid, limit=50):
             return active_children
 
         async def patched_get_session(sid):
             return {"session_id": sid, "project_id": "proj-test"}
 
+        populated_registry.count_active_children = patched_count_active
         populated_registry.list_children = patched_list_children
         populated_registry.get_session = patched_get_session
 
@@ -671,6 +664,7 @@ class TestSessionStart:
             result = await local_tools["session_start"].handler({"name": "blocked-task"})
         finally:
             populated_registry.list_children = original_list_children
+            populated_registry.count_active_children = original_count_active
             populated_registry.get_session = original_get_session
 
         assert result.get("is_error") is True

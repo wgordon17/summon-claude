@@ -35,7 +35,6 @@ from summon_claude.sessions.session import (
     _PendingTurn,
     _SessionRestartError,
     _SessionRuntime,
-    is_pm_session_name,
 )
 from summon_claude.slack.client import MessageRef, SlackClient, redact_secrets
 
@@ -728,40 +727,23 @@ class TestPrefixResolution:
         assert session._effective_prefix == "summon"
         assert session._effective_hex_bytes == 3
 
+    async def test_prefix_resolution_db_error(self):
+        """When get_project raises, _run_session falls back to default prefix."""
+        session = make_session()
+        session._project_id = "proj-error"
+        session._web_client = AsyncMock()
+        session._bot_user_id = "U_BOT"
 
-class TestIsPmSessionName:
-    """is_pm_session_name recognises both legacy and new PM name formats."""
+        mock_reg = AsyncMock()
+        mock_reg.get_project = AsyncMock(side_effect=Exception("DB connection lost"))
+        session._create_channel = AsyncMock(return_value=("C_ERR", "summon-test-abc"))
 
-    def test_new_format_pm_hex(self):
-        assert is_pm_session_name("pm-abc123") is True
+        with contextlib.suppress(Exception):
+            await session._run_session(mock_reg)
 
-    def test_legacy_format_prefix_pm_hex(self):
-        assert is_pm_session_name("myproj-pm-abc123") is True
-
-    def test_non_pm_name(self):
-        assert is_pm_session_name("myproj-worker") is False
-
-    def test_pm_in_middle_only(self):
-        # "somepm-foo" contains neither "-pm-" nor startswith("pm-")
-        assert is_pm_session_name("somepm-foo") is False
-
-    def test_empty_string(self):
-        assert is_pm_session_name("") is False
-
-    def test_bare_pm_without_dash(self):
-        # "pm" alone has neither "-pm-" substring nor "pm-" prefix (no trailing dash)
-        assert is_pm_session_name("pm") is False
-
-    def test_pm_starts_with_pm_dash(self):
-        # Regression guard: "pm-abc" must detect as PM via startswith("pm-")
-        assert is_pm_session_name("pm-abc") is True
-
-    def test_task_name_containing_pm_is_detected(self):
-        # Task names like "fix-pm-bug" contain "-pm-" and are detected as PM.
-        # This is intentional — matches legacy behavior. The pm_profile flag
-        # is the authoritative source for PM routing, not the name.
-        assert is_pm_session_name("fix-pm-bug") is True
-        assert is_pm_session_name("update-pm-config") is True
+        mock_reg.get_project.assert_awaited_once_with("proj-error")
+        assert session._effective_prefix == "summon"
+        assert session._effective_hex_bytes == 3
 
 
 class TestSlashCommandHandler:
