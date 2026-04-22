@@ -378,7 +378,7 @@ class TestGetOrCreateScribeChannel:
         sess = self._make_session()
         web_client = AsyncMock()
         web_client.conversations_list.return_value = {
-            "channels": [{"id": "C_EXISTING", "name": "0-scribe"}],
+            "channels": [{"id": "C_EXISTING", "name": "0-scribe", "creator": "B001"}],
             "response_metadata": {"next_cursor": ""},
         }
 

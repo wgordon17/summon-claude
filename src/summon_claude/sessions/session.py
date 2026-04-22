@@ -1635,7 +1635,30 @@ class SummonSession:
             resp = await web_client.conversations_list(**kwargs)
             for ch in resp.get("channels", []):
                 if ch.get("name") == scribe_channel_name:
+                    if ch.get("creator") != self._bot_user_id:
+                        logger.warning(
+                            "Scribe: channel #%s exists but was created by %s, not bot"
+                            " (%s) — skipping",
+                            scribe_channel_name,
+                            ch.get("creator"),
+                            self._bot_user_id,
+                        )
+                        continue
                     channel_id = ch["id"]
+                    if ch.get("is_archived"):
+                        logger.info(
+                            "Scribe: channel #%s is archived — unarchiving",
+                            scribe_channel_name,
+                        )
+                        try:
+                            await web_client.conversations_unarchive(channel=channel_id)
+                        except Exception as _unarch_err:
+                            logger.warning(
+                                "Scribe: failed to unarchive #%s: %s",
+                                scribe_channel_name,
+                                _unarch_err,
+                            )
+                            continue
                     await web_client.conversations_join(channel=channel_id)
                     logger.info("Scribe: reusing existing channel #%s", scribe_channel_name)
                     return channel_id, scribe_channel_name
