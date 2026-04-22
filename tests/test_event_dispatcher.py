@@ -775,6 +775,141 @@ class TestDispatchFileShared:
         # _PendingTurn has a message attribute containing the text
         assert "script.py" in item.message
 
+    async def test_image_file_enqueued_with_content_blocks(self):
+        """A valid image file is downloaded and enqueued with content_blocks on pending_turns."""
+        from unittest.mock import patch
+
+        mock_web = AsyncMock()
+        mock_web.files_info = AsyncMock(
+            return_value=self._make_files_info_response(
+                name="photo.png",
+                mimetype="image/png",
+            )
+        )
+        mock_web.token = "xoxb-test"
+
+        pending_q: asyncio.Queue = asyncio.Queue()
+        handle = _make_handle(channel_id="C001")
+        handle.pending_turns = pending_q
+
+        dispatcher = EventDispatcher(web_client=mock_web)
+        dispatcher.register("C001", handle)
+
+        fake_blocks = [{"type": "text", "text": "User shared image: photo.png"}, {"type": "image"}]
+
+        with (
+            patch(
+                "summon_claude.event_dispatcher.download_file",
+                new_callable=AsyncMock,
+                return_value=b"\x89PNG\r\n",
+            ),
+            patch(
+                "summon_claude.event_dispatcher.prepare_image_content",
+                return_value=fake_blocks,
+            ),
+        ):
+            await dispatcher.dispatch_file_shared(self._make_file_event())
+
+        assert not pending_q.empty()
+        item = pending_q.get_nowait()
+        assert "photo.png" in item.message
+        assert item.content_blocks == tuple(fake_blocks)
+
+    async def test_files_info_exception_returns_silently(self):
+        """files.info raising an exception is caught and returns without enqueuing."""
+        mock_web = AsyncMock()
+        mock_web.files_info = AsyncMock(side_effect=Exception("network error"))
+        mock_web.token = "xoxb-test"
+
+        pending_q: asyncio.Queue = asyncio.Queue()
+        handle = _make_handle(channel_id="C001")
+        handle.pending_turns = pending_q
+
+        dispatcher = EventDispatcher(web_client=mock_web)
+        dispatcher.register("C001", handle)
+
+        await dispatcher.dispatch_file_shared(self._make_file_event())
+
+        assert pending_q.empty()
+
+    async def test_empty_token_returns_silently(self):
+        """Missing auth token causes silent return without downloading."""
+        from unittest.mock import patch
+
+        mock_web = AsyncMock()
+        mock_web.files_info = AsyncMock(
+            return_value=self._make_files_info_response(name="script.py")
+        )
+        mock_web.token = ""
+
+        pending_q: asyncio.Queue = asyncio.Queue()
+        handle = _make_handle(channel_id="C001")
+        handle.pending_turns = pending_q
+
+        dispatcher = EventDispatcher(web_client=mock_web)
+        dispatcher.register("C001", handle)
+
+        with patch("summon_claude.event_dispatcher.download_file") as mock_dl:
+            await dispatcher.dispatch_file_shared(self._make_file_event())
+            mock_dl.assert_not_called()
+
+        assert pending_q.empty()
+
+    async def test_missing_download_url_returns_silently(self):
+        """When both url_private_download and url_private are absent, nothing is enqueued."""
+        from unittest.mock import patch
+
+        mock_web = AsyncMock()
+        mock_web.files_info = AsyncMock(
+            return_value={
+                "file": {
+                    "name": "script.py",
+                    "mimetype": "text/plain",
+                    "size": 100,
+                }
+            }
+        )
+        mock_web.token = "xoxb-test"
+
+        pending_q: asyncio.Queue = asyncio.Queue()
+        handle = _make_handle(channel_id="C001")
+        handle.pending_turns = pending_q
+
+        dispatcher = EventDispatcher(web_client=mock_web)
+        dispatcher.register("C001", handle)
+
+        with patch("summon_claude.event_dispatcher.download_file") as mock_dl:
+            await dispatcher.dispatch_file_shared(self._make_file_event())
+            mock_dl.assert_not_called()
+
+        assert pending_q.empty()
+
+    async def test_download_failure_returns_silently(self):
+        """download_file raising an exception is caught and nothing is enqueued."""
+        from unittest.mock import patch
+
+        mock_web = AsyncMock()
+        mock_web.files_info = AsyncMock(
+            return_value=self._make_files_info_response(name="script.py")
+        )
+        mock_web.token = "xoxb-test"
+
+        pending_q: asyncio.Queue = asyncio.Queue()
+        handle = _make_handle(channel_id="C001")
+        handle.pending_turns = pending_q
+
+        dispatcher = EventDispatcher(web_client=mock_web)
+        dispatcher.register("C001", handle)
+
+        with patch(
+            "summon_claude.event_dispatcher.download_file",
+            new_callable=AsyncMock,
+            side_effect=OSError("connection reset"),
+        ):
+            await dispatcher.dispatch_file_shared(self._make_file_event())
+
+        assert pending_q.empty()
+
     async def test_no_web_client_returns_silently(self):
         """dispatch_file_shared without a web_client returns immediately."""
         dispatcher = EventDispatcher()  # no web_client

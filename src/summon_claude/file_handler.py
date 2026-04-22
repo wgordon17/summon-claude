@@ -103,28 +103,38 @@ def sanitize_filename(filename: str) -> str:
     return safe[:200]
 
 
-async def download_file(url_private: str, token: str, max_size: int = MAX_FILE_SIZE) -> bytes:
+async def download_file(
+    url_private: str,
+    token: str,
+    max_size: int = MAX_FILE_SIZE,
+    *,
+    session: aiohttp.ClientSession | None = None,
+) -> bytes:
     """Download a Slack private file URL with bot token auth.
 
     Streams with a hard cap at max_size bytes — raises ValueError if exceeded.
     The token is only used in the Authorization header and never logged.
+    Pass an existing *session* to reuse a connection pool across downloads.
     """
     headers = {"Authorization": f"Bearer {token}"}
     chunks: list[bytes] = []
     total = 0
 
-    async with (
-        aiohttp.ClientSession() as session,
-        session.get(url_private, headers=headers) as resp,
-    ):
-        resp.raise_for_status()
-        async for chunk in resp.content.iter_chunked(65536):
-            total += len(chunk)
-            if total > max_size:
-                raise ValueError(f"File exceeds maximum size ({max_size // (1024 * 1024)} MB)")
-            chunks.append(chunk)
+    async def _fetch(s: aiohttp.ClientSession) -> bytes:
+        async with s.get(url_private, headers=headers) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.content.iter_chunked(65536):
+                nonlocal total
+                total += len(chunk)
+                if total > max_size:
+                    raise ValueError(f"File exceeds maximum size ({max_size // (1024 * 1024)} MB)")
+                chunks.append(chunk)
+        return b"".join(chunks)
 
-    return b"".join(chunks)
+    if session is not None:
+        return await _fetch(session)
+    async with aiohttp.ClientSession() as new_session:
+        return await _fetch(new_session)
 
 
 def prepare_text_content(filename: str, content_bytes: bytes) -> str:

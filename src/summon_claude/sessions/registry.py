@@ -915,11 +915,18 @@ class SessionRegistry:
             return [dict(r) for r in rows]
 
     async def get_project(self, project_id_or_name: str) -> dict | None:
-        """Fetch a project by ID or name. Returns None if not found."""
+        """Fetch a project by ID (exact) then name (fallback). Returns None if not found."""
         db = self._check_connected()
         async with db.execute(
-            "SELECT * FROM projects WHERE project_id = ? OR name = ?",
-            (project_id_or_name, project_id_or_name),
+            "SELECT * FROM projects WHERE project_id = ?",
+            (project_id_or_name,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+        async with db.execute(
+            "SELECT * FROM projects WHERE name = ?",
+            (project_id_or_name,),
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None

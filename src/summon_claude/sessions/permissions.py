@@ -5,7 +5,7 @@ Permission check flow (handle() steps):
   0b. Write gate       → enforces read-only default; SDK deny,
                          safe-dir bypass, containment check, CWD containment
   1.  SDK deny         → always honored unconditionally
-  2.  Static allowlist → _AUTO_APPROVE_TOOLS (Read, Grep, Glob, …)
+  2a. Static allowlist → _AUTO_APPROVE_TOOLS (Read, Grep, Glob, …)
   2b. GitHub deny-list → _GITHUB_MCP_REQUIRE_APPROVAL always sent to Slack
   2c. GitHub allowlist → exact names and get_/list_/search_ prefixes
   2d. Google MCP       → workspace-{label}__* read tools auto-approved
@@ -48,6 +48,10 @@ if TYPE_CHECKING:
     from summon_claude.sessions.classifier import SummonAutoClassifier
 
 logger = logging.getLogger(__name__)
+
+# U+2019 RIGHT SINGLE QUOTATION MARK x3 — visually similar to backticks
+# but cannot break a Slack code fence.
+_BACKTICK_FENCE_ESCAPE = "\u2019\u2019\u2019"
 
 _AUTO_APPROVE_TOOLS = frozenset(
     [
@@ -414,7 +418,7 @@ class PermissionHandler:
         self._authenticated_user_id = authenticated_user_id
         self._bridge = bridge
         self._debounce_ms = config.permission_debounce_ms
-        # 0 = no timeout → asyncio.timeout(None) disables the deadline
+        # default: 900s (15m) via config.permission_timeout_s; 0 → None (no timeout)
         self._timeout_s: float | None = config.permission_timeout_s or None
 
         # Write gate state
@@ -1899,8 +1903,7 @@ def _build_diff_preview_blocks(requests: list[PendingRequest]) -> list[dict[str,
     combined = "\n".join(previews)
     if len(combined) > MARKDOWN_BLOCK_LIMIT:
         combined = combined[:MARKDOWN_BLOCK_LIMIT] + "\n... (truncated)"
-    # Escape triple backticks to prevent code fence breakout
-    combined = combined.replace("```", "\u2019\u2019\u2019")
+    combined = combined.replace("```", _BACKTICK_FENCE_ESCAPE)
 
     return [{"type": "markdown", "text": f"```diff\n{combined}\n```"}]
 

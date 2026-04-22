@@ -1880,6 +1880,25 @@ class TestApprovalBridge:
         assert fut.done()
         assert fut.result().label == "post-clear"
 
+    async def test_cross_turn_stale_resolve_consumed_by_next_turn(self):
+        """Simulates two turns: clear() between them, stale resolve consumed by turn 2."""
+        bridge = ApprovalBridge()
+        # Turn 1: create future, then abort (clear)
+        bridge.create_future("Bash")
+        bridge.clear()  # turn boundary
+
+        # Stale resolve from turn 1's permission handler arrives after clear
+        bridge.resolve("Bash", ApprovalInfo(label="turn-1-stale"))
+
+        # Turn 2: new create_future picks up the stale entry
+        fut = bridge.create_future("Bash")
+        assert fut.done()
+        assert fut.result().label == "turn-1-stale"
+
+        # Subsequent create_future in turn 2 does NOT get the stale entry (consumed)
+        fut2 = bridge.create_future("Bash")
+        assert not fut2.done()
+
 
 class TestApprovalBridgeResolution:
     """Tests that _resolve_approval fires at key decision points."""

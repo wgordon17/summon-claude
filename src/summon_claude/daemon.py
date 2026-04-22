@@ -178,7 +178,7 @@ def _write_startup_error(message: str) -> None:
 
     error_path = _startup_error_path()
     error_path.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.datetime.now().isoformat(timespec="seconds")  # noqa: DTZ005
+    timestamp = datetime.datetime.now(tz=datetime.UTC).isoformat(timespec="seconds")
     content = f"[{timestamp}]\n{message}\n"
     fd = os.open(str(error_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
     try:
@@ -418,10 +418,9 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
         # Cancel background tasks before draining sessions
         health_task.cancel()
         watchdog_task.cancel()
-        if warmup_task is not None:
-            warmup_task.cancel()
         cleanup_tasks = [health_task, watchdog_task]
         if warmup_task is not None:
+            warmup_task.cancel()
             cleanup_tasks.append(warmup_task)
         for task in cleanup_tasks:
             try:

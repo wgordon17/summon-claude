@@ -150,7 +150,7 @@ class EventProbe:
         )
         self._anchor_channel_id = channel_id
         self._anchor_ts = resp["ts"]
-        self._save_channel_cache(channel_id)
+        EventProbe._save_channel_cache(channel_id)
         logger.debug("EventProbe: anchor posted in %s at ts=%s", channel_id, self._anchor_ts)
 
     async def _resolve_probe_channel(self) -> str | None:
@@ -158,7 +158,7 @@ class EventProbe:
         import secrets  # noqa: PLC0415
 
         # 1. Try cached channel ID (1 API call to validate)
-        cached_id = self._load_channel_cache()
+        cached_id = EventProbe._load_channel_cache()
         if cached_id is not None:
             try:
                 resp = await self._web_client.conversations_info(channel=cached_id)
@@ -170,7 +170,7 @@ class EventProbe:
                 return cached_id
             except Exception:
                 logger.debug("EventProbe: cached channel %s is stale, creating new", cached_id)
-                self._clear_channel_cache()
+                EventProbe._clear_channel_cache()
 
         # 2. Try to create the channel (canonical name first, then random suffix)
         for name in (_PROBE_CHANNEL_NAME, f"{_PROBE_CHANNEL_NAME}-{secrets.token_hex(3)}"):

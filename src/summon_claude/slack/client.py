@@ -79,8 +79,9 @@ def sanitize_for_slack(text: str) -> str:
     safe = re.sub(r"<!(channel|here|everyone)>", r"\1", text)
     safe = re.sub(r"<@(U\w+)>", r"user:\1", safe)
     safe = re.sub(r"<!subteam\^[^>]+>", "group", safe)
-    # Neutralize hyperlink syntax: <url|label> → label [url]
+    # Neutralize hyperlink syntax: <url|label> → label [url]; bare <url> → [url]
     safe = re.sub(r"<(https?://[^|>]+)\|([^>]*)>", r"\2 [\1]", safe)
+    safe = re.sub(r"<(https?://[^>]+)>", r"[\1]", safe)
     return redact_secrets(safe)
 
 

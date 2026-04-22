@@ -293,12 +293,8 @@ class ResponseStreamer:
             blocks = _build_turn_header_blocks(text)
             await self._router.update(self._router.active_thread_ref.ts, text, blocks=blocks)
 
-    def _build_stream_summary_blocks(self) -> list[dict[str, Any]] | None:
-        """Build compact summary blocks for the stream's final ``stop()`` message.
-
-        Uses turn state (tool count, files) which is available before context/cost.
-        Returns ``None`` if no tools were called (no stream was opened).
-        """
+    def _tool_file_summary_parts(self) -> list[str]:
+        """Shared tool-call and file-touch summary parts for turn reporting."""
         parts: list[str] = []
         if self._turn.tool_call_count:
             suffix = "s" if self._turn.tool_call_count != 1 else ""
@@ -308,6 +304,15 @@ class ResponseStreamer:
             if len(self._turn.files_touched) > 3:
                 short_names.append(f"+{len(self._turn.files_touched) - 3} more")
             parts.append(", ".join(short_names))
+        return parts
+
+    def _build_stream_summary_blocks(self) -> list[dict[str, Any]] | None:
+        """Build compact summary blocks for the stream's final ``stop()`` message.
+
+        Uses turn state (tool count, files) which is available before context/cost.
+        Returns ``None`` if no tools were called (no stream was opened).
+        """
+        parts = self._tool_file_summary_parts()
         if not parts:
             return None
         summary = " \u00b7 ".join(parts)
@@ -320,15 +325,7 @@ class ResponseStreamer:
 
     def _generate_turn_summary(self, context: ContextUsage | None = None) -> str:
         """Build a concise summary string for the turn starter message."""
-        parts: list[str] = []
-        if self._turn.tool_call_count:
-            suffix = "s" if self._turn.tool_call_count != 1 else ""
-            parts.append(f"{self._turn.tool_call_count} tool call{suffix}")
-        if self._turn.files_touched:
-            short_names = [p.rsplit("/", 1)[-1] for p in self._turn.files_touched[:3]]
-            if len(self._turn.files_touched) > 3:
-                short_names.append(f"+{len(self._turn.files_touched) - 3} more")
-            parts.append(", ".join(short_names))
+        parts = self._tool_file_summary_parts()
         if context is not None:
             ctx_k = context.total_tokens // 1000
             win_k = context.max_tokens // 1000
@@ -485,8 +482,8 @@ class ResponseStreamer:
             await self._flush_thinking()
         if self._turn.buffer:
             await self._flush_buffer()
-        await self._stop_stream(blocks=self._build_stream_summary_blocks())
         if result:
+            await self._stop_stream(blocks=self._build_stream_summary_blocks())
             await self._post_result_summary(result)
             # Clear thread status at turn end
             await self._set_status("")
@@ -796,6 +793,9 @@ class ResponseStreamer:
             except Exception as e:
                 logger.warning("stream.append failed — falling back to messages: %s", e)
                 await self._close_stream_on_error()
+                # Text already appended to the stream before the failure remains
+                # visible as an orphan message. The fallback below posts this chunk
+                # as a new message — partial duplication is preferred over data loss.
         await self._flush_to_destination(
             text, self._turn.thread_ts, self._router.post_to_active_thread, "thread_ts"
         )

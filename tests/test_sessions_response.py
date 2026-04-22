@@ -2681,3 +2681,18 @@ class TestHybridStreaming:
         assert len(chunk_calls) == 0, (
             f"Denied tool should not emit any TaskUpdateChunks, got {chunk_calls}"
         )
+
+    async def test_text_only_no_stream_opened(self):
+        """Text-only content (no ToolUseBlock) never opens a stream — stop() not called."""
+        streamer, router, client, mock_stream = self._make_stream_streamer()
+        await self._setup_turn(streamer, client)
+
+        messages = [
+            make_assistant_message([make_text_block("Here is the answer.")]),
+            make_result_message(),
+        ]
+        result = await streamer.stream_with_flush(agen(messages))
+
+        client.open_chat_stream.assert_not_awaited()
+        mock_stream.stop.assert_not_awaited()
+        assert result is not None

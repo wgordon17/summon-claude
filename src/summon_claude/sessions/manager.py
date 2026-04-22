@@ -109,6 +109,7 @@ class SessionManager:
         self._resuming_channels: set[str] = set()  # guard against concurrent resume
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._pm_topic_cache: dict[str, str] = {}  # project_id → last-set topic
+        self._app_home_last_publish: dict[str, float] = {}  # user_id → monotonic timestamp
         self._suspend_on_shutdown: bool = False  # set by health monitor on event pipeline failure
         # FIFO queue: project_id → deque of _QueuedSession
         self._session_queue: dict[str, collections.deque[_QueuedSession]] = {}
@@ -496,12 +497,23 @@ class SessionManager:
             response_type="ephemeral",
         )
 
+    _APP_HOME_DEBOUNCE_S = 5.0
+
     async def handle_app_home(self, user_id: str) -> None:
         """Publish the App Home dashboard for a user.
 
         Queries active sessions scoped to user_id (SQL-level scoping),
         builds the home view, and publishes via views.publish.
+        Debounces per-user to avoid redundant DB+API calls on rapid tab switches.
         """
+        import time  # noqa: PLC0415
+
+        now = time.monotonic()
+        last = self._app_home_last_publish.get(user_id, 0.0)
+        if now - last < self._APP_HOME_DEBOUNCE_S:
+            return
+        self._app_home_last_publish[user_id] = now
+
         sessions: list[dict] = []
         try:
             async with SessionRegistry() as registry:
@@ -1768,11 +1780,15 @@ class SessionManager:
             task.add_done_callback(partial(self._on_task_done, session_id=new_session_id))
             self._tasks[new_session_id] = task
 
+        import time  # noqa: PLC0415
+
+        wait_s = time.monotonic() - entry.queued_at
         logger.info(
-            "SessionManager: dequeued and started session '%s' (%s) for project %s",
+            "SessionManager: dequeued session '%s' (%s) for project %s (waited %.1fs)",
             entry.options.name,
             new_session_id,
             project_id,
+            wait_s,
         )
 
         # Fire-and-forget notifications (outside lock — non-critical)

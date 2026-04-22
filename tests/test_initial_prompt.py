@@ -235,6 +235,12 @@ class TestInitialPromptObservability:
         assert "here" in safe
         assert "evil.example.com" in safe
 
+    def test_sanitize_for_slack_neutralizes_bare_url(self):
+        """Bare Slack URL syntax <https://url> (no label) is also neutralized."""
+        safe = sanitize_for_slack("See <https://example.com> for details")
+        assert "<https://" not in safe
+        assert "example.com" in safe
+
     async def test_initial_prompt_observability_post_called(self, registry):
         """When initial_prompt provided and enqueued, client.post is called with the text."""
         from summon_claude.sessions.session import _SessionRuntime

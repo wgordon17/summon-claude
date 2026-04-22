@@ -94,7 +94,7 @@ def build_home_view(sessions: list[dict[str, Any]]) -> dict[str, Any]:
             channel = sanitize_for_mrkdwn(
                 s.get("slack_channel_name") or s.get("slack_channel_id") or "—"
             )
-            status = s.get("status", "unknown")
+            status = sanitize_for_mrkdwn(s.get("status", "unknown"))
             context_pct = s.get("context_pct")
             ctx_text = f"{context_pct:.0f}%" if context_pct is not None else "—"
 
