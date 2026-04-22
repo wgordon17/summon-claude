@@ -4503,7 +4503,7 @@ class TestZzzGetOrCreatePmChannel:
 
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             project_id = await registry.add_project("proj3", str(tmp_path))
-            with pytest.raises(RuntimeError, match="exists but bot cannot access"):
+            with pytest.raises(RuntimeError, match="no usable match"):
                 await session._get_or_create_pm_channel(web, registry, project_id)
 
     async def test_pm_channel_name_taken_unarchives_bot_channel(self, tmp_path):
@@ -4575,7 +4575,7 @@ class TestZzzGetOrCreatePmChannel:
 
         async with SessionRegistry(db_path=tmp_path / "test.db") as registry:
             project_id = await registry.add_project("proj5", str(tmp_path))
-            with pytest.raises(RuntimeError, match="exists but bot cannot access"):
+            with pytest.raises(RuntimeError, match="no usable match"):
                 await session._get_or_create_pm_channel(web, registry, project_id)
 
 

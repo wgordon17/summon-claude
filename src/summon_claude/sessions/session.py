@@ -1601,7 +1601,8 @@ class SummonSession:
                     cursor = resp.get("response_metadata", {}).get("next_cursor")
                     if not cursor:
                         raise RuntimeError(
-                            f"Channel {new_channel_name!r} exists but bot cannot access it"
+                            f"Channel {new_channel_name!r} exists but no usable match"
+                            " (wrong creator or archived) — see warnings above"
                         ) from e
                 else:
                     raise RuntimeError(
