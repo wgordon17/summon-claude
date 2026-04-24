@@ -49,6 +49,8 @@ def get_source_prompts() -> dict[str, str]:
     from summon_claude.sessions.prompts.pm import (
         _PM_SYSTEM_PROMPT_APPEND,
         _REVIEWER_SYSTEM_PROMPT_TEMPLATE,
+        build_gh_triage_instructions,
+        build_jira_triage_instructions,
     )
     from summon_claude.sessions.prompts.scribe import _SCRIBE_SYSTEM_PROMPT_APPEND
     from summon_claude.sessions.prompts.shared import (
@@ -102,8 +104,6 @@ def get_source_prompts() -> dict[str, str]:
         "pm-scan": build_pm_scan_prompt(
             github_enabled=True,
             jira_enabled=True,
-            jira_jql="project = EXAMPLE AND status != Done",
-            jira_cloud_id="example-cloud-id-abc123",
         ),
         "global-pm-system": _GLOBAL_PM_SYSTEM_PROMPT_APPEND,
         "global-pm-scan": build_global_pm_scan_prompt(),
@@ -120,6 +120,11 @@ def get_source_prompts() -> dict[str, str]:
             quiet_hours="{quiet_hours}",
         ),
         "reviewer-system": _REVIEWER_SYSTEM_PROMPT_TEMPLATE,
+        "gh-triage-system": build_gh_triage_instructions(stale_pr_hours=24),
+        "jira-triage-system": build_jira_triage_instructions(
+            jira_cloud_id="{jira_cloud_id}",
+            jira_jql="{jira_jql}",
+        ),
         "classifier-system": classifier_system,
         "content-classifier-system": _CONTENT_CLASSIFIER_PROMPT,
         "compact": _COMPACT_PROMPT,

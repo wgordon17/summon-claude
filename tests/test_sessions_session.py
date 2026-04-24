@@ -1588,6 +1588,101 @@ class TestPendingTurn:
             pt.message = "other"  # type: ignore[misc]
 
 
+class TestClearContext:
+    """QA-003: Tests for clear_context() method on SummonSession."""
+
+    def test_clear_context_returns_false_when_no_claude(self):
+        session = make_session()
+        session._claude = None
+        result = asyncio.run(session.clear_context())
+        assert result is False
+
+    def test_clear_context_returns_false_when_shutdown(self):
+        session = make_session()
+        session._claude = MagicMock()
+        session._shutdown_event.set()
+        result = asyncio.run(session.clear_context())
+        assert result is False
+
+    def test_clear_context_enqueues_pending_turn(self):
+        from summon_claude.sessions.session import _PendingTurn
+
+        session = make_session()
+        session._claude = MagicMock()
+
+        # Don't await — just enqueue and check
+        async def enqueue_and_check():
+            # Start clear_context but don't await it fully
+            import asyncio
+
+            task = asyncio.create_task(session.clear_context())
+            # Give the event loop a chance to enqueue
+            await asyncio.sleep(0)  # yield to let task enqueue
+            # Check the queue
+            pt = session._pending_turns.get_nowait()
+            assert isinstance(pt, _PendingTurn)
+            assert pt.clear is True
+            assert pt.clear_done is not None
+            assert pt.clear_ok is not None
+            # Simulate successful /clear — set ok flag then signal done
+            pt.clear_ok[0] = True
+            pt.clear_done.set()
+            result = await task
+            assert result is True
+
+        asyncio.run(enqueue_and_check())
+
+    def test_clear_context_queue_full_returns_false(self):
+        session = make_session()
+        session._claude = MagicMock()
+        # Fill the queue
+        from summon_claude.sessions.session import _PendingTurn
+
+        for _ in range(session._pending_turns.maxsize):
+            session._pending_turns.put_nowait(_PendingTurn(message="filler"))
+        result = asyncio.run(session.clear_context())
+        assert result is False
+
+    def test_clear_context_returns_false_when_execute_clear_fails(self):
+        """SDK exception in _execute_clear: clear_ok stays False, method returns False."""
+        from summon_claude.sessions.session import _PendingTurn
+
+        session = make_session()
+        session._claude = MagicMock()
+
+        async def run():
+            task = asyncio.create_task(session.clear_context())
+            await asyncio.sleep(0)  # yield to let task enqueue
+            pt = session._pending_turns.get_nowait()
+            assert isinstance(pt, _PendingTurn)
+            assert pt.clear is True
+            # Simulate _execute_clear failing: signal done but leave clear_ok[0] = False
+            pt.clear_done.set()
+            return await task
+
+        result = asyncio.run(run())
+        assert result is False
+
+    def test_clear_context_returns_false_on_timeout(self):
+        """Timeout waiting for clear_done: method returns False with warning."""
+        from unittest.mock import patch
+
+        session = make_session()
+        session._claude = MagicMock()
+
+        async def _timeout_wait_for(coro, *, timeout=None):
+            """Simulate timeout while properly cleaning up the coroutine."""
+            coro.close()
+            raise TimeoutError
+
+        async def run():
+            with patch("asyncio.wait_for", side_effect=_timeout_wait_for):
+                return await session.clear_context()
+
+        result = asyncio.run(run())
+        assert result is False
+
+
 class TestShutdownSentinels:
     """Tests for shutdown sentinel propagation."""
 
@@ -2097,6 +2192,18 @@ class TestWorktreeDisallowedTools:
 
         prompt = build_pm_system_prompt(cwd="/tmp/test", scan_interval_s=900)
         assert "orchestration, not execution" in prompt["append"]
+
+    def test_pm_system_prompt_lists_triage_names(self):
+        """Guard: PM system prompt session_clear description must mention all triage names."""
+        from summon_claude.sessions.prompts import build_pm_system_prompt
+        from summon_claude.sessions.prompts.pm import _TRIAGE_SESSION_NAMES
+
+        prompt = build_pm_system_prompt(cwd="/tmp/test", scan_interval_s=900)
+        for name in sorted(_TRIAGE_SESSION_NAMES):
+            assert name in prompt["append"], (
+                f"Triage session name '{name}' missing from PM system prompt. "
+                f"Update _PM_SYSTEM_PROMPT_APPEND to match _TRIAGE_SESSION_NAMES."
+            )
 
 
 class TestHeadlessBoilerplate:
@@ -4727,26 +4834,27 @@ class TestPmJiraJqlIntegration:
     """Verify that PM Jira JQL and cloud_id propagate into the PM scan prompt."""
 
     def test_jql_appears_in_pm_scan_prompt(self):
-        from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
+        # JQL is now in the triage child's system_prompt (build_jira_triage_instructions),
+        # not in the scan prompt. Verify via the builder function.
+        from summon_claude.sessions.prompts.pm import build_jira_triage_instructions
 
-        result = build_pm_scan_prompt(
-            jira_enabled=True,
-            jira_jql="project = MYPROJECT AND status != Done",
+        instructions = build_jira_triage_instructions(
             jira_cloud_id="abc-123",
+            jira_jql="project = MYPROJECT AND status != Done",
         )
-        assert "project = MYPROJECT AND status != Done" in result
-        assert "abc-123" in result
+        assert "project = MYPROJECT AND status != Done" in instructions
+        assert "abc-123" in instructions
 
     def test_no_jql_shows_none_filter(self):
-        from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
+        # Default JQL is now in build_jira_triage_instructions(), not the scan prompt.
+        from summon_claude.sessions.prompts.pm import build_jira_triage_instructions
 
-        result = build_pm_scan_prompt(
-            jira_enabled=True,
-            jira_jql=None,
+        instructions = build_jira_triage_instructions(
             jira_cloud_id="def-456",
+            jira_jql=None,
         )
-        assert "none (all issues)" in result
-        assert "def-456" in result
+        assert "currentUser()" in instructions
+        assert "def-456" in instructions
 
     def test_jira_disabled_excludes_jira_section(self):
         from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
@@ -4756,17 +4864,14 @@ class TestPmJiraJqlIntegration:
         )
         assert "Jira Triage" not in result
 
-    def test_jira_enabled_without_cloud_id_has_no_cloud_line(self):
-        """When cloud_id is None, scan prompt omits Cloud ID line."""
+    def test_jira_enabled_contains_persistent_worker_pattern(self):
+        """Jira Triage section must reference jira-triage persistent worker."""
         from summon_claude.sessions.prompts.pm import build_pm_scan_prompt
 
-        result = build_pm_scan_prompt(
-            jira_enabled=True,
-            jira_jql="project = FOO",
-            jira_cloud_id=None,
-        )
+        result = build_pm_scan_prompt(jira_enabled=True)
         assert "Jira Triage" in result
-        assert "Cloud ID:" not in result
+        assert "jira-triage" in result
+        assert "session_clear" in result
 
 
 class TestHandleDiffFileNonGit:
@@ -5757,3 +5862,78 @@ class TestSubagentReturnVerification:
 
         # Must not raise
         await verify_subagent_return({"prompt": "do a thing"}, "result text", mock_ph, router)
+
+
+# ---------------------------------------------------------------------------
+# _TRIAGE_DISALLOWED_TOOLS guard tests (Task 3)
+# ---------------------------------------------------------------------------
+
+
+class TestTriageDisallowedToolsGuard:
+    """Guard tests for _TRIAGE_DISALLOWED_TOOLS constant and extra_disallowed_tools."""
+
+    def test_triage_disallowed_tools_is_subset_of_scribe(self):
+        """_TRIAGE_DISALLOWED_TOOLS must be a strict subset of _SCRIBE_DISALLOWED_TOOLS."""
+        from summon_claude.sessions.session import (
+            _SCRIBE_DISALLOWED_TOOLS,
+            _TRIAGE_DISALLOWED_TOOLS,
+        )
+
+        assert _TRIAGE_DISALLOWED_TOOLS < _SCRIBE_DISALLOWED_TOOLS
+
+    def test_triage_disallowed_tools_excludes_canvas_write(self):
+        """Canvas write tools must be excluded from triage disallowed set."""
+        from summon_claude.sessions.session import _TRIAGE_DISALLOWED_TOOLS
+
+        assert "summon_canvas_write" not in _TRIAGE_DISALLOWED_TOOLS
+        assert "summon_canvas_update_section" not in _TRIAGE_DISALLOWED_TOOLS
+
+    def test_triage_disallowed_tools_blocks_cron(self):
+        """CronCreate/CronDelete must remain in triage disallowed set."""
+        from summon_claude.sessions.session import _TRIAGE_DISALLOWED_TOOLS
+
+        assert "CronCreate" in _TRIAGE_DISALLOWED_TOOLS
+        assert "CronDelete" in _TRIAGE_DISALLOWED_TOOLS
+
+    def test_session_options_accepts_extra_disallowed_tools(self):
+        """SessionOptions must accept extra_disallowed_tools as tuple[str, ...]."""
+        options = SessionOptions(
+            cwd="/tmp",
+            name="test",
+            extra_disallowed_tools=("Bash", "WebSearch"),
+        )
+        assert options.extra_disallowed_tools == ("Bash", "WebSearch")
+
+    def test_session_options_extra_disallowed_default_none(self):
+        options = SessionOptions(cwd="/tmp", name="test")
+        assert options.extra_disallowed_tools is None
+
+    def test_session_stores_extra_disallowed_tools(self):
+        """SummonSession.__init__ must store extra_disallowed_tools from options."""
+        config = make_config()
+        options = SessionOptions(
+            cwd="/tmp",
+            name="triage-test",
+            extra_disallowed_tools=("Bash", "WebSearch"),
+        )
+        session = SummonSession(config=config, options=options, session_id="triage-sess")
+        assert session._extra_disallowed_tools == ("Bash", "WebSearch")
+
+    def test_compute_disallowed_tools_includes_extra(self):
+        """_compute_disallowed_tools must include extra_disallowed_tools."""
+        config = make_config()
+        extra = ("MySpecialTool",)
+        options = SessionOptions(cwd="/tmp", name="test", extra_disallowed_tools=extra)
+        session = SummonSession(config=config, options=options, session_id="extra-test")
+        result = session._compute_disallowed_tools(is_scribe=False)
+        assert "MySpecialTool" in result
+
+    def test_compute_disallowed_tools_no_extra(self):
+        """Without extra_disallowed_tools, result matches base set."""
+        config = make_config()
+        options = SessionOptions(cwd="/tmp", name="test")
+        session = SummonSession(config=config, options=options, session_id="no-extra")
+        from summon_claude.sessions.session import _WORKTREE_DISALLOWED_TOOLS
+
+        result = session._compute_disallowed_tools(is_scribe=False)
+        assert result == _WORKTREE_DISALLOWED_TOOLS

@@ -633,6 +633,22 @@ class SessionManager:
             case "health_check":
                 return await self._handle_health_check()
 
+            case "clear_session":
+                session_id = msg.get("session_id")
+                if not session_id:
+                    return {"type": "error", "message": "Missing session_id"}
+                session = self._sessions.get(session_id)
+                if session is None:
+                    return {
+                        "type": "error",
+                        "message": f"Session {session_id} not found or not active",
+                    }
+                logger.info("Clearing context for session %s", session_id)
+                ok = await session.clear_context()
+                if not ok:
+                    return {"type": "error", "message": "clear_context() failed"}
+                return {"type": "session_cleared", "session_id": session_id}
+
             case "clear_project_queue":
                 project_id = msg.get("project_id")
                 if not project_id:

@@ -754,6 +754,9 @@ class SummonConfig(BaseSettings):
     global_pm_cwd: str | None = None  # None -> get_data_dir() / "global-pm"
     global_pm_model: str | None = None  # None -> inherit default_model
 
+    # GitHub triage settings (used by PM triage delegation)
+    github_triage_stale_pr_hours: int = 24
+
     # ------------------------------------------------------------------
     # Auto-mode classifier
     # ------------------------------------------------------------------
@@ -836,6 +839,14 @@ class SummonConfig(BaseSettings):
         """Scan interval must be at least 1 minute."""
         if v < 1:
             raise ValueError("SUMMON_GLOBAL_PM_SCAN_INTERVAL_MINUTES must be at least 1")
+        return v
+
+    @field_validator("github_triage_stale_pr_hours")
+    @classmethod
+    def validate_github_triage_stale_pr_hours(cls, v: int) -> int:
+        """Stale PR threshold must be at least 1 hour."""
+        if v < 1:
+            raise ValueError("SUMMON_GITHUB_TRIAGE_STALE_PR_HOURS must be at least 1")
         return v
 
     @field_validator("global_pm_cwd")
@@ -1496,6 +1507,17 @@ CONFIG_OPTIONS: list[ConfigOption] = [
         advanced=True,
     ),
     # Advanced options below this point
+    ConfigOption(
+        field_name="github_triage_stale_pr_hours",
+        env_key="SUMMON_GITHUB_TRIAGE_STALE_PR_HOURS",
+        group="Global PM",
+        label="Stale PR Threshold (hours)",
+        help_text="PRs idle longer than this are flagged as stale during triage. Minimum 1.",
+        input_type="int",
+        advanced=True,
+        visible=lambda _cfg: False,  # env-only, not shown in wizard
+        validate_fn=lambda v: None if int(v) >= 1 else "Must be at least 1",
+    ),
     # Display
     ConfigOption(
         field_name="max_inline_chars",

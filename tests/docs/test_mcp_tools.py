@@ -250,3 +250,30 @@ def test_generated_sections_match() -> None:
     sections = get_generated_sections()
     updated = generate(content, sections)
     assert content == updated, "mcp-tools.md is stale — run `make docs-generate` to regenerate"
+
+
+# ---------------------------------------------------------------------------
+# Test 6
+# ---------------------------------------------------------------------------
+
+
+def test_session_clear_notes_list_triage_names(docs_dir: Path) -> None:
+    """session_clear Notes must mention every name in _TRIAGE_SESSION_NAMES."""
+    from summon_claude.sessions.prompts.pm import _TRIAGE_SESSION_NAMES
+
+    content = _parse_doc(docs_dir)
+
+    # Extract the session_clear section
+    section_re = re.compile(
+        r"^#{3,4}\s+`session_clear`.*?(?=^#{2,4}\s|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    match = section_re.search(content)
+    assert match, "session_clear section not found in mcp-tools.md"
+    section = match.group(0)
+
+    for name in sorted(_TRIAGE_SESSION_NAMES):
+        assert name in section, (
+            f"Triage session name '{name}' missing from session_clear docs. "
+            f"Update docs/reference/mcp-tools.md to match _TRIAGE_SESSION_NAMES."
+        )

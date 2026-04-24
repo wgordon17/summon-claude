@@ -62,9 +62,12 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
     _ipc_stop_session: Callable[..., Awaitable[bool]] | None = None,
     _ipc_send_message: Callable[..., Awaitable[dict]] | None = None,
     _ipc_resume_session: Callable[..., Awaitable[dict]] | None = None,
+    _ipc_clear_session: Callable[..., Awaitable[dict]] | None = None,
     _ipc_queue_session: Callable[..., int] | None = None,
     _web_client: Any | None = None,
     pm_status_ts: str | None = None,
+    config: Any | None = None,
+    triage_jira_cloud_id: str | None = None,
 ) -> list[SdkMcpTool]:
     """Create MCP tool instances for session lifecycle and scheduling.
 
@@ -85,11 +88,17 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         _ipc_stop_session: Override for daemon IPC stop (testing).
         _ipc_send_message: Override for daemon IPC send_message (testing).
         _ipc_resume_session: Override for daemon IPC resume (testing).
+        _ipc_clear_session: Override for daemon IPC clear (testing).
         _ipc_queue_session: Override for daemon queue_session (testing).
         _web_client: AsyncWebClient for cross-channel Slack posts (testing).
+        pm_status_ts: Pinned status message timestamp (enables session_status_update tool).
+        config: SummonConfig for triage auto-detection (stale PR hours).
+        triage_jira_cloud_id: Jira cloud ID for triage instruction interpolation.
     """
     if is_global_pm and not is_pm:
         raise ValueError("is_global_pm requires is_pm=True")
+    if not authenticated_user_id:
+        raise ValueError("authenticated_user_id is required")
 
     @tool(
         "session_list",
@@ -209,7 +218,7 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             "required": ["name"],
         },
     )
-    async def session_start(args: dict) -> dict:  # noqa: PLR0911, PLR0912
+    async def session_start(args: dict) -> dict:  # noqa: PLR0911, PLR0912, PLR0915
         name = args.get("name", "")
         if not _SESSION_NAME_RE.match(name):
             return {
@@ -322,15 +331,55 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             logger.error("Failed to fetch calling session: %s", e)
             parent_project_id = None
 
-        from summon_claude.sessions.session import SessionOptions  # noqa: PLC0415
+        from summon_claude.sessions.prompts.pm import (  # noqa: PLC0415
+            _TRIAGE_SESSION_NAMES,
+            build_gh_triage_instructions,
+            build_jira_triage_instructions,
+        )
+        from summon_claude.sessions.session import (  # noqa: PLC0415
+            _TRIAGE_DISALLOWED_TOOLS,
+            SessionOptions,
+        )
 
+        # Triage-name auto-detection: auto-apply system_prompt_append + extra_disallowed_tools
+        # when name matches a known triage session type. The PM passes only the name —
+        # instructions are injected here to avoid LLM paraphrasing of multi-KB templates.
+        triage_system_prompt: str | None = None
+        triage_extra_disallowed: tuple[str, ...] | None = None
+        if name in _TRIAGE_SESSION_NAMES:
+            if system_prompt_val:
+                logger.warning(
+                    "session_start: name '%s' matches triage auto-detection, "
+                    "ignoring explicit system_prompt",
+                    name,
+                )
+            if name == "gh-triage":
+                stale_hours = config.github_triage_stale_pr_hours if config else 24
+                triage_system_prompt = build_gh_triage_instructions(stale_pr_hours=stale_hours)
+            elif name == "jira-triage":
+                jira_jql_val: str | None = None
+                if parent_project_id:
+                    try:
+                        proj = await registry.get_project(parent_project_id)
+                        if proj:
+                            jira_jql_val = proj.get("jira_jql")
+                    except Exception:
+                        logger.warning("Failed to fetch project JQL for jira-triage")
+                triage_system_prompt = build_jira_triage_instructions(
+                    jira_cloud_id=triage_jira_cloud_id or "",
+                    jira_jql=jira_jql_val,
+                )
+            triage_extra_disallowed = tuple(sorted(_TRIAGE_DISALLOWED_TOOLS))
+
+        # Build options before cap check — queuing path needs options to hand off.
         options = SessionOptions(
             cwd=target_cwd,
             name=name,
             model=model,
             project_id=parent_project_id,
-            system_prompt_append=system_prompt_val,
+            system_prompt_append=triage_system_prompt or system_prompt_val,
             initial_prompt=initial_prompt_val,
+            extra_disallowed_tools=triage_extra_disallowed,
         )
 
         # Enforce active-child cap before spawning (fail-closed)
@@ -730,6 +779,116 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
         except Exception as e:
             return {
                 "content": [{"type": "text", "text": f"Error sending message: {e}"}],
+                "is_error": True,
+            }
+
+    @tool(
+        "session_clear",
+        (
+            "Clear a child session's conversation context. The session stays active "
+            "but starts fresh — no prior messages or tool history. "
+            "session_id: the session ID to clear."
+        ),
+        {"session_id": str},
+    )
+    async def session_clear(args: dict) -> dict:  # noqa: PLR0911
+        target_id = args.get("session_id", "")
+        if not target_id:
+            return {
+                "content": [{"type": "text", "text": "Error: session_id is required."}],
+                "is_error": True,
+            }
+
+        if target_id == session_id:
+            return {
+                "content": [{"type": "text", "text": "Error: cannot clear your own session."}],
+                "is_error": True,
+            }
+
+        try:
+            target = await registry.get_session(target_id)
+
+            # Scope guard: session must exist and belong to same user
+            if target is None or target.get("authenticated_user_id") != authenticated_user_id:
+                return {
+                    "content": [
+                        {"type": "text", "text": f"Error: session '{target_id}' not found."}
+                    ],
+                    "is_error": True,
+                }
+
+            # Parent-child scope guard
+            if target.get("parent_session_id") != session_id:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Error: can only clear sessions you spawned.",
+                        }
+                    ],
+                    "is_error": True,
+                }
+
+            # Name guard: session_clear is restricted to triage workers
+            from summon_claude.sessions.prompts.pm import (  # noqa: PLC0415
+                _TRIAGE_SESSION_NAMES,
+            )
+
+            target_session_name = target.get("session_name") or ""
+            if target_session_name not in _TRIAGE_SESSION_NAMES:
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Error: session_clear is only allowed for triage sessions "
+                                f"({', '.join(sorted(_TRIAGE_SESSION_NAMES))}). "
+                                f"Session '{target_session_name}' is not a triage session."
+                            ),
+                        }
+                    ],
+                    "is_error": True,
+                }
+
+            # Target must be active
+            if target.get("status") != "active":
+                return {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Error: session '{target_id}' is "
+                                f"{target.get('status', 'not active')}. "
+                                "Can only clear active sessions."
+                            ),
+                        }
+                    ],
+                    "is_error": True,
+                }
+
+            ipc_clear = _ipc_clear_session
+            if ipc_clear is None:
+                from summon_claude.cli.daemon_client import (  # noqa: PLC0415
+                    clear_session,
+                )
+
+                ipc_clear = clear_session
+
+            # _request() raises DaemonError on failure — return is always success.
+            await ipc_clear(target_id)
+
+            target_name = target.get("session_name") or target_id[:8]
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Context cleared for session '{target_name}' ({target_id}).",
+                    }
+                ]
+            }
+        except Exception as e:
+            return {
+                "content": [{"type": "text", "text": f"Error clearing session: {e}"}],
                 "is_error": True,
             }
 
@@ -1274,10 +1433,12 @@ def create_summon_cli_mcp_tools(  # noqa: PLR0913, PLR0915
             session_log_status,
             session_resume,
         ]
-        # GPM: no session_start (oversight, not spawner)
+        # GPM: no session_start (oversight, not spawner); no session_clear (triage-only)
         if not is_global_pm:
             pm_tools.insert(0, session_start)
         pm_tools.append(session_message)
+        if not is_global_pm:
+            pm_tools.append(session_clear)
         tools.extend(pm_tools)
         if _pm_status_tool is not None:
             tools.append(_pm_status_tool)
@@ -1303,6 +1464,8 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
     on_task_change: Callable[[], Coroutine[Any, Any, None]] | None = None,
     pm_status_ts: str | None = None,
     ipc_queue: Callable[..., int] | None = None,
+    config: Any | None = None,
+    triage_jira_cloud_id: str | None = None,
 ) -> McpSdkServerConfig:
     """Create an MCP server with session lifecycle + scheduling tools."""
     tools = create_summon_cli_mcp_tools(
@@ -1320,5 +1483,7 @@ def create_summon_cli_mcp_server(  # noqa: PLR0913
         _ipc_queue_session=ipc_queue,
         _web_client=web_client,
         pm_status_ts=pm_status_ts,
+        config=config,
+        triage_jira_cloud_id=triage_jira_cloud_id,
     )
     return create_sdk_mcp_server(name="summon-cli", version="1.0.0", tools=tools)

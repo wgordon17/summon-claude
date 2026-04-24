@@ -6,7 +6,7 @@ summon provides three internal MCP servers that Claude uses within sessions. The
 | Server | Available to | Tools |
 |--------|-------------|-------|
 | `summon-slack` | All sessions | 8 tools — Slack actions and reading |
-| `summon-cli` | All sessions (8 tools) + PM sessions (7 additional) | 15 tools — Session lifecycle, scheduling, tasks |
+| `summon-cli` | All sessions (8 tools) + PM sessions (8 additional) | 16 tools — Session lifecycle, scheduling, tasks |
 | `summon-canvas` | Sessions with a canvas | 3 tools — canvas read/write |
 <!-- /mcp:summary -->
 
@@ -255,7 +255,7 @@ List all tasks in this session. PM sessions can also query child session tasks.
 
 ### Additional tools for PM sessions only
 
-PM (project manager) sessions are started with `--pm-profile` or via `summon project up`. They receive 5 additional tools, plus a 6th (`session_status_update`) when a pinned status message exists.
+PM (project manager) sessions are started via `summon project up`. They receive 6 additional tools, plus a 7th (`session_status_update`) when a pinned status message exists.
 
 #### `session_start`
 
@@ -319,6 +319,20 @@ Send a message to a running session. The message is injected into the target ses
 **Returns:** Confirmation with the target session name and Slack channel.
 
 **Notes:** Can only message sessions that the calling session spawned (parent-child scope guard). Target must be `active`.
+
+---
+
+#### `session_clear`
+
+Clear a child session's conversation context. The session stays active but starts fresh — no prior messages or tool history.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | Yes | The session ID to clear |
+
+**Returns:** Confirmation that context was cleared.
+
+**Notes:** Can only clear sessions that the calling session spawned (parent-child scope guard). Target must be `active` and have a triage session name (`gh-triage` or `jira-triage`). Not available to Global PM sessions.
 
 ---
 

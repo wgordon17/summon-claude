@@ -264,6 +264,16 @@ _SCRIBE_DISALLOWED_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# Triage agent: same restrictions as Scribe, but canvas write tools are
+# excluded from the block because triage children must write to their canvas
+# to report findings. Guard test pins this set.
+# Paired with _TRIAGE_SESSION_NAMES in sessions/prompts/pm.py — split to avoid
+# circular imports; both are consumed together in summon_cli_mcp.py.
+_TRIAGE_DISALLOWED_TOOLS: frozenset[str] = _SCRIBE_DISALLOWED_TOOLS - {
+    "summon_canvas_write",
+    "summon_canvas_update_section",
+}
+
 
 # Words/phrases that trigger extended thinking (ultrathink) in the Claude CLI.
 # When detected, a :brain: reaction is added to the user's message (permanent).
@@ -519,6 +529,7 @@ class SessionOptions:
     initial_prompt: str | None = None
     jira_proxy_port: int | None = None
     jira_proxy_token: str | None = field(default=None, repr=False)
+    extra_disallowed_tools: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -535,6 +546,9 @@ class _PendingTurn:
     pre_sent: bool = True  # Whether query() was already called by preprocessor
     queued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     compact: bool = False  # If True, consumer runs _execute_compact instead of normal turn
+    clear: bool = False  # If True, consumer runs _execute_clear instead of normal turn
+    clear_done: asyncio.Event | None = None  # Signalled when clear completes
+    clear_ok: list[bool] | None = None  # Mutable [bool] container — set by _execute_clear
 
 
 class _SessionRestartError(Exception):
@@ -679,6 +693,7 @@ class SummonSession:
         self._project_id = options.project_id
         self._scan_interval_s = max(30, options.scan_interval_s)
         self._system_prompt_append = options.system_prompt_append
+        self._extra_disallowed_tools = options.extra_disallowed_tools
         self._initial_prompt: str | None = options.initial_prompt
         self._initial_prompt_sent: bool = False
         self._effective_prefix = config.channel_prefix
@@ -859,6 +874,41 @@ class SummonSession:
             "Injected external message from %s into session %s", sender_info, self._session_id
         )
         return True
+
+    async def clear_context(self) -> bool:
+        """Clear this session's Claude context. Returns True on success.
+
+        Routes through ``_pending_turns`` to avoid concurrent
+        ``receive_response()`` calls on the SDK client.  The consumer
+        calls both ``query("/clear")`` and ``receive_response()`` to
+        drain the response.
+
+        Returns False if the SDK ``/clear`` command failed (exception in
+        ``_execute_clear``), not just if queueing or timeout failed.
+        """
+        if not self._claude or self._shutdown_event.is_set():
+            return False
+        clear_done = asyncio.Event()
+        clear_ok: list[bool] = [False]  # mutable container — _execute_clear sets [0]
+        try:
+            self._pending_turns.put_nowait(
+                _PendingTurn(
+                    message="",
+                    pre_sent=False,
+                    clear=True,
+                    clear_done=clear_done,
+                    clear_ok=clear_ok,
+                )
+            )
+        except asyncio.QueueFull:
+            logger.warning("clear_context rejected: queue full for session %s", self._session_id)
+            return False
+        try:
+            await asyncio.wait_for(clear_done.wait(), timeout=30.0)
+            return clear_ok[0]
+        except TimeoutError:
+            logger.warning("clear_context timed out for session %s", self._session_id)
+            return False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1819,6 +1869,16 @@ class SummonSession:
         logger.info("Canvas initialized: %s for session %s", canvas_id, self._session_id)
         return store
 
+    def _compute_disallowed_tools(self, is_scribe: bool) -> frozenset[str]:
+        """Compute the full disallowed_tools set for ClaudeAgentOptions."""
+        if is_scribe:
+            base = _WORKTREE_DISALLOWED_TOOLS | _SCRIBE_DISALLOWED_TOOLS
+        else:
+            base = _WORKTREE_DISALLOWED_TOOLS
+        if self._extra_disallowed_tools:
+            base = base | frozenset(self._extra_disallowed_tools)
+        return base
+
     async def _run_session_tasks(  # noqa: PLR0912, PLR0915
         self, rt: _SessionRuntime, router: ThreadRouter, *, is_git_repo: bool = True
     ) -> None:
@@ -2040,6 +2100,8 @@ class SummonSession:
                 on_task_change=_on_task_change,
                 pm_status_ts=self._pm_status_ts,
                 ipc_queue=self._ipc_queue,
+                config=self._config,
+                triage_jira_cloud_id=jira_cloud_id,
             )
             mcp_servers["summon-cli"] = cli_mcp
 
@@ -2161,15 +2223,6 @@ class SummonSession:
         if pm_jira_enabled and not jira_cloud_id:
             logger.warning("Jira enabled but no cloud_id — disabling Jira triage for PM")
             pm_jira_enabled = False
-        pm_jira_jql: str | None = None
-        pm_jira_cloud_id: str | None = jira_cloud_id if pm_jira_enabled else None
-        if pm_jira_enabled and self._project_id:
-            try:
-                project_row = await rt.registry.get_project(self._project_id)
-                if project_row:
-                    pm_jira_jql = project_row.get("jira_jql") or None
-            except Exception as e:
-                logger.warning("Failed to fetch project Jira config: %s", e)
 
         # Scribe Jira guard: disable if cloud_id is missing (plan T9 S4)
         scribe_jira_enabled = bool(jira_mcp) and is_scribe
@@ -2194,8 +2247,6 @@ class SummonSession:
                         github_enabled=bool(self._config.github_mcp_config()),
                         is_git_repo=is_git_repo,
                         jira_enabled=pm_jira_enabled,
-                        jira_jql=pm_jira_jql,
-                        jira_cloud_id=pm_jira_cloud_id,
                     ),
                     internal=True,
                     max_lifetime_s=0,
@@ -2310,11 +2361,7 @@ class SummonSession:
                     else ThinkingConfigDisabled(type="disabled")
                 ),
                 effort=self._effort,
-                disallowed_tools=list(
-                    (_WORKTREE_DISALLOWED_TOOLS | _SCRIBE_DISALLOWED_TOOLS)
-                    if is_scribe
-                    else _WORKTREE_DISALLOWED_TOOLS
-                ),
+                disallowed_tools=list(self._compute_disallowed_tools(is_scribe)),
             )
 
             restart: _SessionRestartError | None = None
@@ -2542,6 +2589,8 @@ class SummonSession:
                 await self._execute_compact(
                     rt, instructions, pending.thread_ts, pre_sent=pending.pre_sent
                 )
+            elif pending.clear:
+                await self._execute_clear(rt, pending.clear_done, pending.clear_ok)
             else:
                 await self._handle_user_message(rt, claude, streamer, pending)
 
@@ -3551,6 +3600,35 @@ class SummonSession:
             await rt.client.post("Conversation cleared.", blocks=blocks)
         except Exception as e:
             logger.warning("Failed to post clear delineation: %s", redact_secrets(str(e)))
+
+    async def _execute_clear(
+        self,
+        _rt: _SessionRuntime,
+        clear_done: asyncio.Event | None,
+        clear_ok: list[bool] | None = None,
+    ) -> None:
+        """Clear conversation context via ``/clear`` on the SDK client.
+
+        Called by the response consumer when a ``_PendingTurn(clear=True)``
+        is dequeued.  Sets ``clear_ok[0] = True`` on success, then signals
+        *clear_done*.  On failure, *clear_ok* stays ``[False]`` (the default
+        set by the caller).
+        """
+        if not self._claude:
+            if clear_done:
+                clear_done.set()
+            return
+        try:
+            await self._claude.query("/clear")
+            async for _ in self._claude.receive_response():
+                pass  # drain SystemMessage from /clear
+            if clear_ok is not None:
+                clear_ok[0] = True
+        except Exception:
+            logger.warning("clear drain failed for session %s", self._session_id)
+        finally:
+            if clear_done:
+                clear_done.set()
 
     async def _execute_compact(  # noqa: PLR0912
         self,

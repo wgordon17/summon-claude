@@ -52,6 +52,22 @@ async def populated_registry(registry: SessionRegistry) -> SessionRegistry:
     )
 
     await registry.register(
+        session_id="triage-5555",
+        pid=os.getpid(),
+        cwd="/home/user/proj",
+        name="gh-triage",
+        parent_session_id="parent-1111",
+        authenticated_user_id="U_OWNER",
+    )
+    await registry.update_status(
+        "triage-5555",
+        "active",
+        slack_channel_id="C500",
+        slack_channel_name="summon-gh-triage",
+        authenticated_user_id="U_OWNER",
+    )
+
+    await registry.register(
         session_id="other-3333",
         pid=os.getpid(),
         cwd="/home/other/proj",
@@ -333,6 +349,284 @@ class TestSessionStart:
         result = await local_tools["session_start"].handler({"name": "test-session"})
         assert not result.get("is_error"), result
         assert "new-session-id" in result["content"][0]["text"]
+
+    async def test_gh_triage_auto_detection(self, populated_registry, tmp_path):
+        """QA-002: session_start with name='gh-triage' auto-applies triage instructions."""
+        from summon_claude.sessions.auth import SpawnAuth
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="triage-session-id")
+
+        from summon_claude.config import SummonConfig
+
+        config = SummonConfig(
+            slack_bot_token="xoxb-test",
+            slack_app_token="xapp-test",
+            slack_signing_secret="abc123",
+            github_triage_stale_pr_hours=48,
+        )
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+                config=config,
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "gh-triage"})
+        assert not result.get("is_error"), result
+
+        # Verify the SessionOptions passed to IPC has system_prompt_append set
+        call_args = mock_ipc.call_args
+        options = call_args[0][0]  # first positional arg
+        assert options.system_prompt_append is not None
+        assert "GitHub triage agent" in options.system_prompt_append
+        assert "48" in options.system_prompt_append  # stale_pr_hours from config
+        assert options.extra_disallowed_tools is not None
+        assert "Bash" in options.extra_disallowed_tools
+
+    async def test_jira_triage_auto_detection(self, populated_registry, tmp_path):
+        """QA-002: session_start with name='jira-triage' auto-applies Jira instructions."""
+        from summon_claude.sessions.auth import SpawnAuth
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="jira-triage-id")
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+                triage_jira_cloud_id="cloud-abc-123",
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "jira-triage"})
+        assert not result.get("is_error"), result
+
+        call_args = mock_ipc.call_args
+        options = call_args[0][0]
+        assert options.system_prompt_append is not None
+        assert "Jira triage agent" in options.system_prompt_append
+        assert "cloud-abc-123" in options.system_prompt_append
+        assert options.extra_disallowed_tools is not None
+
+    async def test_jira_triage_none_cloud_id(self, populated_registry, tmp_path):
+        """jira-triage with triage_jira_cloud_id=None passes empty cloudId to template."""
+        from summon_claude.sessions.auth import SpawnAuth
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="jira-triage-no-cloud")
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+                triage_jira_cloud_id=None,
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "jira-triage"})
+        assert not result.get("is_error"), result
+
+        call_args = mock_ipc.call_args
+        options = call_args[0][0]
+        assert options.system_prompt_append is not None
+        assert "Jira triage agent" in options.system_prompt_append
+        # cloudId placeholder replaced with empty string (not "None")
+        assert "None" not in options.system_prompt_append
+        assert options.extra_disallowed_tools is not None
+
+    async def test_jira_triage_uses_project_jql(self, populated_registry, tmp_path):
+        """jira-triage auto-detection pulls JQL from parent session's project."""
+        from summon_claude.sessions.auth import SpawnAuth
+
+        # Register a project with jira_jql set
+        project_id = await populated_registry.add_project("jira-proj", str(tmp_path))
+        await populated_registry.update_project(project_id, jira_jql="priority = High")
+
+        # Set parent-1111 as a PM session belonging to that project
+        await populated_registry.update_status(
+            "parent-1111",
+            "active",
+            project_id=project_id,
+        )
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="jira-triage-proj-id")
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+                triage_jira_cloud_id="cloud-abc-123",
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "jira-triage"})
+        assert not result.get("is_error"), result
+
+        call_args = mock_ipc.call_args
+        options = call_args[0][0]
+        assert options.system_prompt_append is not None
+        assert "priority = High" in options.system_prompt_append
+
+    async def test_triage_auto_detection_overrides_explicit_prompt(
+        self, populated_registry, tmp_path
+    ):
+        """Triage auto-detection takes precedence over PM-provided system_prompt."""
+        from summon_claude.sessions.auth import SpawnAuth
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="override-id")
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+            )
+        }
+
+        result = await local_tools["session_start"].handler(
+            {"name": "gh-triage", "system_prompt": "Custom instructions here"}
+        )
+        assert not result.get("is_error"), result
+
+        call_args = mock_ipc.call_args
+        options = call_args[0][0]
+        # Auto-detected triage instructions should override the explicit prompt
+        assert "GitHub triage agent" in options.system_prompt_append
+        assert "Custom instructions here" not in options.system_prompt_append
+
+    async def test_non_triage_name_no_auto_detection(self, populated_registry, tmp_path):
+        """Normal session names must NOT trigger triage auto-detection."""
+        from summon_claude.sessions.auth import SpawnAuth
+
+        mock_spawn = AsyncMock(
+            return_value=SpawnAuth(
+                token="tok123",
+                parent_session_id="parent-1111",
+                parent_channel_id="C100",
+                target_user_id="U_OWNER",
+                cwd=str(tmp_path),
+                spawn_source="session",
+                expires_at=None,
+            )
+        )
+        mock_ipc = AsyncMock(return_value="normal-id")
+
+        local_tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd=str(tmp_path),
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _generate_spawn_token=mock_spawn,
+                _ipc_create_session=mock_ipc,
+            )
+        }
+
+        result = await local_tools["session_start"].handler({"name": "my-task"})
+        assert not result.get("is_error"), result
+
+        call_args = mock_ipc.call_args
+        options = call_args[0][0]
+        assert options.system_prompt_append is None
+        assert options.extra_disallowed_tools is None
 
     async def test_active_child_cap_enforced(self, registry, tmp_path):
         """Spawning beyond MAX_SPAWN_CHILDREN_PM is rejected with details."""
@@ -758,8 +1052,10 @@ class TestGuardConstants:
 class TestListChildren:
     async def test_returns_children(self, populated_registry):
         children = await populated_registry.list_children("parent-1111")
-        assert len(children) == 1
-        assert children[0]["session_id"] == "child-2222"
+        assert len(children) == 2
+        child_ids = {c["session_id"] for c in children}
+        assert "child-2222" in child_ids
+        assert "triage-5555" in child_ids
 
     async def test_no_children(self, populated_registry):
         children = await populated_registry.list_children("other-3333")
@@ -920,6 +1216,130 @@ class TestSessionMessage:
         assert result.get("is_error")
 
 
+class TestSessionClear:
+    """Tests for the session_clear MCP tool."""
+
+    @pytest.fixture
+    def clear_tools(self, populated_registry: SessionRegistry) -> tuple:
+        mock_clear = AsyncMock(
+            return_value={"type": "session_cleared", "session_id": "triage-5555"},
+        )
+        tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd="/home/user/proj",
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _ipc_clear_session=mock_clear,
+            )
+        }
+        return tools, mock_clear
+
+    async def test_clears_triage_child(self, clear_tools):
+        tools, mock_clear = clear_tools
+        result = await tools["session_clear"].handler({"session_id": "triage-5555"})
+        assert not result.get("is_error")
+        assert "Context cleared" in result["content"][0]["text"]
+        mock_clear.assert_awaited_once_with("triage-5555")
+
+    async def test_rejects_missing_id(self, clear_tools):
+        tools, mock_clear = clear_tools
+        result = await tools["session_clear"].handler({})
+        assert result.get("is_error")
+        mock_clear.assert_not_awaited()
+
+    async def test_rejects_self(self, clear_tools):
+        tools, _ = clear_tools
+        result = await tools["session_clear"].handler({"session_id": "parent-1111"})
+        assert result.get("is_error")
+        assert "cannot clear your own session" in result["content"][0]["text"]
+
+    async def test_rejects_non_child(self, clear_tools):
+        tools, mock_clear = clear_tools
+        result = await tools["session_clear"].handler({"session_id": "done-4444"})
+        assert result.get("is_error")
+        assert "can only clear sessions you spawned" in result["content"][0]["text"]
+        mock_clear.assert_not_awaited()
+
+    async def test_other_user_session_returns_not_found(self, clear_tools):
+        """Other user's session returns 'not found' — no existence leak."""
+        tools, mock_clear = clear_tools
+        result = await tools["session_clear"].handler({"session_id": "other-3333"})
+        assert result.get("is_error")
+        assert "not found" in result["content"][0]["text"]
+        mock_clear.assert_not_awaited()
+
+    async def test_rejects_inactive(self, populated_registry, clear_tools):
+        await populated_registry.update_status("triage-5555", "completed")
+        tools, mock_clear = clear_tools
+        result = await tools["session_clear"].handler({"session_id": "triage-5555"})
+        assert result.get("is_error")
+        assert "Can only clear active sessions" in result["content"][0]["text"]
+
+    async def test_returns_error_when_ipc_raises(self, populated_registry):
+        """Exception raised by _ipc_clear_session is caught and returned as error."""
+        mock_clear = AsyncMock(side_effect=RuntimeError("connection refused"))
+        tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd="/home/user/proj",
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _ipc_clear_session=mock_clear,
+            )
+        }
+        result = await tools["session_clear"].handler({"session_id": "triage-5555"})
+        assert result.get("is_error")
+        assert "connection refused" in result["content"][0]["text"]
+
+    async def test_gpm_does_not_have_session_clear(self, populated_registry):
+        """SEC: GPM must not have session_clear tool at all."""
+        tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="gpm-9999",
+                authenticated_user_id="U_OWNER",
+                channel_id="C_GPM",
+                cwd="/home/user/proj",
+                scheduler=make_scheduler(),
+                is_pm=True,
+                is_global_pm=True,
+            )
+        }
+        assert "session_clear" not in tools
+
+    async def test_non_triage_session_clear_rejected(self, populated_registry):
+        """SEC: PM cannot clear non-triage sessions."""
+        mock_clear = AsyncMock(return_value={"type": "session_cleared", "session_id": "child-2222"})
+        tools = {
+            t.name: t
+            for t in create_summon_cli_mcp_tools(
+                registry=populated_registry,
+                session_id="parent-1111",  # parent of child-2222
+                authenticated_user_id="U_OWNER",
+                channel_id="C100",
+                cwd="/home/user/proj",
+                scheduler=make_scheduler(),
+                is_pm=True,
+                _ipc_clear_session=mock_clear,
+            )
+        }
+        # child-2222 has name "child-session" — not a triage name
+        result = await tools["session_clear"].handler({"session_id": "child-2222"})
+        assert result.get("is_error")
+        assert "triage sessions" in result["content"][0]["text"]
+        mock_clear.assert_not_awaited()
+
+
 class TestSessionResume:
     """Tests for the session_resume MCP tool."""
 
@@ -1072,10 +1492,27 @@ class TestMCPServerCreation:
             is_global_pm=True,
             scheduler=make_scheduler(),
         )
-        # 8 base + session_stop, session_log_status, session_resume, session_message = 4 PM
-        # (no session_start for GPM) + get_workflow_instructions = 1 GPM-only
+        # 8 base + session_stop, session_log_status, session_resume, session_message
+        # = 4 PM (no session_start, no session_clear for GPM)
+        # + get_workflow_instructions = 1 GPM-only
         # session_status_update excluded (no pm_status_ts)
         assert len(tools) == 13
+
+    def test_pm_tool_count(self, populated_registry):
+        tools = create_summon_cli_mcp_tools(
+            populated_registry,
+            "pm-sid",
+            "uid",
+            "cid",
+            "/tmp",
+            is_pm=True,
+            is_global_pm=False,
+            scheduler=make_scheduler(),
+        )
+        # 8 base + session_start, session_stop, session_log_status,
+        # session_resume, session_message, session_clear = 6 PM tools
+        # session_status_update excluded (no pm_status_ts / no _web_client)
+        assert len(tools) == 14
 
 
 class TestSessionStatusUpdate:
