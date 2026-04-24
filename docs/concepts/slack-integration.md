@@ -13,8 +13,12 @@ Bolt handlers are registered in `_register_handlers()`:
 | `/summon` slash command | `_on_summon_command` → rate limit check → `EventDispatcher.dispatch_command` |
 | `message` event | `_on_message` → `EventDispatcher.dispatch_message` |
 | `reaction_added` event | `_on_reaction_added` → `EventDispatcher.dispatch_reaction` |
+| `file_shared` event | `_on_file_shared` → `EventDispatcher.dispatch_file_shared` |
+| `app_home_opened` event | `_on_app_home_opened` → `EventDispatcher.dispatch_app_home` |
 | `permission_approve` / `permission_deny` actions | `_on_dispatch_action` → `EventDispatcher.dispatch_action` |
 | `ask_user_*` actions | `_on_dispatch_action` → `EventDispatcher.dispatch_action` |
+| `turn_overflow` action | `_on_dispatch_action` → `EventDispatcher.dispatch_action` |
+| `ask_user_other` view submission | `_on_view_submission` → `EventDispatcher.dispatch_view_submission` |
 
 Handlers are re-registered on every `reconnect()` call because `AsyncApp` instances are created fresh — Bolt does not support attaching handlers to an existing app after construction.
 
@@ -37,6 +41,7 @@ Each `SessionHandle` contains:
 - `permission_handler`: handles button-click actions for tool approval
 - `abort_callback`: zero-argument callable that cancels the current Claude turn
 - `authenticated_user_id`: the Slack user who owns the session
+- `pending_turns`: asyncio queue for file upload injection (text and image content)
 
 ## SlackClient
 
@@ -58,6 +63,8 @@ Output methods:
 | `canvas_sync()` | Replace canvas body content |
 | `canvas_rename()` | Update canvas title |
 | `get_canvas_id()` | Look up the canvas ID for the channel |
+| `views_open()` | Open a modal view (for AskUserQuestion "Other" input) |
+| `open_chat_stream()` | Open a `chat_stream` in a thread for progressive rendering |
 
 Every output method calls `redact_secrets()` before sending to Slack. See [Security](security.md) for the redaction pattern.
 
@@ -72,6 +79,48 @@ Every output method calls `redact_secrets()` before sending to Slack. See [Secur
 | **Subagent thread** | Activity from `Task` tool subagents (nested Claude instances) |
 
 Each Claude turn opens a thread starter message (`Turn N: re: <snippet>`). The starter updates with a summary on completion: file counts, tool call count, context usage (`42k/200k (21%)`).
+
+Turn starter messages include an **overflow menu** with contextual actions:
+
+- **Stop Turn** — cancels the active Claude turn (same as the `:octagonal_sign:` reaction)
+- **Copy Session ID** — posts the session ID as an ephemeral message
+- **View Cost** — posts a cost hint as an ephemeral message
+
+## Hybrid Streaming (chat_stream)
+
+Thread-based tool progress uses Slack's native `chat_stream` API for progressive message rendering. The main channel response stays as `chat.update` (since `chat_stream` requires `thread_ts`).
+
+When Claude starts using tools, `ResponseStreamer` opens a `chat_stream` in the turn thread. Each tool call sends a `TaskUpdateChunk` with status `in_progress`, and each result sends a completion update. The stream is finalized with `stop(blocks=summary_blocks)` at turn end.
+
+If `chat_stream` fails (unsupported workspace plan, API error), the streamer falls back to `chat_postMessage` — the same behavior as before streaming was added. Both `recipient_team_id` and `recipient_user_id` are required by the Slack API.
+
+## File Handling
+
+Users can drag-drop files into a session channel. The `file_handler` module (`file_handler.py`) classifies, downloads, and prepares files for Claude:
+
+| Type | Extensions | Handling |
+|------|-----------|----------|
+| **Text** | `.py`, `.js`, `.ts`, `.md`, `.json`, `.yaml`, `.toml`, `.csv`, `.log`, `.sh`, `.html`, `.css`, `.xml`, `.sql`, `.go`, `.rs`, `.rb`, `.java`, `.kt`, `.swift`, `.c`, `.cpp`, `.h`, `.jsx`, `.tsx`, and more | Decoded to UTF-8, wrapped in a fenced code block, injected as a user message |
+| **Image** | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` | Base64-encoded, sent as multimodal content blocks via the Claude SDK |
+| **Unsupported** | Everything else | Silently dropped (logged as debug) |
+
+**Security controls:**
+
+- Files larger than 10 MB are rejected before download
+- Files 1-10 MB trigger a warning but proceed
+- Text content is truncated at 100K characters
+- Filenames are sanitized (path separators and newlines stripped, 200-char limit)
+- Download URLs are validated against `files.slack.com` — no external fetches
+- Bot self-uploads are filtered (prevents feedback loops from snippet uploads)
+- Only the authenticated session owner's uploads are accepted
+
+## App Home
+
+The App Home tab shows a dashboard of the user's active sessions. Published via `views.publish` whenever a user opens the Summon Claude app in Slack.
+
+The dashboard shows each active session's name, model, channel, status, and context usage percentage. Capped at 20 sessions. Per-user debouncing (60 seconds) prevents redundant API calls on rapid tab switches.
+
+The App Home is only available while the daemon is running — the Bolt instance must be active to receive `app_home_opened` events.
 
 ## Rate Limiting and Retry
 

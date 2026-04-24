@@ -215,9 +215,21 @@ Which database should I use for the session store?
 
 - **Single-select:** click a button to answer and continue.
 - **Multi-select:** toggle options, then click **Done**.
-- **Other:** click **Other** to type a free-text answer in the channel.
+- **Other:** click **Other** to open a modal dialog for free-text input.
 
 Your answers are returned to Claude as structured data. The question times out after 5 minutes if unanswered. The interactive message is deleted after all questions are answered.
+
+### Adaptive UI
+
+The question UI adapts based on the number of options:
+
+- **2-4 options:** rendered as individual buttons in the message
+- **5+ options (single-select):** rendered as a dropdown (`static_select`) with an "Other" button below
+- **5+ options (multi-select):** rendered as a multi-select dropdown (`multi_static_select`) with "Done" and "Other" buttons below
+
+### "Other" modal
+
+Clicking **Other** opens a Slack modal dialog with a multiline text input. The modal is self-contained — typing in the channel is never intercepted. The submission routes through `dispatch_view_submission` with the channel and question metadata encoded in the modal's `private_metadata`.
 
 ---
 
