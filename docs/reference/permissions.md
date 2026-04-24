@@ -227,6 +227,8 @@ The question UI adapts based on the number of options:
 - **5+ options (single-select):** rendered as a dropdown (`static_select`) with an "Other" button below
 - **5+ options (multi-select):** rendered as a multi-select dropdown (`multi_static_select`) with "Done" and "Other" buttons below
 
+![AskUserQuestion with select dropdown](../assets/screenshots/interactivity-select-menu.png)
+
 ### "Other" modal
 
 Clicking **Other** opens a Slack modal dialog with a multiline text input. The modal is self-contained — typing in the channel is never intercepted. The submission routes through `dispatch_view_submission` with the channel and question metadata encoded in the modal's `private_metadata`.
