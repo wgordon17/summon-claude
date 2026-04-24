@@ -80,9 +80,7 @@ Every output method calls `redact_secrets()` before sending to Slack. See [Secur
 
 Each Claude turn opens a thread starter message (`Turn N: re: <snippet>`). The starter updates with a summary on completion: file counts, tool call count, context usage (`42k/200k (21%)`).
 
-Turn starter messages include an **overflow menu** with contextual actions:
-
-![Turn header with overflow menu](../assets/screenshots/interactivity-overflow-menu.png)
+Turn starter messages include an **overflow menu** (`...` button) with contextual actions:
 
 - **Stop Turn** — cancels the active Claude turn (same as the `:octagonal_sign:` reaction)
 - **Copy Session ID** — posts the session ID as an ephemeral message

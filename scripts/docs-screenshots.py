@@ -47,6 +47,7 @@ VIEWPORT_HEIGHT = 900
 TOP_NAV_HEIGHT = 44  # Slack workspace-level toolbar (search bar)
 SANDBOX_BANNER_HEIGHT = 44  # developer sandbox banner at bottom
 _SESSION_BASE = "docs-screenshots"
+_SCROLL_TO_BOTTOM_JS = "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
 
 
 def _unique_suffix() -> str:
@@ -1511,7 +1512,7 @@ def main(
 
             # Set up reusable screenshot helpers
             captured: list[str] = []
-            snap, nav, _ = _make_snap(page, output_dir, captured)
+            snap, nav, clip_region = _make_snap(page, output_dir, captured)
 
             # --- Milestone 1: Auth screenshot (/summon command + bot response)
             #     Capture immediately after authenticate_via_slack returns,
@@ -1522,9 +1523,7 @@ def main(
             _dismiss_overlays(page)
             _inject_screenshot_css(page, _CHANNEL_VIEW_CSS)
             # Scroll to bottom so the auth response is visible
-            page.evaluate(
-                "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
-            )
+            page.evaluate(_SCROLL_TO_BOTTOM_JS)
             page.wait_for_timeout(2_000)
             # Find the last few messages and crop to their bounding box
             auth_dest = output_dir / "quickstart-slack-auth.png"
@@ -1554,9 +1553,7 @@ def main(
             # --- Milestone 2: First message screenshot (welcome + task + response)
             click.echo("  Capturing first message exchange...")
             nav(channel_url, wait_ms=3_000)
-            page.evaluate(
-                "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
-            )
+            page.evaluate(_SCROLL_TO_BOTTOM_JS)
             page.wait_for_timeout(2_000)
             snap("quickstart-first-message.png")
 
@@ -1570,9 +1567,7 @@ def main(
                 click.echo("  Capturing permission request screenshot...")
                 page.wait_for_timeout(3_000)
                 nav(channel_url, wait_ms=3_000)
-                page.evaluate(
-                    "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
-                )
+                page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
                 snap("quickstart-permission-request.png")
                 # permissions-approval.png shows the same view — copy instead of re-capturing
@@ -1593,15 +1588,19 @@ def main(
             if help_ts:
                 help_thread_url = f"{channel_url}/thread/{channel_id}-{help_ts}"
                 click.echo(f"  Capturing !help thread: {help_thread_url}")
-                nav(help_thread_url, wait_ms=5_000)
-                snap("quickstart-help.png", thread_view=True)
+                try:
+                    nav(help_thread_url, wait_ms=5_000)
+                    snap("quickstart-help.png", thread_view=True)
+                except Exception as exc:
+                    click.echo(f"  WARNING: thread nav failed ({exc}), falling back", err=True)
+                    nav(channel_url, wait_ms=3_000)
+                    page.evaluate(_SCROLL_TO_BOTTOM_JS)
+                    page.wait_for_timeout(2_000)
+                    snap("quickstart-help.png")
             else:
-                # Fallback: channel view scrolled to bottom (won't show help response)
                 click.echo("  No !help thread ts — falling back to channel view")
                 nav(channel_url, wait_ms=3_000)
-                page.evaluate(
-                    "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
-                )
+                page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(2_000)
                 snap("quickstart-help.png")
 
@@ -1632,31 +1631,54 @@ def main(
             except Exception as exc:
                 click.echo(f"  Canvas capture failed ({type(exc).__name__}): {exc}", err=True)
 
-            # --- Milestone 6: Overflow menu on turn header
+            # --- Milestone 6: Overflow menu on turn header (expanded)
+            #     Click the "..." button to show the popup menu with options.
+            #     Use snap() (full viewport) instead of _crop_to_last_messages
+            #     because the popup renders as a portal outside message bounds.
             click.echo("  Capturing overflow menu screenshot...")
             overflow_ts = _post_mock_overflow_turn(bot_token, channel_id)
             if overflow_ts:
                 page.wait_for_timeout(2_000)
                 nav(channel_url, wait_ms=3_000)
-                page.evaluate(
-                    "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
-                )
+                page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
+                # Inject CSS BEFORE clicking — snap()'s CSS injection dismisses popovers
                 _inject_screenshot_css(page, _CHANNEL_VIEW_CSS)
+                page.wait_for_timeout(500)
+                # Click the overflow button to open the menu.
+                # Slack renders Block Kit overflow as:
+                #   data-qa="block_kit_overflow_element_button"
+                #   aria-label="More options"
+                #   aria-haspopup="menu"
+                try:
+                    btn = page.locator('[data-qa="block_kit_overflow_element_button"]').last
+                    if btn.count() > 0:
+                        btn.click(timeout=5_000)
+                        page.wait_for_timeout(1_500)
+                        click.echo("    Opened overflow menu")
+                    else:
+                        click.echo("  WARNING: could not find overflow button", err=True)
+                except Exception as exc:
+                    click.echo(f"  WARNING: could not click overflow button: {exc}", err=True)
+                # Direct screenshot (no snap — CSS already injected, popover is open)
                 overflow_dest = output_dir / "interactivity-overflow-menu.png"
-                _crop_to_last_messages(page, overflow_dest, padding=24)
+                page.screenshot(path=str(overflow_dest), clip=clip_region)
                 click.echo(f"  captured: {overflow_dest}")
                 captured.append("interactivity-overflow-menu.png")
+                # Dismiss the menu
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
 
             # --- Milestone 7: AskUserQuestion with select menu (>4 options)
             click.echo("  Capturing select menu screenshot...")
             select_ts = _post_mock_select_menu(bot_token, channel_id)
             if select_ts:
                 page.wait_for_timeout(2_000)
-                nav(channel_url, wait_ms=3_000)
-                page.evaluate(
-                    "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
-                )
+                try:
+                    nav(channel_url, wait_ms=3_000)
+                except Exception as exc:
+                    click.echo(f"  WARNING: select menu nav failed ({exc})", err=True)
+                page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
                 _inject_screenshot_css(page, _CHANNEL_VIEW_CSS)
                 select_dest = output_dir / "interactivity-select-menu.png"
