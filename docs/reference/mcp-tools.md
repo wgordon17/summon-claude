@@ -255,7 +255,7 @@ List all tasks in this session. PM sessions can also query child session tasks.
 
 ### Additional tools for PM sessions only
 
-PM (project manager) sessions are started with `--pm-profile` or via `summon project up`. They receive 6 additional tools, plus a 7th (`session_status_update`) when a pinned status message exists.
+PM (project manager) sessions are started via `summon project up`. They receive 6 additional tools, plus a 7th (`session_status_update`) when a pinned status message exists.
 
 #### `session_start`
 
