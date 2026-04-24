@@ -1619,6 +1619,7 @@ def main(
                 click.echo(f"  Capturing !help thread: {help_thread_url}")
                 try:
                     nav(help_thread_url, wait_ms=5_000)
+                    _redact_paths(page)
                     snap("quickstart-help.png", thread_view=True)
                 except Exception as exc:
                     click.echo(f"  WARNING: thread nav failed ({exc}), falling back", err=True)
