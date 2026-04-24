@@ -50,7 +50,7 @@ Used for PM sessions (started via `summon project up`):
 - **Completed Work** — summary of finished sessions
 - **Notes** — PM-level notes and decisions
 
-![PM canvas with session status and scheduled jobs](../assets/screenshots/canvas-pm-active-work.png)
+![PM canvas with session status and scheduled jobs](../assets/screenshots/canvas-channel-tab.png)
 
 ### Global PM canvas
 

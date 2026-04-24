@@ -50,6 +50,29 @@ _SESSION_BASE = "docs-screenshots"
 _SCROLL_TO_BOTTOM_JS = "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
 
 
+def _redact_paths(page) -> None:
+    """Replace filesystem paths in the visible DOM with sanitized versions.
+
+    Replaces the full CWD first (catches worktree paths like
+    ``/Users/.../worktrees/branch-name``), then replaces any remaining
+    ``$HOME`` fragments so no absolute paths leak into screenshots.
+    """
+    cwd = str(Path.cwd())
+    home = str(Path.home())
+    page.evaluate(
+        """([cwd, home]) => {
+        const sel = 'td, span, div, a, code, pre';
+        document.querySelectorAll(sel).forEach(el => {
+            const t = el.textContent;
+            if (el.children.length === 0 && (t.includes(cwd) || t.includes(home))) {
+                el.textContent = t.replaceAll(cwd, '~/project').replaceAll(home, '~');
+            }
+        });
+    }""",
+        [cwd, home],
+    )
+
+
 def _unique_suffix() -> str:
     """Short timestamp suffix for unique channel/project names."""
     return str(int(time.time()))[-6:]
@@ -1553,6 +1576,7 @@ def main(
             # --- Milestone 2: First message screenshot (welcome + task + response)
             click.echo("  Capturing first message exchange...")
             nav(channel_url, wait_ms=3_000)
+            _redact_paths(page)
             page.evaluate(_SCROLL_TO_BOTTOM_JS)
             page.wait_for_timeout(2_000)
             snap("quickstart-first-message.png")
@@ -1567,6 +1591,7 @@ def main(
                 click.echo("  Capturing permission request screenshot...")
                 page.wait_for_timeout(3_000)
                 nav(channel_url, wait_ms=3_000)
+                _redact_paths(page)
                 page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
                 snap("quickstart-permission-request.png")
@@ -1612,22 +1637,8 @@ def main(
                 canvas_tab.wait_for(state="visible", timeout=15_000)
                 canvas_tab.click(timeout=5_000)
                 page.wait_for_timeout(3_000)
-                # Redact filesystem paths in canvas content before capturing
-                page.evaluate(
-                    """(home) => {
-                    document.querySelectorAll('td, span, div, a').forEach(el => {
-                        if (el.children.length === 0 && el.textContent.includes(home)) {
-                            el.textContent = el.textContent.replaceAll(home, '~/project');
-                        }
-                    });
-                }""",
-                    str(Path.home()),
-                )
+                _redact_paths(page)
                 snap("canvas-channel-tab.png")
-
-                # Second capture after content fully renders
-                page.wait_for_timeout(2_000)
-                snap("canvas-pm-active-work.png")
             except Exception as exc:
                 click.echo(f"  Canvas capture failed ({type(exc).__name__}): {exc}", err=True)
 
@@ -1640,6 +1651,7 @@ def main(
             if overflow_ts:
                 page.wait_for_timeout(2_000)
                 nav(channel_url, wait_ms=3_000)
+                _redact_paths(page)
                 page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
                 # Use minimal CSS — _CHANNEL_VIEW_CSS repositions with position:fixed
@@ -1680,6 +1692,7 @@ def main(
                     nav(channel_url, wait_ms=3_000)
                 except Exception as exc:
                     click.echo(f"  WARNING: select menu nav failed ({exc})", err=True)
+                _redact_paths(page)
                 page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
                 _inject_screenshot_css(page, _CHANNEL_VIEW_CSS)
