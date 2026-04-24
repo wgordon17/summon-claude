@@ -204,7 +204,7 @@ def stop_project_session(proc: subprocess.Popen | None) -> None:
     click.echo("  Removing screenshot project...")
     try:
         subprocess.run(
-            ["summon", "project", "remove", PROJECT_NAME, "--yes"],
+            ["summon", "project", "remove", PROJECT_NAME],
             capture_output=True,
             timeout=15,
             env=env,
@@ -948,7 +948,7 @@ def _capture_project_up_banner() -> str:
                 env=env,
             )
             subprocess.run(
-                ["uv", "run", "summon", "project", "remove", TERMINAL_SESSION_NAME, "--yes"],
+                ["uv", "run", "summon", "project", "remove", TERMINAL_SESSION_NAME],
                 capture_output=True,
                 timeout=15,
                 env=env,
