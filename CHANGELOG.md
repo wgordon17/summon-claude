@@ -9,7 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hybrid chat streaming** — Thread-based tool progress uses Slack's native `chat_stream` API with task cards for progressive rendering, with automatic fallback to `chat_postMessage` on failure (#139)
+- **AskUserQuestion modals** — "Other" free-text input now opens a modal dialog instead of intercepting the next channel message. Select menus (`static_select` / `multi_static_select`) replace buttons for questions with 5+ options (#139)
+- **Turn overflow menus** — Turn header messages include a "..." overflow menu with Stop Turn, Copy Session ID, and View Cost actions (#139)
+- **App Home dashboard** — Opening the Summon Claude app shows a dashboard of active sessions with name, model, channel, status, and context usage (#139)
+- **File upload handling** — Drag-drop files into a session channel: text files injected as code blocks, images passed as multimodal content to Claude. 10 MB size limit, owner-only filtering, filename sanitization (#139)
 - **Workflow compliance auditing** — Global PM can query workflow instructions on demand via `get_workflow_instructions` MCP tool during scans, compare PM behavior against project rules, and send corrective messages for violations (#TBD)
+
+### Fixed
+
+- **AskUserQuestion message cleanup** — Interactive question messages are now deleted after all questions are answered, matching the permission prompt behavior (#139)
+- **multi_static_select block type** — Fixed Slack API rejection by placing multi-select menus in section blocks (as accessory) instead of actions blocks (#139)
 
 ## [1.0.0] - 2026-04-02
 
