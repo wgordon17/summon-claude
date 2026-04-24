@@ -1830,7 +1830,8 @@ def _build_ask_user_blocks(request_id: str, questions: list[dict]) -> list[dict]
                 }
             )
         else:
-            # Multi-select: multi_static_select + Done + Other buttons
+            # Multi-select: multi_static_select as section accessory
+            # (Slack rejects multi_static_select in actions blocks)
             select_options = [
                 {
                     "text": {
@@ -1843,15 +1844,22 @@ def _build_ask_user_blocks(request_id: str, questions: list[dict]) -> list[dict]
             ]
             blocks.append(
                 {
-                    "type": "actions",
+                    "type": "section",
                     "block_id": f"ask_user_{request_id[:8]}_{i}_msel",
+                    "text": {"type": "mrkdwn", "text": "Select options:"},
+                    "accessory": {
+                        "type": "multi_static_select",
+                        "action_id": f"ask_user_{i}_multiselect",
+                        "placeholder": {"type": "plain_text", "text": "Choose options..."},
+                        "options": select_options,
+                    },
+                }
+            )
+            blocks.append(
+                {
+                    "type": "actions",
+                    "block_id": f"ask_user_{request_id[:8]}_{i}_msel_btns",
                     "elements": [
-                        {
-                            "type": "multi_static_select",
-                            "action_id": f"ask_user_{i}_multiselect",
-                            "placeholder": {"type": "plain_text", "text": "Choose options..."},
-                            "options": select_options,
-                        },
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Done"},

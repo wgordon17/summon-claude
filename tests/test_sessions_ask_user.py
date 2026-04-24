@@ -309,7 +309,7 @@ class TestBuildAskUserBlocks:
             assert opt["value"] == f"req-val|0|{j}"
 
     def test_five_options_multi_select_uses_multi_static_select(self):
-        """5 multi-select options produce a multi_static_select in an actions block."""
+        """5 multi-select options produce a multi_static_select as section accessory."""
         questions = [
             {
                 "question": "Pick many",
@@ -319,14 +319,10 @@ class TestBuildAskUserBlocks:
             }
         ]
         blocks = _build_ask_user_blocks("req-msel", questions)
-        actions_blocks = [b for b in blocks if b["type"] == "actions"]
-        msel_elements = [
-            e
-            for b in actions_blocks
-            for e in b["elements"]
-            if e.get("type") == "multi_static_select"
+        msel_sections = [
+            b for b in blocks if b.get("accessory", {}).get("type") == "multi_static_select"
         ]
-        assert len(msel_elements) == 1, "Expected multi_static_select element"
+        assert len(msel_sections) == 1, "Expected multi_static_select section accessory"
 
     def test_five_options_multi_select_has_done_and_other(self):
         """With >4 multi-select options, Done and Other buttons are in the actions block."""
@@ -356,14 +352,10 @@ class TestBuildAskUserBlocks:
             }
         ]
         blocks = _build_ask_user_blocks("req-mval", questions)
-        actions_blocks = [b for b in blocks if b["type"] == "actions"]
-        msel = next(
-            e
-            for b in actions_blocks
-            for e in b["elements"]
-            if e.get("type") == "multi_static_select"
+        msel_section = next(
+            b for b in blocks if b.get("accessory", {}).get("type") == "multi_static_select"
         )
-        opts = msel["options"]
+        opts = msel_section["accessory"]["options"]
         assert len(opts) == 5
         for j, opt in enumerate(opts):
             assert opt["value"] == f"req-mval|0|{j}"
