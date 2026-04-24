@@ -609,6 +609,55 @@ def _post_mock_permission(bot_token: str, channel_id: str) -> str | None:
     return ts
 
 
+def _post_mock_overflow_turn(bot_token: str, channel_id: str) -> str | None:
+    """Post a mock turn header with overflow menu for screenshot purposes."""
+    from slack_sdk import WebClient
+
+    from summon_claude.sessions.response import _build_turn_header_blocks
+
+    client = WebClient(token=bot_token)
+    text = "\U0001f527 Turn 3: re: _Review the auth module_..."
+    blocks = _build_turn_header_blocks(text)
+
+    resp = client.chat_postMessage(channel=channel_id, text=text, blocks=blocks)
+    ts = resp.get("ts")
+    click.echo(f"  Posted mock overflow turn: ts={ts}")
+    return ts
+
+
+def _post_mock_select_menu(bot_token: str, channel_id: str) -> str | None:
+    """Post a mock AskUserQuestion with >4 options (select menu) for screenshots."""
+    from slack_sdk import WebClient
+
+    from summon_claude.sessions.permissions import _build_ask_user_blocks
+
+    client = WebClient(token=bot_token)
+    questions = [
+        {
+            "question": "Which testing framework should I use for the new integration tests?",
+            "header": "Testing Framework",
+            "options": [
+                {"label": "pytest", "description": "Standard Python test framework"},
+                {"label": "unittest", "description": "Built-in Python testing"},
+                {"label": "hypothesis", "description": "Property-based testing"},
+                {"label": "ward", "description": "Modern test framework"},
+                {"label": "nox", "description": "Flexible test automation"},
+                {"label": "tox", "description": "Virtualenv-based test automation"},
+            ],
+        }
+    ]
+    blocks = _build_ask_user_blocks("mock-req-001", questions)
+
+    resp = client.chat_postMessage(
+        channel=channel_id,
+        text="Claude has a question for you",
+        blocks=blocks,
+    )
+    ts = resp.get("ts")
+    click.echo(f"  Posted mock select menu: ts={ts}")
+    return ts
+
+
 def wait_for_help_response(bot_token: str, channel_id: str, timeout: int = 30) -> str | None:
     """Poll for the !help thread reply using conversations_replies.
 
@@ -1366,6 +1415,14 @@ def main(
                         "description": "Permission buttons",
                     },
                     {"name": "permissions-approval.png", "description": "Permission approval"},
+                    {
+                        "name": "interactivity-overflow-menu.png",
+                        "description": "Turn header with overflow menu (stop/copy/cost)",
+                    },
+                    {
+                        "name": "interactivity-select-menu.png",
+                        "description": "AskUserQuestion with select dropdown (>4 options)",
+                    },
                 ]
             )
             tag = "manual" if sec == "slack-setup" else "e2e (real session)"
@@ -1574,6 +1631,38 @@ def main(
                 snap("canvas-pm-active-work.png")
             except Exception as exc:
                 click.echo(f"  Canvas capture failed ({type(exc).__name__}): {exc}", err=True)
+
+            # --- Milestone 6: Overflow menu on turn header
+            click.echo("  Capturing overflow menu screenshot...")
+            overflow_ts = _post_mock_overflow_turn(bot_token, channel_id)
+            if overflow_ts:
+                page.wait_for_timeout(2_000)
+                nav(channel_url, wait_ms=3_000)
+                page.evaluate(
+                    "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
+                )
+                page.wait_for_timeout(1_000)
+                _inject_screenshot_css(page, _CHANNEL_VIEW_CSS)
+                overflow_dest = output_dir / "interactivity-overflow-menu.png"
+                _crop_to_last_messages(page, overflow_dest, padding=24)
+                click.echo(f"  captured: {overflow_dest}")
+                captured.append("interactivity-overflow-menu.png")
+
+            # --- Milestone 7: AskUserQuestion with select menu (>4 options)
+            click.echo("  Capturing select menu screenshot...")
+            select_ts = _post_mock_select_menu(bot_token, channel_id)
+            if select_ts:
+                page.wait_for_timeout(2_000)
+                nav(channel_url, wait_ms=3_000)
+                page.evaluate(
+                    "document.querySelector('[data-qa=\"slack_kit_list\"]')?.scrollTo(0, 999999)"
+                )
+                page.wait_for_timeout(1_000)
+                _inject_screenshot_css(page, _CHANNEL_VIEW_CSS)
+                select_dest = output_dir / "interactivity-select-menu.png"
+                _crop_to_last_messages(page, select_dest, padding=24)
+                click.echo(f"  captured: {select_dest}")
+                captured.append("interactivity-select-menu.png")
 
             # Clean up debug screenshots from previous runs
             for debug_file in output_dir.glob("_debug_*.png"):
