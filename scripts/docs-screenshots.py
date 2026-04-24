@@ -1642,8 +1642,10 @@ def main(
                 nav(channel_url, wait_ms=3_000)
                 page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
-                # Inject CSS BEFORE clicking — snap()'s CSS injection dismisses popovers
-                _inject_screenshot_css(page, _CHANNEL_VIEW_CSS)
+                # Use minimal CSS — _CHANNEL_VIEW_CSS repositions with position:fixed
+                # which shifts the overflow button's anchor and breaks the popover.
+                # Only hide sidebar; keep the primary view in natural layout.
+                _inject_screenshot_css(page, _THREAD_VIEW_CSS)
                 page.wait_for_timeout(500)
                 # Click the overflow button to open the menu.
                 # Slack renders Block Kit overflow as:

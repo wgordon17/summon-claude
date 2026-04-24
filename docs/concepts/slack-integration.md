@@ -82,6 +82,8 @@ Each Claude turn opens a thread starter message (`Turn N: re: <snippet>`). The s
 
 Turn starter messages include an **overflow menu** (`...` button) with contextual actions:
 
+![Turn header with overflow menu expanded](../assets/screenshots/interactivity-overflow-menu.png)
+
 - **Stop Turn** — cancels the active Claude turn (same as the `:octagonal_sign:` reaction)
 - **Copy Session ID** — posts the session ID as an ephemeral message
 - **View Cost** — posts a cost hint as an ephemeral message
