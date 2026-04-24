@@ -1440,6 +1440,10 @@ def main(
                     },
                     {"name": "permissions-approval.png", "description": "Permission approval"},
                     {
+                        "name": "canvas-channel-tab.png",
+                        "description": "Canvas tab with session status",
+                    },
+                    {
                         "name": "interactivity-overflow-menu.png",
                         "description": "Turn header with overflow menu (stop/copy/cost)",
                     },
@@ -1619,12 +1623,14 @@ def main(
                 except Exception as exc:
                     click.echo(f"  WARNING: thread nav failed ({exc}), falling back", err=True)
                     nav(channel_url, wait_ms=3_000)
+                    _redact_paths(page)
                     page.evaluate(_SCROLL_TO_BOTTOM_JS)
                     page.wait_for_timeout(2_000)
                     snap("quickstart-help.png")
             else:
                 click.echo("  No !help thread ts — falling back to channel view")
                 nav(channel_url, wait_ms=3_000)
+                _redact_paths(page)
                 page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(2_000)
                 snap("quickstart-help.png")
