@@ -319,19 +319,22 @@ def archive_channel(bot_token: str, channel_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _crop_to_last_messages(page, dest: Path, *, padding: int = 16) -> None:
+def _crop_to_last_messages(
+    page, dest: Path, *, padding: int = 16, extra_selectors: list[str] | None = None
+) -> None:
     """Screenshot only the last few visible messages in the channel.
 
     Uses JS to find the bounding rect of the last message containers,
     then clips the screenshot to that region.  Falls back to a bottom-
     of-viewport crop if the selectors don't match.
+
+    *extra_selectors* extends the bounding box to include portal elements
+    (e.g. popup menus) that render outside the message DOM tree.
     """
     bbox = page.evaluate(
-        """(padding) => {
-        // Slack wraps each message in a [data-qa="virtual-list-item"] element
+        """([padding, extraSelectors]) => {
         const items = document.querySelectorAll('[data-qa="virtual-list-item"]');
         if (items.length === 0) return null;
-        // Take the last 3 items (or fewer if less exist)
         const last = Array.from(items).slice(-3);
         let top = Infinity, bottom = 0, left = Infinity, right = 0;
         for (const el of last) {
@@ -341,6 +344,16 @@ def _crop_to_last_messages(page, dest: Path, *, padding: int = 16) -> None:
             if (r.left < left) left = r.left;
             if (r.right > right) right = r.right;
         }
+        for (const sel of extraSelectors) {
+            for (const el of document.querySelectorAll(sel)) {
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                if (r.top < top) top = r.top;
+                if (r.bottom > bottom) bottom = r.bottom;
+                if (r.left < left) left = r.left;
+                if (r.right > right) right = r.right;
+            }
+        }
         return {
             x: Math.max(0, left - padding),
             y: Math.max(0, top - padding),
@@ -348,7 +361,7 @@ def _crop_to_last_messages(page, dest: Path, *, padding: int = 16) -> None:
             height: bottom - top + padding * 2,
         };
     }""",
-        padding,
+        [padding, extra_selectors or []],
     )
     if bbox:
         page.screenshot(path=str(dest), clip=bbox)
@@ -1539,7 +1552,7 @@ def main(
 
             # Set up reusable screenshot helpers
             captured: list[str] = []
-            snap, nav, clip_region = _make_snap(page, output_dir, captured)
+            snap, nav, _ = _make_snap(page, output_dir, captured)
 
             # --- Milestone 1: Auth screenshot (/summon command + bot response)
             #     Capture immediately after authenticate_via_slack returns,
@@ -1651,8 +1664,6 @@ def main(
 
             # --- Milestone 6: Overflow menu on turn header (expanded)
             #     Click the "..." button to show the popup menu with options.
-            #     Use snap() (full viewport) instead of _crop_to_last_messages
-            #     because the popup renders as a portal outside message bounds.
             click.echo("  Capturing overflow menu screenshot...")
             overflow_ts = _post_mock_overflow_turn(bot_token, channel_id)
             if overflow_ts:
@@ -1661,16 +1672,10 @@ def main(
                 _redact_paths(page)
                 page.evaluate(_SCROLL_TO_BOTTOM_JS)
                 page.wait_for_timeout(1_000)
-                # Use minimal CSS — _CHANNEL_VIEW_CSS repositions with position:fixed
-                # which shifts the overflow button's anchor and breaks the popover.
-                # Only hide sidebar; keep the primary view in natural layout.
+                # _CHANNEL_VIEW_CSS repositions with position:fixed which shifts
+                # the overflow button's anchor and breaks the popover.
                 _inject_screenshot_css(page, _THREAD_VIEW_CSS)
                 page.wait_for_timeout(500)
-                # Click the overflow button to open the menu.
-                # Slack renders Block Kit overflow as:
-                #   data-qa="block_kit_overflow_element_button"
-                #   aria-label="More options"
-                #   aria-haspopup="menu"
                 try:
                     btn = page.locator('[data-qa="block_kit_overflow_element_button"]').last
                     if btn.count() > 0:
@@ -1681,9 +1686,13 @@ def main(
                         click.echo("  WARNING: could not find overflow button", err=True)
                 except Exception as exc:
                     click.echo(f"  WARNING: could not click overflow button: {exc}", err=True)
-                # Direct screenshot (no snap — CSS already injected, popover is open)
                 overflow_dest = output_dir / "interactivity-overflow-menu.png"
-                page.screenshot(path=str(overflow_dest), clip=clip_region)
+                _crop_to_last_messages(
+                    page,
+                    overflow_dest,
+                    padding=24,
+                    extra_selectors=['[role="menu"]'],
+                )
                 click.echo(f"  captured: {overflow_dest}")
                 captured.append("interactivity-overflow-menu.png")
                 # Dismiss the menu
