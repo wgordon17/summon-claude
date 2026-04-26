@@ -149,9 +149,12 @@ def _isolate_data_dir(tmp_path_factory, _guard_no_global_xdg_writes):
             return data_dir
         return config_dir
 
+    socket_dir = tmp_path_factory.mktemp("sockets")
+
     with (
         patch("summon_claude.config._xdg_dir", side_effect=_fake_xdg_dir),
         patch("summon_claude.config.get_local_root", return_value=None),
+        patch("summon_claude.config._socket_dir", return_value=socket_dir),
     ):
         yield
 

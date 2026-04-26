@@ -23,12 +23,13 @@ import os
 import queue
 import signal
 import socket
+import stat
 import struct
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from summon_claude.config import get_data_dir, is_local_install
+from summon_claude.config import get_data_dir, get_socket_path, is_local_install
 from summon_claude.event_dispatcher import EventDispatcher
 from summon_claude.sessions.manager import SessionManager
 from summon_claude.sessions.registry import SessionRegistry
@@ -103,7 +104,7 @@ def _data_dir() -> Path:
 
 
 def _daemon_socket() -> Path:
-    return _data_dir() / "daemon.sock"
+    return get_socket_path()
 
 
 def _validate_socket_path(sock: Path) -> None:
@@ -116,8 +117,8 @@ def _validate_socket_path(sock: Path) -> None:
     if len(sock_str) > _UNIX_SOCKET_PATH_MAX:
         if is_local_install():
             hint = (
-                "Use SUMMON_LOCAL=0 to fall back to global paths, or move your "
-                "project to a shorter path."
+                "This should not occur with the /tmp-based socket path. "
+                "Please file a bug at https://github.com/summon-claude/summon-claude/issues."
             )
         else:
             hint = (
@@ -343,13 +344,20 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
         dispatcher.set_command_handler(session_manager.handle_summon_command)
         dispatcher.set_resume_handler(session_manager.resume_from_channel)
 
-        # Start Unix socket control server
-        control_server = await asyncio.start_unix_server(
-            session_manager.handle_client,
-            path=str(socket_path),
-            limit=MAX_MESSAGE_SIZE,
-        )
-        # Restrict socket to owner-only (mode 600) so other users cannot connect
+        # Start Unix socket control server.
+        # umask(0o077) ensures the socket file is created with mode 0o600 from
+        # the start, closing the brief window where other users could observe it
+        # under the DaemonContext's default umask of 0o022.
+        old_umask = os.umask(0o077)
+        try:
+            control_server = await asyncio.start_unix_server(
+                session_manager.handle_client,
+                path=str(socket_path),
+                limit=MAX_MESSAGE_SIZE,
+            )
+        finally:
+            os.umask(old_umask)
+        # chmod(0o600) as defense-in-depth — socket was already created with 0o600.
         try:
             socket_path.chmod(0o600)
         except FileNotFoundError:
@@ -648,6 +656,44 @@ def _clear_stale_daemon_files() -> None:
     """
     for path in (_daemon_pid(), _daemon_socket(), _startup_error_path()):
         path.unlink(missing_ok=True)
+    # Remove legacy socket location in case the daemon was started before the
+    # /tmp-based socket path was introduced.
+    (_data_dir() / "daemon.sock").unlink(missing_ok=True)
+
+
+def _secure_mkdir(path: Path, mode: int = 0o700) -> None:
+    """Create *path* with *mode*, verifying ownership and permissions on conflict.
+
+    On ``FileExistsError``: uses ``os.lstat`` (no symlink follow) and checks:
+    1. Not a symlink — symlink pre-creation is a DoS attack vector.
+    2. Owned by the current user — prevents another user's directory being used.
+    3. Permissions are exactly *mode* — no looser modes accepted.
+
+    Raises ``RuntimeError`` with an actionable message on any security violation.
+    A residual TOCTOU window exists between mkdir failure and lstat, which is
+    acceptable for this tool's threat model.
+    """
+    try:
+        path.mkdir(mode=mode)
+    except FileExistsError as mkdir_err:
+        try:
+            st = os.lstat(str(path))
+        except OSError as e:
+            raise RuntimeError(f"Cannot verify socket directory {path}: {e}") from e
+        if stat.S_ISLNK(st.st_mode):
+            raise RuntimeError(
+                f"Socket directory is a symlink — possible DoS attack. "
+                f"Remove {path} manually and retry."
+            ) from mkdir_err
+        if st.st_uid != os.getuid():
+            raise RuntimeError(
+                f"Socket directory {path} owned by another user — possible symlink attack."
+            ) from mkdir_err
+        if stat.S_IMODE(st.st_mode) != mode:
+            raise RuntimeError(
+                f"Socket directory {path} has unexpected permissions "
+                f"{oct(stat.S_IMODE(st.st_mode))} (expected {oct(mode)})."
+            ) from mkdir_err
 
 
 def start_daemon(config: SummonConfig) -> None:
@@ -674,7 +720,13 @@ def start_daemon(config: SummonConfig) -> None:
         return
 
     socket_path = _daemon_socket()
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    if is_local_install():
+        # Two separate mkdir calls, each individually verified (SC1/SC2).
+        # /tmp/summon-<uid>/ first, then /tmp/summon-<uid>/sockets/.
+        _secure_mkdir(socket_path.parent.parent, 0o700)
+        _secure_mkdir(socket_path.parent, 0o700)
+    else:
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Remove stale artefacts from a previous (dead) daemon
     _clear_stale_daemon_files()
