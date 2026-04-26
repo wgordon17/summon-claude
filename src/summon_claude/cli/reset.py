@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 
 from summon_claude.cli.interactive import is_interactive
-from summon_claude.config import get_config_dir, get_data_dir
+from summon_claude.config import get_config_dir, get_data_dir, get_socket_path, is_local_install
 from summon_claude.daemon import is_daemon_running
 
 
@@ -121,6 +121,11 @@ async def _reset_directory(  # noqa: PLR0913
         click.echo("Safety checks bypassed (--force).")
     click.echo(warning.format(path=resolved))
     click.confirm("Are you SURE?" if force else "Continue?", default=False, abort=True)
+
+    # In local mode the socket lives in /tmp (outside the data dir) — remove it
+    # before the rmtree so no orphaned socket is left behind after the reset.
+    if is_local_install():
+        get_socket_path().unlink(missing_ok=True)
 
     try:
         shutil.rmtree(resolved)
