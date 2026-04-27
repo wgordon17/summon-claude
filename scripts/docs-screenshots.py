@@ -187,6 +187,24 @@ def start_project_session() -> tuple[subprocess.Popen | None, str]:
     return proc, short_code
 
 
+def _kill_straggler_processes() -> None:
+    """Kill any orphaned summon/claude processes from this worktree."""
+    venv_path = str(Path.cwd() / ".cache" / "venv")
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", venv_path],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pids = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        if pids:
+            subprocess.run(["kill", *pids], capture_output=True, timeout=5)
+            click.echo(f"  Killed {len(pids)} straggler process(es)")
+    except Exception:
+        pass
+
+
 def stop_project_session(proc: subprocess.Popen | None) -> None:
     """Stop the project and clean up."""
     env = _make_env()
@@ -218,6 +236,8 @@ def stop_project_session(proc: subprocess.Popen | None) -> None:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+    _kill_straggler_processes()
 
 
 def _slack_api_call_with_retry(fn, *, max_retries: int = 5):  # type: ignore[no-untyped-def]
