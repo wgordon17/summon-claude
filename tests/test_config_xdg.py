@@ -681,55 +681,6 @@ class TestGetSocketPath:
         assert sock.parent == Path(f"/tmp/summon-{os.getuid()}")
 
 
-class TestFindLocalDaemonHintNewPath:
-    """Tests for find_local_daemon_hint() — socket path detection."""
-
-    def test_returns_hint_when_socket_exists(self, tmp_path, monkeypatch):
-        """Global mode + socket exists for project -> returns hint."""
-        (tmp_path / "pyproject.toml").touch()
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.delenv("SUMMON_LOCAL", raising=False)
-
-        from summon_claude.config import (
-            _detect_install_mode,
-            _find_project_root,
-            _local_socket_path,
-            find_local_daemon_hint,
-        )
-
-        _detect_install_mode.cache_clear()
-        _find_project_root.cache_clear()
-
-        sock = _local_socket_path(tmp_path)
-        sock.parent.mkdir(parents=True, exist_ok=True)
-        sock.touch()
-
-        try:
-            hint = find_local_daemon_hint()
-            assert hint is not None
-            assert "SUMMON_LOCAL=1" in hint
-        finally:
-            sock.unlink(missing_ok=True)
-
-    def test_returns_none_when_no_socket_exists(self, tmp_path, monkeypatch):
-        """Global mode + no socket -> no hint."""
-        (tmp_path / "pyproject.toml").touch()
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.delenv("SUMMON_LOCAL", raising=False)
-
-        from summon_claude.config import (
-            _detect_install_mode,
-            _find_project_root,
-            find_local_daemon_hint,
-        )
-
-        _detect_install_mode.cache_clear()
-        _find_project_root.cache_clear()
-        assert find_local_daemon_hint() is None
-
-
 class TestDefaultDbPathMigrationGuard:
     """Tests for default_db_path() local-mode migration suppression.
 

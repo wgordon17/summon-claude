@@ -1278,7 +1278,6 @@ class TestJiraProxyLifecycle:
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 class TestSetupDaemonLogging:
     def test_creates_queue_handler(self, tmp_path):
         import logging
