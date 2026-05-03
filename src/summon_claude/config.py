@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib
 import json
 import logging
@@ -157,19 +158,22 @@ def get_local_root() -> Path | None:
 def find_local_daemon_hint() -> str | None:
     """Check if a local-mode daemon socket exists nearby when in global mode.
 
-    Returns a user-facing hint string if a ``.summon/daemon.sock`` is found
-    via CWD walk-up while the current process is in global mode.  Returns
-    ``None`` if already in local mode or no local daemon socket is found.
+    Returns a user-facing hint string if a daemon socket is found via CWD
+    walk-up while the current process is in global mode.
+    Returns ``None`` if already in local mode or no local daemon socket found.
     """
     if is_local_install():
         return None
     root = _find_project_root()
-    if root is not None and (root / ".summon" / "daemon.sock").exists():
-        return (
-            f"A local-mode daemon may be running at {root / '.summon'}.\n"
-            "Activate your project's virtualenv or set SUMMON_LOCAL=1 to reach it."
-        )
-    return None
+    if root is None:
+        return None
+    sock = _local_socket_path(root)
+    if not sock.exists():
+        return None
+    return (
+        f"A local-mode daemon may be running at {sock}.\n"
+        "Activate your project's virtualenv or set SUMMON_LOCAL=1 to reach it."
+    )
 
 
 def get_claude_config_dir() -> Path:
@@ -201,6 +205,36 @@ def get_data_dir() -> Path:
     if root is not None:
         return root / ".summon"
     return _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
+
+
+def _local_socket_path(project_dir: Path) -> Path:
+    """Return the socket path for a local-mode daemon serving *project_dir*.
+
+    On Linux, uses ``$XDG_RUNTIME_DIR/summon/`` (per-user tmpfs, auto-cleaned
+    on logout).  Falls back to ``/tmp/summon-<uid>/`` on macOS and systems
+    without ``XDG_RUNTIME_DIR``.
+
+    Tests monkeypatch this function to redirect socket paths.
+    """
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg and not Path(xdg).is_absolute():
+        logger.warning("XDG_RUNTIME_DIR is not absolute (%r), ignoring", xdg)
+        xdg = ""
+    base = Path(xdg) / "summon" if xdg else Path(f"/tmp/summon-{os.getuid()}")  # noqa: S108
+    digest = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:12]
+    return base / f"{digest}.sock"
+
+
+def get_socket_path() -> Path:
+    """Return the daemon socket path for the current install mode.
+
+    Local mode: ``<runtime_dir>/<12-hex-hash>.sock``
+    Global mode: ``get_data_dir() / 'daemon.sock'``
+    """
+    root = get_local_root()
+    if root is not None:
+        return _local_socket_path(root)
+    return get_data_dir() / "daemon.sock"
 
 
 def get_reports_dir() -> Path:

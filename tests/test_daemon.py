@@ -21,11 +21,27 @@ from summon_claude.slack.bolt import DiagnosticResult
 # ---------------------------------------------------------------------------
 
 
-def _patch_data_dir(tmp_path: Path):
-    """Patch get_data_dir to use tmp_path so tests don't touch real data dir."""
-    import summon_claude.daemon as dm
+class _patch_data_dir:  # noqa: N801
+    """Patches _data_dir and _daemon_socket so tests don't touch real dirs."""
 
-    return patch.object(dm, "_data_dir", return_value=tmp_path)
+    def __init__(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+        self._patches: list = []
+
+    def __enter__(self):
+        import summon_claude.daemon as dm
+
+        sock = self._tmp_path / "daemon.sock"
+        p1 = patch.object(dm, "_data_dir", return_value=self._tmp_path)
+        p2 = patch.object(dm, "_daemon_socket", return_value=sock)
+        self._patches = [p1, p2]
+        for p in self._patches:
+            p.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        for p in reversed(self._patches):
+            p.__exit__(*args)
 
 
 # ---------------------------------------------------------------------------
@@ -556,11 +572,13 @@ class TestCleanupOrphanedSessions:
 
         async with SessionRegistry(db_path=temp_db_path) as reg:
             s1 = await reg.get_session("orphan-1")
+            assert s1 is not None
             assert s1["status"] == "errored"
             assert "Orphaned by daemon restart" in s1["error_message"]
             assert s1["ended_at"] is not None
 
             s2 = await reg.get_session("orphan-2")
+            assert s2 is not None
             assert s2["status"] == "errored"
 
         # Disconnect message posted to orphan-1's channel
@@ -585,6 +603,7 @@ class TestCleanupOrphanedSessions:
 
         async with SessionRegistry(db_path=temp_db_path) as reg:
             s = await reg.get_session("done-1")
+            assert s is not None
             assert s["status"] == "completed"
 
         # No messages posted
@@ -664,6 +683,7 @@ class TestCleanupOrphanedSessions:
         # Session should still be marked errored despite rename failure
         async with SessionRegistry(db_path=temp_db_path) as reg:
             s = await reg.get_session("orphan-fail")
+            assert s is not None
             assert s["status"] == "errored"
 
 
@@ -869,7 +889,9 @@ class TestValidateSocketPath:
         with pytest.raises(SocketPathTooLongError) as exc_info:
             _validate_socket_path(sock)
         msg = str(exc_info.value)
-        assert "SUMMON_LOCAL=0" in msg
+        # C2 changed the local-mode hint: /tmp path can't normally be too long,
+        # so it now directs the user to file a bug rather than offering a workaround.
+        assert "Please file a bug" in msg
 
     def test_accepts_path_at_exact_limit(self):
         from summon_claude.daemon import _UNIX_SOCKET_PATH_MAX, _validate_socket_path
@@ -878,6 +900,90 @@ class TestValidateSocketPath:
         sock = Path("/" + "x" * (_UNIX_SOCKET_PATH_MAX - 1))
         assert len(str(sock)) == _UNIX_SOCKET_PATH_MAX
         _validate_socket_path(sock)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Socket path delegation and new /tmp-based socket tests
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonSocketDelegation:
+    def test_daemon_socket_delegates_to_get_socket_path(self, tmp_path):
+        """_daemon_socket() returns whatever get_socket_path() returns."""
+        from summon_claude.daemon import _daemon_socket
+
+        expected = tmp_path / "mysocket.sock"
+        with patch("summon_claude.daemon.get_socket_path", return_value=expected):
+            result = _daemon_socket()
+        assert result == expected
+
+    def test_is_daemon_running_checks_new_socket_path(self, tmp_path):
+        """is_daemon_running() checks the path returned by _daemon_socket()."""
+        sock_path = tmp_path / "sockets" / "abcdef012345.sock"
+        sock_path.parent.mkdir(parents=True)
+        sock_path.touch()
+
+        with (
+            patch("summon_claude.daemon._daemon_socket", return_value=sock_path),
+            patch("summon_claude.daemon.socket.socket") as mock_sock_cls,
+        ):
+            mock_sock = MagicMock()
+            mock_sock_cls.return_value = mock_sock
+
+            from summon_claude.daemon import is_daemon_running
+
+            assert is_daemon_running() is True
+            mock_sock.connect.assert_called_once_with(str(sock_path))
+
+    async def test_connect_to_daemon_uses_new_socket_path(self, tmp_path):
+        """connect_to_daemon() passes the new socket path to open_unix_connection."""
+        from summon_claude.daemon import connect_to_daemon
+
+        sock_path = tmp_path / "sockets" / "abcdef012345.sock"
+        mock_reader = AsyncMock()
+        mock_writer = AsyncMock()
+
+        with (
+            patch("summon_claude.daemon._daemon_socket", return_value=sock_path),
+            patch(
+                "asyncio.open_unix_connection",
+                return_value=(mock_reader, mock_writer),
+            ) as mock_connect,
+        ):
+            reader, writer = await connect_to_daemon()
+
+        mock_connect.assert_called_once_with(str(sock_path), limit=65536)
+        assert reader is mock_reader
+
+
+class TestClearStaleDaemonFilesNewPath:
+    def test_clears_new_tmp_socket(self, tmp_path):
+        """_clear_stale_daemon_files() removes socket at the new /tmp-based path."""
+        sock_path = tmp_path / "sockets" / "abcdef012345.sock"
+        sock_path.parent.mkdir(parents=True)
+        sock_path.touch()
+
+        with (
+            _patch_data_dir(tmp_path),
+            patch("summon_claude.daemon._daemon_socket", return_value=sock_path),
+        ):
+            from summon_claude.daemon import _clear_stale_daemon_files
+
+            _clear_stale_daemon_files()
+
+        assert not sock_path.exists()
+
+    def test_no_error_when_socket_absent(self, tmp_path):
+        """_clear_stale_daemon_files() does not raise when no sockets exist."""
+        new_sock_path = tmp_path / "sockets" / "abcdef012345.sock"
+
+        with (
+            _patch_data_dir(tmp_path),
+            patch("summon_claude.daemon._daemon_socket", return_value=new_sock_path),
+        ):
+            from summon_claude.daemon import _clear_stale_daemon_files
+
+            _clear_stale_daemon_files()  # must not raise
 
 
 # ---------------------------------------------------------------------------

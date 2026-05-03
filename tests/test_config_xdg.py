@@ -20,6 +20,9 @@ from summon_claude.config import (
     get_data_dir,
 )
 from summon_claude.config import (
+    _local_socket_path as _real_local_socket_path,  # captured before _isolate_data_dir patches it
+)
+from summon_claude.config import (
     _xdg_dir as _real_xdg_dir,  # captured before _isolate_data_dir patches it
 )
 from summon_claude.config import (
@@ -378,21 +381,34 @@ class TestFindLocalDaemonHint:
     """Tests for find_local_daemon_hint() — mode mismatch detection."""
 
     def test_returns_hint_when_local_daemon_exists_in_global_mode(self, tmp_path, monkeypatch):
-        """Global mode + .summon/daemon.sock exists nearby -> returns hint."""
+        """Global mode + socket exists for nearby project -> returns hint."""
         (tmp_path / "pyproject.toml").touch()
-        summon_dir = tmp_path / ".summon"
-        summon_dir.mkdir()
-        (summon_dir / "daemon.sock").touch()
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
         monkeypatch.delenv("SUMMON_LOCAL", raising=False)
 
-        from summon_claude.config import _detect_install_mode, find_local_daemon_hint
+        from summon_claude.config import (
+            _detect_install_mode,
+            _find_project_root,
+            _local_socket_path,
+            find_local_daemon_hint,
+        )
 
         _detect_install_mode.cache_clear()
-        hint = find_local_daemon_hint()
-        assert hint is not None
-        assert "SUMMON_LOCAL=1" in hint
+        _find_project_root.cache_clear()
+
+        # Use the (conftest-patched) _local_socket_path so the path matches
+        # what find_local_daemon_hint() will check
+        sock = _local_socket_path(tmp_path)
+        sock.parent.mkdir(parents=True, exist_ok=True)
+        sock.touch()
+
+        try:
+            hint = find_local_daemon_hint()
+            assert hint is not None
+            assert "SUMMON_LOCAL=1" in hint
+        finally:
+            sock.unlink(missing_ok=True)
 
     def test_returns_none_in_local_mode(self, tmp_path, monkeypatch):
         """Already in local mode -> no hint needed."""
@@ -577,6 +593,102 @@ class TestFindProjectRootHardening:
             assert mode == "global"
 
 
+class TestGetSocketPath:
+    """Tests for get_socket_path() and _local_socket_path()."""
+
+    def test_local_mode_returns_hashed_path(self, tmp_path):
+        """Local mode: get_socket_path() returns a <hash>.sock path."""
+        from summon_claude.config import get_socket_path
+
+        with patch("summon_claude.config.get_local_root", return_value=tmp_path):
+            result = get_socket_path()
+
+        assert str(result).endswith(".sock")
+        assert len(result.name) == len("aabbccddeeff.sock")  # 12 hex chars + .sock
+
+    def test_local_mode_hash_deterministic(self, tmp_path):
+        """Same project root always produces the same hash."""
+        from summon_claude.config import get_socket_path
+
+        with patch("summon_claude.config.get_local_root", return_value=tmp_path):
+            result1 = get_socket_path()
+            result2 = get_socket_path()
+
+        assert result1 == result2
+
+    def test_global_mode_returns_data_dir_daemon_sock(self):
+        """Global mode: get_socket_path() returns get_data_dir() / 'daemon.sock'."""
+        from summon_claude.config import get_data_dir, get_socket_path
+
+        with patch("summon_claude.config.get_local_root", return_value=None):
+            result = get_socket_path()
+            expected = get_data_dir() / "daemon.sock"
+
+        assert result == expected
+
+    def test_different_project_roots_produce_different_hashes(self, tmp_path):
+        """Different project roots produce different socket paths."""
+        from summon_claude.config import _local_socket_path
+
+        root_a = tmp_path / "project_a"
+        root_b = tmp_path / "project_b"
+        root_a.mkdir()
+        root_b.mkdir()
+
+        sock_a = _local_socket_path(root_a)
+        sock_b = _local_socket_path(root_b)
+
+        assert sock_a != sock_b
+        assert sock_a.name != sock_b.name
+
+    def test_hash_is_12_hex_chars(self, tmp_path):
+        """Socket filename is exactly 12 hex chars + .sock."""
+        import re
+
+        from summon_claude.config import _local_socket_path
+
+        sock = _local_socket_path(tmp_path)
+        assert re.fullmatch(r"[0-9a-f]{12}\.sock", sock.name), f"Unexpected name: {sock.name}"
+
+    def test_symlinked_paths_share_socket(self, tmp_path):
+        """Two symlinked paths pointing to the same project produce the same socket."""
+        from summon_claude.config import _local_socket_path
+
+        real_dir = tmp_path / "real_project"
+        real_dir.mkdir()
+        link_dir = tmp_path / "link_project"
+        link_dir.symlink_to(real_dir)
+
+        sock_real = _local_socket_path(real_dir)
+        sock_link = _local_socket_path(link_dir)
+
+        assert sock_real == sock_link
+
+    def test_uses_xdg_runtime_dir_when_set(self, tmp_path, monkeypatch):
+        """_local_socket_path uses $XDG_RUNTIME_DIR/summon/ when the env var is set."""
+        runtime_dir = tmp_path / "run"
+        runtime_dir.mkdir()
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+
+        sock = _real_local_socket_path(tmp_path)
+        assert sock.parent == runtime_dir / "summon"
+
+    def test_falls_back_to_tmp_without_xdg_runtime_dir(self, tmp_path, monkeypatch):
+        """_local_socket_path falls back to /tmp/summon-<uid>/ without XDG_RUNTIME_DIR."""
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+        sock = _real_local_socket_path(tmp_path)
+        assert sock.parent == Path(f"/tmp/summon-{os.getuid()}")
+
+    def test_ignores_relative_xdg_runtime_dir(self, tmp_path, monkeypatch, caplog):
+        """Relative XDG_RUNTIME_DIR is ignored with warning — falls back to /tmp."""
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "./relative/path")
+
+        sock = _real_local_socket_path(tmp_path)
+        assert sock.parent == Path(f"/tmp/summon-{os.getuid()}")
+        assert "not absolute" in caplog.text
+
+
 class TestDefaultDbPathMigrationGuard:
     """Tests for default_db_path() local-mode migration suppression.
 
@@ -634,3 +746,34 @@ class TestDefaultDbPathMigrationGuard:
         # Old DB should still exist — migration was skipped
         assert old_db.exists()
         assert result == local_path
+
+
+class TestRealSocketPathUnder104Chars:
+    """Verify that real socket paths fit the Unix 104-byte limit."""
+
+    def test_tmp_fallback_path_under_104_chars(self):
+        """The /tmp/summon-<uid>/<hash>.sock fallback path is < 104 chars."""
+        import hashlib
+
+        uid = os.getuid()
+        base = f"/tmp/summon-{uid}"
+        long_project = "/home/someuser/projects/a-rather-deeply-nested-project-directory"
+        digest = hashlib.sha256(long_project.encode()).hexdigest()[:12]
+        real_path = f"{base}/{digest}.sock"
+
+        assert len(real_path) < 104, (
+            f"Socket path is {len(real_path)} chars (limit 104): {real_path}"
+        )
+
+    def test_xdg_runtime_dir_path_under_104_chars(self):
+        """The $XDG_RUNTIME_DIR/summon/<hash>.sock path is < 104 chars."""
+        import hashlib
+
+        xdg_path = "/run/user/1000/summon"
+        long_project = "/home/someuser/projects/a-rather-deeply-nested-project-directory"
+        digest = hashlib.sha256(long_project.encode()).hexdigest()[:12]
+        real_path = f"{xdg_path}/{digest}.sock"
+
+        assert len(real_path) < 104, (
+            f"Socket path is {len(real_path)} chars (limit 104): {real_path}"
+        )
