@@ -182,7 +182,9 @@ class SharedEventStore:
         self._writer_refcount += 1
 
     def close_writer(self) -> None:
-        self._writer_refcount = max(0, self._writer_refcount - 1)
+        """Decrement writer refcount; close FD when last consumer disconnects."""
+        self._writer_refcount -= 1
+        assert self._writer_refcount >= 0, "close_writer called more times than open_writer"
         if self._writer_refcount == 0 and self._write_fd is not None:
             os.close(self._write_fd)
             self._write_fd = None
@@ -313,7 +315,7 @@ class EventConsumer:
                 logging.getLogger(__name__).debug(
                     "EventConsumer: close error (expected)", exc_info=True
                 )
-        self._event_store.close_writer()
+            self._event_store.close_writer()
 
     async def wait_for_event(
         self,
