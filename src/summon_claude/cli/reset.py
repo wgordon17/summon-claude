@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import shutil
 from collections.abc import Callable
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 import click
 
 from summon_claude.cli.interactive import is_interactive
-from summon_claude.config import get_config_dir, get_data_dir, get_socket_path, is_local_install
+from summon_claude.config import get_config_dir, get_data_dir
 from summon_claude.daemon import is_daemon_running
 
 
@@ -142,14 +141,6 @@ async def async_reset_data(ctx: click.Context, *, force: bool = False) -> None:
         "Data cleared. Run 'summon start' to begin a new session.",
         force=force,
     )
-    # In local mode the socket lives in /tmp (outside the data dir) — remove it
-    # so no orphaned socket is left behind after a data reset.
-    if is_local_install():
-        _sock = get_socket_path()
-        _sock.unlink(missing_ok=True)
-        for d in (_sock.parent, _sock.parent.parent):
-            with contextlib.suppress(OSError):
-                d.rmdir()
 
 
 async def async_reset_config(ctx: click.Context, *, force: bool = False) -> None:

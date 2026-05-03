@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
-import stat
 import struct
 import time
 from pathlib import Path
@@ -23,13 +22,7 @@ from summon_claude.slack.bolt import DiagnosticResult
 
 
 class _patch_data_dir:  # noqa: N801
-    """Context manager that patches _data_dir and _daemon_socket so tests don't touch
-    the real data dir or /tmp.
-
-    After Task 2, _daemon_socket() delegates to get_socket_path() instead of
-    _data_dir() / "daemon.sock". Patching both ensures tests work before and
-    after the Task 2 migration.
-    """
+    """Patches _data_dir and _daemon_socket so tests don't touch real dirs."""
 
     def __init__(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
@@ -980,25 +973,7 @@ class TestClearStaleDaemonFilesNewPath:
 
         assert not sock_path.exists()
 
-    def test_clears_old_legacy_socket_from_data_dir(self, tmp_path):
-        """_clear_stale_daemon_files() also removes the old .summon/daemon.sock."""
-        old_sock = tmp_path / "daemon.sock"
-        old_sock.touch()
-
-        new_sock_path = tmp_path / "sockets" / "abcdef012345.sock"
-
-        with (
-            _patch_data_dir(tmp_path),
-            patch("summon_claude.daemon._daemon_socket", return_value=new_sock_path),
-            patch("summon_claude.daemon.is_local_install", return_value=True),
-        ):
-            from summon_claude.daemon import _clear_stale_daemon_files
-
-            _clear_stale_daemon_files()
-
-        assert not old_sock.exists()
-
-    def test_no_error_when_both_sockets_absent(self, tmp_path):
+    def test_no_error_when_socket_absent(self, tmp_path):
         """_clear_stale_daemon_files() does not raise when no sockets exist."""
         new_sock_path = tmp_path / "sockets" / "abcdef012345.sock"
 
@@ -1301,94 +1276,6 @@ class TestJiraProxyLifecycle:
 # ---------------------------------------------------------------------------
 # _setup_daemon_logging — idempotency
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# _secure_mkdir — error branch coverage
-# ---------------------------------------------------------------------------
-
-
-class TestSecureMkdir:
-    def test_creates_directory_with_correct_permissions(self, tmp_path):
-        """New directory is created with the requested mode."""
-        from summon_claude.daemon import _secure_mkdir
-
-        target = tmp_path / "new_socket_dir"
-        _secure_mkdir(target, 0o700)
-        assert target.is_dir()
-        assert stat.S_IMODE(target.stat().st_mode) == 0o700
-
-    def test_existing_correct_dir_is_accepted(self, tmp_path):
-        """Existing directory owned by current user with correct permissions raises nothing."""
-        from summon_claude.daemon import _secure_mkdir
-
-        target = tmp_path / "ok_dir"
-        target.mkdir(mode=0o700)
-        _secure_mkdir(target, 0o700)  # must not raise
-
-    def test_symlink_at_path_raises_runtime_error(self, tmp_path):
-        """Symlink at the target path is rejected with a descriptive RuntimeError."""
-        from summon_claude.daemon import _secure_mkdir
-
-        real_dir = tmp_path / "real"
-        real_dir.mkdir()
-        link = tmp_path / "link_dir"
-        link.symlink_to(real_dir)
-
-        with pytest.raises(RuntimeError, match="symlink"):
-            _secure_mkdir(link, 0o700)
-
-    def test_wrong_owner_raises_runtime_error(self, tmp_path):
-        """Directory owned by another user raises RuntimeError."""
-        from summon_claude.daemon import _secure_mkdir
-
-        target = tmp_path / "other_owner"
-        target.mkdir(mode=0o700)
-
-        fake_st = os.stat_result(
-            (
-                stat.S_IFDIR | 0o700,  # st_mode
-                0,
-                0,
-                1,  # st_ino, st_dev, st_nlink
-                os.getuid() + 9999,  # st_uid — wrong owner
-                0,
-                0,
-                0,
-                0,
-                0,  # st_gid, st_size, st_atime, st_mtime, st_ctime
-            )
-        )
-        with (
-            patch("os.lstat", return_value=fake_st),
-            pytest.raises(RuntimeError, match="owned by another user"),
-        ):
-            _secure_mkdir(target, 0o700)
-
-    def test_wrong_permissions_raises_runtime_error(self, tmp_path):
-        """Directory with looser permissions (0o755) raises RuntimeError when 0o700 expected."""
-        from summon_claude.daemon import _secure_mkdir
-
-        target = tmp_path / "loose_perms"
-        target.mkdir(mode=0o755)
-        # chmod to ensure the mode is exactly 0o755 regardless of umask
-        target.chmod(0o755)
-
-        with pytest.raises(RuntimeError, match="unexpected permissions"):
-            _secure_mkdir(target, 0o700)
-
-    def test_lstat_oserror_raises_cannot_verify(self, tmp_path):
-        """OSError from os.lstat raises RuntimeError with 'Cannot verify' message."""
-        from summon_claude.daemon import _secure_mkdir
-
-        target = tmp_path / "existing_dir"
-        target.mkdir(mode=0o700)
-
-        with (
-            patch("os.lstat", side_effect=OSError("permission denied")),
-            pytest.raises(RuntimeError, match="Cannot verify"),
-        ):
-            _secure_mkdir(target, 0o700)
 
 
 # ---------------------------------------------------------------------------

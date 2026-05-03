@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import pathlib
@@ -13,7 +12,6 @@ import click
 
 from summon_claude.cli import daemon_client
 from summon_claude.cli.helpers import print_local_daemon_hint
-from summon_claude.config import is_local_install, socket_path_for_project
 from summon_claude.daemon import is_daemon_running
 from summon_claude.sessions.hook_types import INCLUDE_GLOBAL_TOKEN
 from summon_claude.sessions.hooks import run_lifecycle_hooks
@@ -81,13 +79,7 @@ async def async_project_remove(name_or_id: str) -> None:
     If the project has active sessions, stops them via daemon IPC first.
     """
     active_ids: list[str] = []
-    project_dir: str = ""
     async with SessionRegistry() as registry:
-        project = await registry.get_project(name_or_id)
-        if isinstance(project, dict):
-            directory = project.get("directory", "")
-            if isinstance(directory, str):
-                project_dir = directory
         try:
             active_ids = await registry.remove_project(name_or_id)
         except ValueError as e:
@@ -101,16 +93,6 @@ async def async_project_remove(name_or_id: str) -> None:
                 click.echo(f"  Stopped session {sid[:8]}...")
             except Exception as e:
                 click.echo(f"  Failed to stop session {sid[:8]}...: {e}", err=True)
-
-    # Clean up the daemon socket for this project (no-op if file doesn't exist)
-    if project_dir:
-        sock_path = socket_path_for_project(pathlib.Path(project_dir))
-        sock_path.unlink(missing_ok=True)
-        if is_local_install():
-            for d in (sock_path.parent, sock_path.parent.parent):
-                with contextlib.suppress(OSError):
-                    d.rmdir()
-        logger.debug("Cleaned up socket %s", sock_path)
 
 
 async def async_project_list() -> list[dict[str, Any]]:

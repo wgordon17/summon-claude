@@ -159,9 +159,7 @@ def find_local_daemon_hint() -> str | None:
     """Check if a local-mode daemon socket exists nearby when in global mode.
 
     Returns a user-facing hint string if a daemon socket is found via CWD
-    walk-up while the current process is in global mode.  Checks both the
-    new ``/tmp``-based path and the legacy ``.summon/daemon.sock`` path for
-    backward compatibility with daemons started before this change.
+    walk-up while the current process is in global mode.
     Returns ``None`` if already in local mode or no local daemon socket found.
     """
     if is_local_install():
@@ -169,17 +167,11 @@ def find_local_daemon_hint() -> str | None:
     root = _find_project_root()
     if root is None:
         return None
-    tmp_sock = socket_path_for_project(root)
-    # Legacy path — remove after one release cycle post-migration to /tmp sockets
-    legacy_sock = root / ".summon" / "daemon.sock"
-    if tmp_sock.exists():
-        location = str(tmp_sock)
-    elif legacy_sock.exists():
-        location = str(legacy_sock)
-    else:
+    sock = _local_socket_path(root)
+    if not sock.exists():
         return None
     return (
-        f"A local-mode daemon may be running at {location}.\n"
+        f"A local-mode daemon may be running at {sock}.\n"
         "Activate your project's virtualenv or set SUMMON_LOCAL=1 to reach it."
     )
 
@@ -215,36 +207,30 @@ def get_data_dir() -> Path:
     return _xdg_dir("XDG_DATA_HOME", ".local/share/summon", "summon")
 
 
-def _socket_dir() -> Path:
-    """Return the base directory for local-mode daemon sockets.
+def _local_socket_path(project_dir: Path) -> Path:
+    """Return the socket path for a local-mode daemon serving *project_dir*.
 
-    This function is the testability seam: tests monkeypatch
-    ``summon_claude.config._socket_dir`` to redirect socket paths away from
-    real ``/tmp``. Does NOT create the directory.
+    On Linux, uses ``$XDG_RUNTIME_DIR/summon/`` (per-user tmpfs, auto-cleaned
+    on logout).  Falls back to ``/tmp/summon-<uid>/`` on macOS and systems
+    without ``XDG_RUNTIME_DIR``.
+
+    Tests monkeypatch this function to redirect socket paths.
     """
-    return Path(f"/tmp/summon-{os.getuid()}/sockets")  # noqa: S108
-
-
-def socket_path_for_project(project_dir: Path) -> Path:
-    """Return the socket path for a given project directory.
-
-    Always returns a path under ``_socket_dir()``, regardless of install mode.
-    Used by both local-mode ``get_socket_path()`` and by project-remove cleanup.
-    """
-    # resolve() intentional: symlinked paths to same project share one socket
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    base = Path(xdg) / "summon" if xdg else Path(f"/tmp/summon-{os.getuid()}")  # noqa: S108
     digest = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:12]
-    return _socket_dir() / f"{digest}.sock"
+    return base / f"{digest}.sock"
 
 
 def get_socket_path() -> Path:
     """Return the daemon socket path for the current install mode.
 
-    Local mode: ``/tmp/summon-<uid>/sockets/<12-hex-hash>.sock``
-    Global mode: ``get_data_dir() / 'daemon.sock'`` (unchanged legacy path)
+    Local mode: ``<runtime_dir>/<12-hex-hash>.sock``
+    Global mode: ``get_data_dir() / 'daemon.sock'``
     """
     root = get_local_root()
     if root is not None:
-        return socket_path_for_project(root)
+        return _local_socket_path(root)
     return get_data_dir() / "daemon.sock"
 
 

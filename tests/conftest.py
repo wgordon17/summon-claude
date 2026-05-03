@@ -151,10 +151,16 @@ def _isolate_data_dir(tmp_path_factory, _guard_no_global_xdg_writes):
 
     socket_dir = tmp_path_factory.mktemp("sockets")
 
+    def _fake_local_socket_path(project_dir: Path) -> Path:
+        import hashlib
+
+        digest = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:12]
+        return socket_dir / f"{digest}.sock"
+
     with (
         patch("summon_claude.config._xdg_dir", side_effect=_fake_xdg_dir),
         patch("summon_claude.config.get_local_root", return_value=None),
-        patch("summon_claude.config._socket_dir", return_value=socket_dir),
+        patch("summon_claude.config._local_socket_path", side_effect=_fake_local_socket_path),
     ):
         yield
 

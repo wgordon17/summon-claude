@@ -15,7 +15,6 @@ Public API
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import fcntl
 import json
 import logging
@@ -24,7 +23,6 @@ import os
 import queue
 import signal
 import socket
-import stat
 import struct
 import time
 from pathlib import Path
@@ -444,10 +442,6 @@ async def daemon_main(config: SummonConfig) -> None:  # noqa: PLR0912, PLR0915
         # Cleanup filesystem artefacts
         pid_path.unlink(missing_ok=True)
         socket_path.unlink(missing_ok=True)
-        if is_local_install():
-            for d in (socket_path.parent, socket_path.parent.parent):
-                with contextlib.suppress(OSError):
-                    d.rmdir()
 
         logger.info("Daemon stopped cleanly")
     finally:
@@ -628,12 +622,7 @@ def run_daemon(config: SummonConfig) -> None:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
         pid_path.unlink(missing_ok=True)
-        _sock = _daemon_socket()
-        _sock.unlink(missing_ok=True)
-        if is_local_install():
-            for d in (_sock.parent, _sock.parent.parent):
-                with contextlib.suppress(OSError):
-                    d.rmdir()
+        _daemon_socket().unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -664,52 +653,8 @@ def _clear_stale_daemon_files() -> None:
     advisory and tied to the file descriptor, not the file path, so there
     is no risk of a stale lock persisting across daemon restarts.
     """
-    _sock = _daemon_socket()
-    for path in (_daemon_pid(), _sock, _startup_error_path()):
+    for path in (_daemon_pid(), _daemon_socket(), _startup_error_path()):
         path.unlink(missing_ok=True)
-    if is_local_install():
-        for d in (_sock.parent, _sock.parent.parent):
-            with contextlib.suppress(OSError):
-                d.rmdir()
-        # Legacy path — remove after one release cycle post-migration to /tmp sockets
-        (_data_dir() / "daemon.sock").unlink(missing_ok=True)
-
-
-def _secure_mkdir(path: Path, mode: int = 0o700) -> None:
-    """Create *path* with *mode*, verifying ownership and permissions on conflict.
-
-    On ``FileExistsError``: uses ``os.lstat`` (no symlink follow) and checks:
-    1. Not a symlink — symlink pre-creation is a DoS attack vector.
-    2. Owned by the current user — prevents another user's directory being used.
-    3. Permissions are exactly *mode* — no looser modes accepted.
-
-    The parent directory must already exist; FileNotFoundError propagates if it does not.
-
-    Raises ``RuntimeError`` with an actionable message on any security violation.
-    A residual TOCTOU window exists between mkdir failure and lstat, which is
-    acceptable for this tool's threat model.
-    """
-    try:
-        path.mkdir(mode=mode)
-    except FileExistsError as mkdir_err:
-        try:
-            st = os.lstat(str(path))
-        except OSError as e:
-            raise RuntimeError(f"Cannot verify socket directory {path}: {e}") from e
-        if stat.S_ISLNK(st.st_mode):
-            raise RuntimeError(
-                f"Socket directory is a symlink — possible DoS attack. "
-                f"Remove {path} manually and retry."
-            ) from mkdir_err
-        if st.st_uid != os.getuid():
-            raise RuntimeError(
-                f"Socket directory {path} owned by another user — possible symlink attack."
-            ) from mkdir_err
-        if stat.S_IMODE(st.st_mode) != mode:
-            raise RuntimeError(
-                f"Socket directory {path} has unexpected permissions "
-                f"{oct(stat.S_IMODE(st.st_mode))} (expected {oct(mode)})."
-            ) from mkdir_err
 
 
 def start_daemon(config: SummonConfig) -> None:
@@ -743,13 +688,7 @@ def start_daemon(config: SummonConfig) -> None:
     # Remove stale artefacts from a previous (dead) daemon
     _clear_stale_daemon_files()
 
-    if is_local_install():
-        # _socket_dir() returns /tmp/summon-<uid>/sockets — verify each level individually.
-        # parent.parent = /tmp/summon-<uid>/, parent = /tmp/summon-<uid>/sockets/
-        _secure_mkdir(socket_path.parent.parent, 0o700)
-        _secure_mkdir(socket_path.parent, 0o700)
-    else:
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     pid = os.fork()
     if pid > 0:
