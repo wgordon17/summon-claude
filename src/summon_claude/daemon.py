@@ -599,6 +599,7 @@ def run_daemon(config: SummonConfig) -> None:
     pid_path = _daemon_pid()
     lock_path = _daemon_lock()
     log_path = _daemon_log()
+    sock_path = _daemon_socket()
 
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
@@ -622,7 +623,7 @@ def run_daemon(config: SummonConfig) -> None:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
         pid_path.unlink(missing_ok=True)
-        _daemon_socket().unlink(missing_ok=True)
+        sock_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
