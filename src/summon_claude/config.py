@@ -217,6 +217,9 @@ def _local_socket_path(project_dir: Path) -> Path:
     Tests monkeypatch this function to redirect socket paths.
     """
     xdg = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if xdg and not Path(xdg).is_absolute():
+        logger.warning("XDG_RUNTIME_DIR is not absolute (%r), ignoring", xdg)
+        xdg = ""
     base = Path(xdg) / "summon" if xdg else Path(f"/tmp/summon-{os.getuid()}")  # noqa: S108
     digest = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:12]
     return base / f"{digest}.sock"

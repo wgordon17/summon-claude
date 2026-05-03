@@ -680,6 +680,13 @@ class TestGetSocketPath:
         sock = _real_local_socket_path(tmp_path)
         assert sock.parent == Path(f"/tmp/summon-{os.getuid()}")
 
+    def test_ignores_relative_xdg_runtime_dir(self, tmp_path, monkeypatch):
+        """Relative XDG_RUNTIME_DIR is ignored — falls back to /tmp."""
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "./relative/path")
+
+        sock = _real_local_socket_path(tmp_path)
+        assert sock.parent == Path(f"/tmp/summon-{os.getuid()}")
+
 
 class TestDefaultDbPathMigrationGuard:
     """Tests for default_db_path() local-mode migration suppression.
