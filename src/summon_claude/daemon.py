@@ -116,7 +116,7 @@ def _validate_socket_path(sock: Path) -> None:
     if len(sock_str) > _UNIX_SOCKET_PATH_MAX:
         if is_local_install():
             hint = (
-                "This should not occur with the /tmp-based socket path. "
+                "This should not occur with the runtime-directory socket path. "
                 "Please file a bug at https://github.com/summon-claude/summon-claude/issues."
             )
         else:
