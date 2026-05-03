@@ -168,14 +168,22 @@ class SharedEventStore:
         self._path = path
         self._path.touch(exist_ok=True)
         self._write_fd: int | None = None
+        self._writer_refcount: int = 0
         self._read_offset: int = 0
 
     def open_writer(self) -> None:
-        """Open the file for appending (unbuffered, O_APPEND for atomicity)."""
-        self._write_fd = os.open(str(self._path), os.O_WRONLY | os.O_APPEND)
+        """Open the file for appending (unbuffered, O_APPEND for atomicity).
+
+        Reference-counted: multiple consumers can share one store.
+        The FD stays open until the last consumer closes.
+        """
+        if self._write_fd is None:
+            self._write_fd = os.open(str(self._path), os.O_WRONLY | os.O_APPEND)
+        self._writer_refcount += 1
 
     def close_writer(self) -> None:
-        if self._write_fd is not None:
+        self._writer_refcount = max(0, self._writer_refcount - 1)
+        if self._writer_refcount == 0 and self._write_fd is not None:
             os.close(self._write_fd)
             self._write_fd = None
 
