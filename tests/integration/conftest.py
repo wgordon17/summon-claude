@@ -316,6 +316,7 @@ class EventConsumer:
                     "EventConsumer: close error (expected)", exc_info=True
                 )
             self._event_store.close_writer()
+            self._handler = None
 
     async def wait_for_event(
         self,

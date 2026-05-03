@@ -349,6 +349,19 @@ class TestLifecycle:
         assert consumer._handler is None
         await consumer.stop()  # must not raise
 
+    async def test_double_stop_is_idempotent(self, event_store):
+        """Calling stop() twice does not crash or corrupt refcount."""
+        consumer = _make_consumer(event_store)
+        mock_handler = AsyncMock()
+        mock_handler.close_async = AsyncMock()
+        consumer._handler = mock_handler
+        event_store.open_writer()
+
+        await consumer.stop()
+        await consumer.stop()
+        assert event_store._write_fd is None
+        assert event_store._writer_refcount == 0
+
     async def test_stop_closes_handler(self, event_store):
         """stop() calls close_async() on the handler and closes the writer."""
         consumer = _make_consumer(event_store)
